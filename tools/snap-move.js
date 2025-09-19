@@ -3,10 +3,17 @@
 
 (function() {
     try {
-        // Check if tool is already loaded
+        // Check if tool is already active (not just loaded)
         if (window.gisToolHost.activeTools.has('snap-move')) {
             console.log('Snap Move Tool already active');
             return;
+        }
+        
+        // If there's a leftover toolbox from previous instance, remove it
+        const existingToolbox = document.getElementById('snapMoveToolbox');
+        if (existingToolbox) {
+            existingToolbox.remove();
+            console.log('Removed leftover toolbox');
         }
         
         // Use shared utilities
