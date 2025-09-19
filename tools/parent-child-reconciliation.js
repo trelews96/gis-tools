@@ -3,6 +3,14 @@
 
 (function() {
     try {
+        // Initialize tool host system if it doesn't exist
+        if (!window.gisToolHost) {
+            window.gisToolHost = {};
+        }
+        if (!window.gisToolHost.activeTools) {
+            window.gisToolHost.activeTools = new Set();
+        }
+        
         if (window.gisToolHost.activeTools.has('parent-child-reconciliation')) {
             console.log('Parent/Child Reconciliation Tool already active');
             return;
@@ -665,12 +673,19 @@
         $("#exportBtn").addEventListener("click", exportToCSV);
         $("#closeTool").addEventListener("click", () => {
             toolBox.remove();
-            window.gisToolHost.activeTools.delete('parent-child-reconciliation');
+            // Safe removal from active tools
+            if (window.gisToolHost && window.gisToolHost.activeTools && typeof window.gisToolHost.activeTools.delete === 'function') {
+                window.gisToolHost.activeTools.delete('parent-child-reconciliation');
+            }
         });
         
-        // Initialize
+        // Initialize and register tool
         loadWorkOrders();
-        window.gisToolHost.activeTools.add('parent-child-reconciliation');
+        
+        // Safe registration with active tools
+        if (window.gisToolHost && window.gisToolHost.activeTools && typeof window.gisToolHost.activeTools.add === 'function') {
+            window.gisToolHost.activeTools.add('parent-child-reconciliation');
+        }
         
         updateStatus("Tool loaded successfully");
         
