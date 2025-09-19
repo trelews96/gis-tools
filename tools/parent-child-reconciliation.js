@@ -493,7 +493,7 @@
                 const undergroundMismatches = processCoincidences(undergroundCoincident, guidToQuantity);
                 const aerialMismatches = processCoincidences(aerialCoincident, guidToQuantity);
                 
-                let finalHTML = results.innerHTML;
+                let finalHTML = $("#results").innerHTML;
                 
                 if (undergroundMismatches.length > 0) {
                     finalHTML += '<h4 style="margin:8px 0 4px 0;font-size:11px;">';
