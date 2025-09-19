@@ -1,4 +1,4 @@
-// tools/attachment-manager.js - Converted from bookmarklet format
+// tools/attachment-manager.js - Complete conversion from bookmarklet format
 // Feature Attachment Manager with upload/download capabilities
 
 (function() {
@@ -186,17 +186,17 @@
             const header = new ArrayBuffer(30 + nameBytes.length);
             const view = new DataView(header);
             
-            view.setUint32(0, 0x04034b50, true);  // signature
-            view.setUint16(4, 20, true);          // version
-            view.setUint16(6, 0, true);           // flags
-            view.setUint16(8, 0, true);           // compression
-            view.setUint16(10, 0, true);          // time
-            view.setUint16(12, 0, true);          // date
-            view.setUint32(14, crc32, true);      // crc32
+            view.setUint32(0, 0x04034b50, true);
+            view.setUint16(4, 20, true);
+            view.setUint16(6, 0, true);
+            view.setUint16(8, 0, true);
+            view.setUint16(10, 0, true);
+            view.setUint16(12, 0, true);
+            view.setUint32(14, crc32, true);
             view.setUint32(18, compressedSize, true);
             view.setUint32(22, uncompressedSize, true);
             view.setUint16(26, nameBytes.length, true);
-            view.setUint16(28, 0, true);          // extra field length
+            view.setUint16(28, 0, true);
             
             new Uint8Array(header, 30).set(nameBytes);
             return header;
@@ -207,23 +207,23 @@
             const entry = new ArrayBuffer(46 + nameBytes.length);
             const view = new DataView(entry);
             
-            view.setUint32(0, 0x02014b50, true);  // signature
-            view.setUint16(4, 20, true);          // version made by
-            view.setUint16(6, 20, true);          // version needed
-            view.setUint16(8, 0, true);           // flags
-            view.setUint16(10, 0, true);          // compression
-            view.setUint16(12, 0, true);          // time
-            view.setUint16(14, 0, true);          // date
-            view.setUint32(16, crc32, true);      // crc32
+            view.setUint32(0, 0x02014b50, true);
+            view.setUint16(4, 20, true);
+            view.setUint16(6, 20, true);
+            view.setUint16(8, 0, true);
+            view.setUint16(10, 0, true);
+            view.setUint16(12, 0, true);
+            view.setUint16(14, 0, true);
+            view.setUint32(16, crc32, true);
             view.setUint32(20, compressedSize, true);
             view.setUint32(24, uncompressedSize, true);
             view.setUint16(28, nameBytes.length, true);
-            view.setUint16(30, 0, true);          // extra field length
-            view.setUint16(32, 0, true);          // comment length
-            view.setUint16(34, 0, true);          // disk number
-            view.setUint16(36, 0, true);          // internal attributes
-            view.setUint32(38, 0, true);          // external attributes
-            view.setUint32(42, offset, true);     // relative offset
+            view.setUint16(30, 0, true);
+            view.setUint16(32, 0, true);
+            view.setUint16(34, 0, true);
+            view.setUint16(36, 0, true);
+            view.setUint32(38, 0, true);
+            view.setUint32(42, offset, true);
             
             new Uint8Array(entry, 46).set(nameBytes);
             return entry;
@@ -233,14 +233,14 @@
             const endDir = new ArrayBuffer(22);
             const view = new DataView(endDir);
             
-            view.setUint32(0, 0x06054b50, true);   // signature
-            view.setUint16(4, 0, true);            // disk number
-            view.setUint16(6, 0, true);            // disk with central dir
-            view.setUint16(8, fileCount, true);    // entries on disk
-            view.setUint16(10, fileCount, true);   // total entries
+            view.setUint32(0, 0x06054b50, true);
+            view.setUint16(4, 0, true);
+            view.setUint16(6, 0, true);
+            view.setUint16(8, fileCount, true);
+            view.setUint16(10, fileCount, true);
             view.setUint32(12, centralDirSize, true);
             view.setUint32(16, centralDirOffset, true);
-            view.setUint16(20, 0, true);           // comment length
+            view.setUint16(20, 0, true);
             
             return endDir;
         }
@@ -278,9 +278,6 @@
             return layer;
         }
         
-        // [Continue with all the other function definitions from your original code...]
-        // I'll include the key functions here, but the pattern is the same for all
-        
         function setupLayerSelector() {
             const layerSelect = $("#layerSelect");
             layerSelect.addEventListener('change', (e) => {
@@ -311,6 +308,687 @@
             }
         }
         
+        function setupModeToggle() {
+            const modeRadios = toolBox.querySelectorAll('input[name="mode"]');
+            for (let i = 0; i < modeRadios.length; i++) {
+                const radio = modeRadios[i];
+                radio.addEventListener('change', (e) => {
+                    if (e.target.value === 'batch') {
+                        $("#batchControls").style.display = "block";
+                        $("#singleControls").style.display = "none";
+                        clearSingleSelection();
+                        if (clickHandler) {
+                            clickHandler.remove();
+                            clickHandler = null;
+                        }
+                    } else {
+                        $("#batchControls").style.display = "none";
+                        $("#singleControls").style.display = "block";
+                        selectedFeatures = [];
+                        mapView.graphics.removeAll();
+                        enableSingleSelection();
+                    }
+                });
+            }
+        }
+        
+        function enablePolygonSelection() {
+            if (clickHandler) {
+                clickHandler.remove();
+                clickHandler = null;
+            }
+            clearPolygonSelection();
+            
+            if (!sketchViewModel) {
+                try {
+                    if (window.require) {
+                        window.require(['esri/widgets/Sketch/SketchViewModel'], (SketchViewModel) => {
+                            sketchViewModel = new SketchViewModel({
+                                view: mapView,
+                                layer: mapView.graphics,
+                                polygonSymbol: {
+                                    type: 'simple-fill',
+                                    color: [255, 255, 0, 0.3],
+                                    outline: {
+                                        color: [255, 0, 0, 1],
+                                        width: 2
+                                    }
+                                }
+                            });
+                            
+                            sketchViewModel.on('create', (event) => {
+                                if (event.state === 'complete') {
+                                    polygonGraphic = event.graphic;
+                                    selectFeaturesInPolygon(polygonGraphic.geometry);
+                                    $("#clearPolygonBtn").style.display = "inline-block";
+                                }
+                            });
+                            
+                            startPolygonDrawing();
+                        });
+                    } else {
+                        alert('Unable to load polygon drawing tools. Using simplified selection.');
+                    }
+                } catch (e) {
+                    console.error('Error loading SketchViewModel:', e);
+                    alert('Polygon selection not available. Please use manual selection.');
+                }
+            } else {
+                startPolygonDrawing();
+            }
+            
+            function startPolygonDrawing() {
+                if (sketchViewModel) {
+                    sketchViewModel.create('polygon');
+                    updateStatus("Draw a polygon on the map to select features. Double-click to finish.");
+                }
+            }
+        }
+        
+        async function selectFeaturesInPolygon(polygon) {
+            try {
+                updateStatus("Selecting features within polygon...");
+                const layer = await getTargetLayer();
+                
+                const queryResult = await layer.queryFeatures({
+                    geometry: polygon,
+                    spatialRelationship: 'intersects',
+                    returnGeometry: true,
+                    outFields: ['*']
+                });
+                
+                selectedFeatures = queryResult.features.map(feature => ({
+                    attributes: feature.attributes,
+                    layer: layer,
+                    geometry: feature.geometry
+                }));
+                
+                queryResult.features.forEach(feature => {
+                    const highlightGraphic = {
+                        geometry: feature.geometry,
+                        symbol: {
+                            type: "simple-marker",
+                            color: [255, 255, 0, 0.8],
+                            size: 12,
+                            outline: {
+                                color: [255, 0, 0, 1],
+                                width: 2
+                            }
+                        }
+                    };
+                    mapView.graphics.add(highlightGraphic);
+                });
+                
+                $("#deselectBtn").style.display = "inline-block";
+                updateStatus(`Selected ${selectedFeatures.length} feature(s) within polygon. Click download to get attachments.`);
+            } catch (error) {
+                console.error("Polygon selection error:", error);
+                updateStatus("Error selecting features: " + error.message);
+            }
+        }
+        
+        function clearPolygonSelection() {
+            if (polygonGraphic) {
+                mapView.graphics.remove(polygonGraphic);
+                polygonGraphic = null;
+            }
+            mapView.graphics.removeAll();
+            $("#clearPolygonBtn").style.display = "none";
+            $("#deselectBtn").style.display = "none";
+            selectedFeatures = [];
+            updateStatus("Polygon selection cleared.");
+        }
+        
+        function enableBatchManualSelection() {
+            if (clickHandler) {
+                clickHandler.remove();
+            }
+            clearPolygonSelection();
+            
+            clickHandler = mapView.on("click", async (event) => {
+                try {
+                    updateStatus("Identifying features...");
+                    const response = await mapView.hitTest(event);
+                    const targetResults = response.results.filter(result => 
+                        result.graphic && result.graphic.layer && result.graphic.layer.layerId === currentTargetLayerId
+                    );
+                    
+                    if (targetResults.length > 0) {
+                        const graphic = targetResults[0].graphic;
+                        const objectId = graphic.attributes[graphic.layer.objectIdField];
+                        const alreadySelected = selectedFeatures.some(f => 
+                            f.attributes[f.layer.objectIdField] === objectId
+                        );
+                        
+                        if (!alreadySelected) {
+                            selectedFeatures.push({
+                                attributes: graphic.attributes,
+                                layer: graphic.layer
+                            });
+                            
+                            const highlightGraphic = {
+                                geometry: graphic.geometry,
+                                symbol: {
+                                    type: "simple-marker",
+                                    color: [255, 255, 0, 0.8],
+                                    size: 12,
+                                    outline: {
+                                        color: [255, 0, 0, 1],
+                                        width: 2
+                                    }
+                                }
+                            };
+                            mapView.graphics.add(highlightGraphic);
+                            
+                            $("#deselectBtn").style.display = "inline-block";
+                            updateStatus(`Selected ${selectedFeatures.length} feature(s). Click more or download attachments.`);
+                        } else {
+                            updateStatus("Feature already selected.");
+                        }
+                    } else {
+                        updateStatus(`No ${getCurrentLayerInfo().name.toLowerCase()} features found at this location.`);
+                    }
+                } catch (error) {
+                    console.error("Selection error:", error);
+                    updateStatus("Error selecting feature: " + error.message);
+                }
+            });
+            
+            updateStatus(`Manual selection enabled. Click on ${getCurrentLayerInfo().name.toLowerCase()} features to select them.`);
+        }
+        
+        function enableSingleSelection() {
+            if (clickHandler) {
+                clickHandler.remove();
+            }
+            
+            clickHandler = mapView.on("click", async (event) => {
+                try {
+                    updateStatus("Identifying feature...");
+                    const response = await mapView.hitTest(event);
+                    const targetResults = response.results.filter(result => 
+                        result.graphic && result.graphic.layer && result.graphic.layer.layerId === currentTargetLayerId
+                    );
+                    
+                    if (targetResults.length > 0) {
+                        const graphic = targetResults[0].graphic;
+                        clearSingleSelection();
+                        
+                        selectedSingleFeature = {
+                            attributes: graphic.attributes,
+                            layer: graphic.layer,
+                            geometry: graphic.geometry
+                        };
+                        
+                        const highlightGraphic = {
+                            geometry: graphic.geometry,
+                            symbol: {
+                                type: "simple-marker",
+                                color: [0, 255, 0, 0.8],
+                                size: 14,
+                                outline: {
+                                    color: [0, 150, 0, 1],
+                                    width: 3
+                                }
+                            }
+                        };
+                        mapView.graphics.add(highlightGraphic);
+                        
+                        const objectId = graphic.attributes[graphic.layer.objectIdField];
+                        const gisId = graphic.attributes.gis_id || graphic.attributes.GIS_ID || objectId;
+                        
+                        $("#featureDetails").innerHTML = `
+                            <strong>Layer:</strong> ${getCurrentLayerInfo().name}<br>
+                            <strong>GIS ID:</strong> ${gisId}<br>
+                            <strong>Object ID:</strong> ${objectId}
+                        `;
+                        $("#selectedFeatureInfo").style.display = "block";
+                        $("#downloadSingleBtn").style.display = "inline-block";
+                        $("#clearSingleBtn").style.display = "inline-block";
+                        $("#uploadArea").style.display = "block";
+                        
+                        updateStatus("Feature selected. You can now download or upload attachments.");
+                    } else {
+                        updateStatus(`No ${getCurrentLayerInfo().name.toLowerCase()} features found at this location.`);
+                    }
+                } catch (error) {
+                    console.error("Selection error:", error);
+                    updateStatus("Error selecting feature: " + error.message);
+                }
+            });
+            
+            updateStatus(`Single mode enabled. Click on a ${getCurrentLayerInfo().name.toLowerCase()} feature to select it.`);
+        }
+        
+        function clearSingleSelection() {
+            selectedSingleFeature = null;
+            mapView.graphics.removeAll();
+            $("#selectedFeatureInfo").style.display = "none";
+            $("#downloadSingleBtn").style.display = "none";
+            $("#clearSingleBtn").style.display = "none";
+            $("#uploadArea").style.display = "none";
+            $("#fileList").innerHTML = "";
+            $("#uploadBtn").style.display = "none";
+            filesToUpload = [];
+            updateStatus("Feature selection cleared.");
+        }
+        
+        function setupBatchRadioListeners() {
+            const radios = toolBox.querySelectorAll('input[name="selectionMethod"]');
+            for (let i = 0; i < radios.length; i++) {
+                const radio = radios[i];
+                radio.addEventListener('change', (e) => {
+                    if (e.target.value === 'manual') {
+                        enableBatchManualSelection();
+                        selectedFeatures = [];
+                        mapView.graphics.removeAll();
+                        $("#deselectBtn").style.display = "none";
+                        $("#clearPolygonBtn").style.display = "none";
+                    } else if (e.target.value === 'polygon') {
+                        enablePolygonSelection();
+                    } else {
+                        if (clickHandler) {
+                            clickHandler.remove();
+                            clickHandler = null;
+                        }
+                        clearPolygonSelection();
+                        selectedFeatures = [];
+                        mapView.graphics.removeAll();
+                        $("#deselectBtn").style.display = "none";
+                        updateStatus("Using current map selection.");
+                    }
+                });
+            }
+        }
+        
+        function setupFileUpload() {
+            const dropZone = $("#dropZone");
+            const fileInput = $("#fileInput");
+            
+            dropZone.addEventListener('click', () => fileInput.click());
+            
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#007acc";
+                dropZone.style.backgroundColor = "#f0f8ff";
+            });
+            
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#ccc";
+                dropZone.style.backgroundColor = "#f9f9f9";
+            });
+            
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#ccc";
+                dropZone.style.backgroundColor = "#f9f9f9";
+                const files = Array.from(e.dataTransfer.files);
+                addFilesToUpload(files);
+            });
+            
+            fileInput.addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                addFilesToUpload(files);
+            });
+            
+            function addFilesToUpload(files) {
+                files.forEach(file => {
+                    if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
+                        filesToUpload.push(file);
+                    }
+                });
+                updateFileList();
+            }
+            
+            function updateFileList() {
+                const fileListDiv = $("#fileList");
+                
+                if (filesToUpload.length === 0) {
+                    fileListDiv.innerHTML = "";
+                    $("#uploadBtn").style.display = "none";
+                    return;
+                }
+                
+                let html = "<div style='font-weight:bold;margin-bottom:4px;'>Files to upload:</div>";
+                filesToUpload.forEach((file, index) => {
+                    html += `
+                        <div style='display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;background:#fff;'>
+                            <span style='font-size:11px;'>${file.name} (${(file.size / 1024).toFixed(1)}KB)</span>
+                            <button onclick='window.removeFile(${index})' style='background:#ff4444;color:white;border:none;padding:2px 6px;font-size:10px;cursor:pointer;'>×</button>
+                        </div>
+                    `;
+                });
+                fileListDiv.innerHTML = html;
+                $("#uploadBtn").style.display = "inline-block";
+            }
+            
+            // Global function for removing files
+            window.removeFile = function(index) {
+                filesToUpload.splice(index, 1);
+                updateFileList();
+            };
+        }
+        
+        async function downloadBatchAttachments() {
+            try {
+                updateStatus("Preparing download...");
+                $("#resultsDiv").innerHTML = "";
+                
+                const layer = await getTargetLayer();
+                let features = [];
+                
+                const selectionMethod = toolBox.querySelector('input[name="selectionMethod"]:checked').value;
+                if (selectionMethod === 'current') {
+                    if (mapView.popup.selectedFeature && mapView.popup.selectedFeature.layer && 
+                        mapView.popup.selectedFeature.layer.layerId === currentTargetLayerId) {
+                        features = [mapView.popup.selectedFeature];
+                    } else {
+                        const layerView = mapView.allLayerViews.find(lv => lv.layer.layerId === currentTargetLayerId);
+                        if (layerView && layerView.highlightedFeatures && layerView.highlightedFeatures.length > 0) {
+                            features = layerView.highlightedFeatures.toArray();
+                        }
+                    }
+                } else {
+                    features = selectedFeatures;
+                }
+                
+                if (!features.length) {
+                    alert(`No ${getCurrentLayerInfo().name.toLowerCase()} features selected. Please select features first.`);
+                    return;
+                }
+                
+                const downloadFormat = toolBox.querySelector('input[name="downloadFormat"]:checked').value;
+                updateStatus(`Found ${features.length} selected feature(s). Checking for attachments...`);
+                
+                let totalAttachments = 0;
+                let downloadedCount = 0;
+                const results = [];
+                const zipFiles = [];
+                
+                for (let i = 0; i < features.length; i++) {
+                    const feature = features[i];
+                    const objectId = feature.attributes[layer.objectIdField];
+                    
+                    updateStatus(`Checking feature ${i + 1}/${features.length} for attachments...`);
+                    
+                    try {
+                        const attachmentQuery = await layer.queryAttachments({
+                            objectIds: [objectId],
+                            returnMetadata: true
+                        });
+                        
+                        if (attachmentQuery[objectId] && attachmentQuery[objectId].length > 0) {
+                            const attachments = attachmentQuery[objectId];
+                            totalAttachments += attachments.length;
+                            results.push({
+                                objectId: objectId,
+                                attachments: attachments,
+                                success: true
+                            });
+                            
+                            for (const attachment of attachments) {
+                                try {
+                                    updateStatus(`Downloading: ${attachment.name} (${downloadedCount + 1}/${totalAttachments})...`);
+                                    const response = await fetch(attachment.url);
+                                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                                    
+                                    const blob = await response.blob();
+                                    const gisId = feature.attributes.gis_id || feature.attributes.GIS_ID || objectId;
+                                    const fileName = `${getCurrentLayerInfo().name.replace(/\s+/g, '')}_GIS_${gisId}_${attachment.name}`;
+                                    
+                                    if (downloadFormat === 'zip') {
+                                        const arrayBuffer = await blob.arrayBuffer();
+                                        zipFiles.push({
+                                            name: fileName,
+                                            data: arrayBuffer
+                                        });
+                                    } else {
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = fileName;
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        a.remove();
+                                        URL.revokeObjectURL(url);
+                                    }
+                                    
+                                    downloadedCount++;
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                } catch (downloadError) {
+                                    console.error(`Error downloading ${attachment.name}:`, downloadError);
+                                }
+                            }
+                        } else {
+                            results.push({
+                                objectId: objectId,
+                                attachments: [],
+                                success: true
+                            });
+                        }
+                    } catch (error) {
+                        console.error(`Error querying attachments for ObjectID ${objectId}:`, error);
+                        results.push({
+                            objectId: objectId,
+                            error: error.message,
+                            success: false
+                        });
+                    }
+                }
+                
+                if (downloadFormat === 'zip' && zipFiles.length > 0) {
+                    updateStatus("Creating ZIP file...");
+                    const today = new Date().toISOString().split('T')[0];
+                    const zipName = `${getCurrentLayerInfo().name.replace(/\s+/g, '')}_Attachments_${today}.zip`;
+                    const zipBlob = createZipFile(zipFiles, zipName);
+                    
+                    const url = URL.createObjectURL(zipBlob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = zipName;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                }
+                
+                let resultsHTML = `<div style="margin-top:12px;"><strong>Download Results (${getCurrentLayerInfo().name}):</strong></div>`;
+                resultsHTML += `<div>Total Features: ${features.length}</div>`;
+                resultsHTML += `<div>Total Attachments Found: ${totalAttachments}</div>`;
+                resultsHTML += `<div>Downloaded: ${downloadedCount}</div>`;
+                
+                if (downloadFormat === 'zip' && zipFiles.length > 0) {
+                    resultsHTML += `<div>Format: ZIP file with ${zipFiles.length} files</div>`;
+                }
+                
+                resultsHTML += `<br><div style="max-height:200px;overflow-y:auto;">`;
+                results.forEach(result => {
+                    if (result.success) {
+                        resultsHTML += `<div>ObjectID ${result.objectId}: ${result.attachments.length} attachment(s)</div>`;
+                        result.attachments.forEach(att => {
+                            resultsHTML += `<div style="margin-left:20px;font-size:11px;color:#666;">• ${att.name}</div>`;
+                        });
+                    } else {
+                        resultsHTML += `<div style="color:#d32f2f;">ObjectID ${result.objectId}: Error - ${result.error}</div>`;
+                    }
+                });
+                resultsHTML += `</div>`;
+                
+                $("#resultsDiv").innerHTML = resultsHTML;
+                updateStatus(downloadFormat === 'zip' ? 
+                    `ZIP download completed! ${downloadedCount} files in archive.` :
+                    `Download completed! ${downloadedCount} files downloaded.`);
+                
+            } catch (error) {
+                console.error("Download error:", error);
+                updateStatus("Error: " + error.message);
+                alert("Error downloading attachments: " + error.message);
+            }
+        }
+        
+        async function downloadSingleAttachments() {
+            try {
+                if (!selectedSingleFeature) {
+                    alert("Please select a feature first.");
+                    return;
+                }
+                
+                updateStatus("Downloading attachments...");
+                $("#resultsDiv").innerHTML = "";
+                
+                const layer = await getTargetLayer();
+                const objectId = selectedSingleFeature.attributes[layer.objectIdField];
+                
+                const attachmentQuery = await layer.queryAttachments({
+                    objectIds: [objectId],
+                    returnMetadata: true
+                });
+                
+                if (!attachmentQuery[objectId] || attachmentQuery[objectId].length === 0) {
+                    updateStatus("No attachments found for this feature.");
+                    $("#resultsDiv").innerHTML = "<div>No attachments found.</div>";
+                    return;
+                }
+                
+                const attachments = attachmentQuery[objectId];
+                let downloadedCount = 0;
+                
+                for (const attachment of attachments) {
+                    try {
+                        updateStatus(`Downloading: ${attachment.name} (${downloadedCount + 1}/${attachments.length})...`);
+                        const response = await fetch(attachment.url);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        
+                        const blob = await response.blob();
+                        const url = URL.createObjectURL(blob);
+                        const gisId = selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || objectId;
+                        
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `${getCurrentLayerInfo().name.replace(/\s+/g, '')}_GIS_${gisId}_${attachment.name}`;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                        
+                        downloadedCount++;
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    } catch (downloadError) {
+                        console.error(`Error downloading ${attachment.name}:`, downloadError);
+                    }
+                }
+                
+                let resultsHTML = `<div style="margin-top:12px;"><strong>Download Results (${getCurrentLayerInfo().name}):</strong></div>`;
+                resultsHTML += `<div>Feature: ${selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || objectId}</div>`;
+                resultsHTML += `<div>Downloaded: ${downloadedCount}/${attachments.length} attachments</div><br>`;
+                resultsHTML += `<div style="max-height:150px;overflow-y:auto;">`;
+                attachments.forEach(att => {
+                    resultsHTML += `<div style="font-size:11px;color:#666;">• ${att.name}</div>`;
+                });
+                resultsHTML += `</div>`;
+                
+                $("#resultsDiv").innerHTML = resultsHTML;
+                updateStatus(`Download completed! ${downloadedCount} files downloaded.`);
+                
+            } catch (error) {
+                console.error("Download error:", error);
+                updateStatus("Error: " + error.message);
+                alert("Error downloading attachments: " + error.message);
+            }
+        }
+        
+        async function uploadAttachments() {
+            try {
+                if (!selectedSingleFeature) {
+                    alert("Please select a feature first.");
+                    return;
+                }
+                
+                if (filesToUpload.length === 0) {
+                    alert("Please select files to upload.");
+                    return;
+                }
+                
+                updateStatus("Uploading attachments...");
+                $("#resultsDiv").innerHTML = "";
+                
+                const layer = await getTargetLayer();
+                const objectId = selectedSingleFeature.attributes[layer.objectIdField];
+                let uploadedCount = 0;
+                let failedCount = 0;
+                const results = [];
+                
+                for (let i = 0; i < filesToUpload.length; i++) {
+                    const file = filesToUpload[i];
+                    try {
+                        updateStatus(`Uploading: ${file.name} (${i + 1}/${filesToUpload.length})...`);
+                        
+                        const feature = selectedSingleFeature;
+                        const formData = new FormData();
+                        formData.append('attachment', file);
+                        formData.append('f', 'json');
+                        
+                        const uploadResult = await layer.addAttachment(feature, formData);
+                        console.log('Upload success:', uploadResult);
+                        
+                        results.push({
+                            fileName: file.name,
+                            success: true,
+                            result: uploadResult
+                        });
+                        uploadedCount++;
+                    } catch (error) {
+                        console.error(`Error uploading ${file.name}:`, error);
+                        results.push({
+                            fileName: file.name,
+                            success: false,
+                            error: error.message || error
+                        });
+                        failedCount++;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                
+                let resultsHTML = `<div style="margin-top:12px;"><strong>Upload Results (${getCurrentLayerInfo().name}):</strong></div>`;
+                resultsHTML += `<div>Feature: ${selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || objectId}</div>`;
+                resultsHTML += `<div>Uploaded: ${uploadedCount}/${filesToUpload.length} files</div>`;
+                if (failedCount > 0) resultsHTML += `<div style="color:#d32f2f;">Failed: ${failedCount} files</div>`;
+                resultsHTML += `<br><div style="max-height:150px;overflow-y:auto;">`;
+                
+                results.forEach(result => {
+                    if (result.success) {
+                        resultsHTML += `<div style="color:#2e7d32;">✓ ${result.fileName}</div>`;
+                    } else {
+                        resultsHTML += `<div style="color:#d32f2f;">✗ ${result.fileName} - ${result.error}</div>`;
+                    }
+                });
+                resultsHTML += `</div>`;
+                
+                $("#resultsDiv").innerHTML = resultsHTML;
+                updateStatus(`Upload completed! ${uploadedCount} files uploaded.`);
+                
+                filesToUpload = [];
+                $("#fileList").innerHTML = "";
+                $("#uploadBtn").style.display = "none";
+                
+            } catch (error) {
+                console.error("Upload error:", error);
+                updateStatus("Error: " + error.message);
+                alert("Error uploading attachments: " + error.message);
+            }
+        }
+        
+        function deselectAllFeatures() {
+            selectedFeatures = [];
+            mapView.graphics.removeAll();
+            $("#deselectBtn").style.display = "none";
+            $("#clearPolygonBtn").style.display = "none";
+            updateStatus("All features deselected.");
+            $("#resultsDiv").innerHTML = "";
+        }
+        
         // Tool cleanup function
         function cleanup() {
             if (clickHandler) {
@@ -322,21 +1000,28 @@
                 sketchViewModel = null;
             }
             mapView.graphics.removeAll();
+            
+            // Clean up global function
+            if (window.removeFile) {
+                delete window.removeFile;
+            }
+            
             toolBox.remove();
             console.log('Attachment Manager cleaned up');
         }
         
-        // [Include all other functions from your original code with minimal changes...]
-        // The bulk of the functionality remains the same, just wrapped in this module structure
-        
-        // Event listeners
+        // Setup all event listeners
         setupLayerSelector();
-        // setupModeToggle();
-        // setupBatchRadioListeners();
-        // setupFileUpload();
+        setupModeToggle();
+        setupBatchRadioListeners();
+        setupFileUpload();
         
-        // [All your other event listener setups...]
-        
+        $("#downloadBtn").onclick = downloadBatchAttachments;
+        $("#downloadSingleBtn").onclick = downloadSingleAttachments;
+        $("#uploadBtn").onclick = uploadAttachments;
+        $("#deselectBtn").onclick = deselectAllFeatures;
+        $("#clearSingleBtn").onclick = clearSingleSelection;
+        $("#clearPolygonBtn").onclick = clearPolygonSelection;
         $("#closeTool").onclick = () => {
             window.gisToolHost.closeTool('attachment-manager');
         };
@@ -356,4 +1041,4 @@
         console.error('Error loading Attachment Manager:', error);
         alert("Error creating Attachment Manager: " + (error.message || error));
     }
-})();
+})()
