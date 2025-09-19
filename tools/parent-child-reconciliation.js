@@ -451,10 +451,10 @@
                     returnGeometry: true
                 }));
                 
-                const results = await Promise.all(promises);
-                const undergroundFeatures = results[0].features;
-                const aerialFeatures = results[1].features;
-                const fiberFeatures = results[2].features;
+                const queryResults = await Promise.all(promises);
+                const undergroundFeatures = queryResults[0].features;
+                const aerialFeatures = queryResults[1].features;
+                const fiberFeatures = queryResults[2].features;
                 
                 const undergroundCoincident = findCoincidentFeatures(undergroundFeatures, fiberFeatures);
                 const aerialCoincident = findCoincidentFeatures(aerialFeatures, fiberFeatures);
@@ -493,6 +493,7 @@
                 const undergroundMismatches = processCoincidences(undergroundCoincident, guidToQuantity);
                 const aerialMismatches = processCoincidences(aerialCoincident, guidToQuantity);
                 
+                // Preserve the existing labor summary
                 let finalHTML = $("#results").innerHTML;
                 
                 if (undergroundMismatches.length > 0) {
