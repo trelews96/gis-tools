@@ -459,12 +459,12 @@
         async function findCoincidentLinesForVertexCreation(screenPoint, mapPoint) {
             try {
                 const coincidentLines = [];
-                const queryTolerance = 20; // Small extent for query
-                const snapTolerance = 50; // Larger tolerance for actual snapping
+                const bufferDistanceFeet = 10;
+                const bufferDistanceMeters = bufferDistanceFeet / 3.28084;
                 
                 console.log(`Looking for lines to add vertex at: ${mapPoint.x}, ${mapPoint.y}`);
                 
-                // Try hit test first - this is often more reliable and doesn't query many features
+                // Try hit test first - this is often more reliable and efficient
                 if (mapView.hitTest) {
                     const hitResponse = await mapView.hitTest(screenPoint, {
                         include: mapView.map.allLayers.filter(l => l.type === "feature")
@@ -476,8 +476,8 @@
                                 const layerConfig = LAYER_CONFIG.lines.find(l => l.id === result.layer.layerId);
                                 if (layerConfig) {
                                     const segmentInfo = findClosestLineSegment(result.graphic.geometry, mapPoint);
-                                    if (segmentInfo && segmentInfo.distance <= snapTolerance) {
-                                        console.log(`Hit test found line from layer: ${layerConfig.name}, distance: ${segmentInfo.distance.toFixed(1)}`);
+                                    if (segmentInfo && segmentInfo.distance <= bufferDistanceMeters) {
+                                        console.log(`Hit test found line from layer: ${layerConfig.name}, distance: ${segmentInfo.distance.toFixed(1)}m`);
                                         coincidentLines.push({
                                             feature: result.graphic,
                                             layer: result.layer,
@@ -502,31 +502,33 @@
                             
                             await layer.load();
                             
-                            // Use a small extent for the query
-                            const extent = {
-                                xmin: mapPoint.x - queryTolerance,
-                                ymin: mapPoint.y - queryTolerance,
-                                xmax: mapPoint.x + queryTolerance,
-                                ymax: mapPoint.y + queryTolerance,
-                                spatialReference: mapView.spatialReference
+                            // Create a buffered point geometry for the query
+                            const bufferedGeometry = {
+                                type: "polygon",
+                                spatialReference: mapPoint.spatialReference,
+                                rings: [[
+                                    [mapPoint.x - bufferDistanceMeters, mapPoint.y - bufferDistanceMeters],
+                                    [mapPoint.x + bufferDistanceMeters, mapPoint.y - bufferDistanceMeters],
+                                    [mapPoint.x + bufferDistanceMeters, mapPoint.y + bufferDistanceMeters],
+                                    [mapPoint.x - bufferDistanceMeters, mapPoint.y + bufferDistanceMeters],
+                                    [mapPoint.x - bufferDistanceMeters, mapPoint.y - bufferDistanceMeters]
+                                ]]
                             };
                             
                             const result = await layer.queryFeatures({
-                                geometry: extent,
+                                geometry: bufferedGeometry,
                                 spatialRelationship: "intersects",
                                 returnGeometry: true,
                                 outFields: ["*"],
-                                maxRecordCount: 50 // Limit the number of features returned
+                                maxRecordCount: 50
                             });
                             
-                            if (result.features.length > 25) {
-                                console.warn(`Layer ${lineConfig.name} returned ${result.features.length} features for vertex creation - query area may be too large`);
-                            }
+                            console.log(`Layer ${lineConfig.name} returned ${result.features.length} features for vertex creation`);
                             
                             let foundForLayer = 0;
                             for (const feature of result.features) {
                                 const segmentInfo = findClosestLineSegment(feature.geometry, mapPoint);
-                                if (segmentInfo && segmentInfo.distance <= snapTolerance) {
+                                if (segmentInfo && segmentInfo.distance <= bufferDistanceMeters) {
                                     foundForLayer++;
                                     coincidentLines.push({
                                         feature: feature,
@@ -654,9 +656,9 @@
         
         async function findConnectedLines(pointGeometry) {
             const connected = [];
-            // Much smaller tolerance for the initial spatial query
-            const queryTolerance = 10; // Small extent for query
-            const connectionTolerance = 50; // Larger tolerance for actual connection check
+            const bufferDistanceFeet = 10;
+            // Convert feet to meters for Web Mercator (approximately 3.28 feet per meter)
+            const bufferDistanceMeters = bufferDistanceFeet / 3.28084;
             
             console.log(`Looking for connected lines near point: ${pointGeometry.x}, ${pointGeometry.y}`);
             
@@ -669,29 +671,28 @@
                     
                     await layer.load();
                     
-                    // Use a very small extent for the initial query
-                    const extent = {
-                        xmin: pointGeometry.x - queryTolerance,
-                        ymin: pointGeometry.y - queryTolerance,
-                        xmax: pointGeometry.x + queryTolerance,
-                        ymax: pointGeometry.y + queryTolerance,
-                        spatialReference: pointGeometry.spatialReference
+                    // Create a buffered point geometry for the query
+                    const bufferedGeometry = {
+                        type: "polygon",
+                        spatialReference: pointGeometry.spatialReference,
+                        rings: [[
+                            [pointGeometry.x - bufferDistanceMeters, pointGeometry.y - bufferDistanceMeters],
+                            [pointGeometry.x + bufferDistanceMeters, pointGeometry.y - bufferDistanceMeters],
+                            [pointGeometry.x + bufferDistanceMeters, pointGeometry.y + bufferDistanceMeters],
+                            [pointGeometry.x - bufferDistanceMeters, pointGeometry.y + bufferDistanceMeters],
+                            [pointGeometry.x - bufferDistanceMeters, pointGeometry.y - bufferDistanceMeters]
+                        ]]
                     };
                     
                     const result = await layer.queryFeatures({
-                        geometry: extent,
+                        geometry: bufferedGeometry,
                         spatialRelationship: "intersects",
                         returnGeometry: true,
                         outFields: ["*"],
-                        maxRecordCount: 100 // Limit the number of features returned
+                        maxRecordCount: 100
                     });
                     
                     console.log(`Layer ${lineConfig.name} returned ${result.features.length} features`);
-                    
-                    // If we got too many features, the query tolerance is probably too large
-                    if (result.features.length > 50) {
-                        console.warn(`Layer ${lineConfig.name} returned ${result.features.length} features - query area may be too large`);
-                    }
                     
                     let foundConnections = 0;
                     
@@ -710,16 +711,16 @@
                             const startDistance = calculateDistance(pointGeometry, startPoint);
                             const endDistance = calculateDistance(pointGeometry, endPoint);
                             
-                            // Use the larger tolerance for actual connection detection
-                            if (startDistance < connectionTolerance) {
+                            // Use the buffer distance for connection detection
+                            if (startDistance < bufferDistanceMeters) {
                                 connectionInfo = { pathIndex, pointIndex: 0, isStart: true };
                                 foundConnections++;
-                                console.log(`Found connection at start of feature ${feature.attributes.objectid}, distance: ${startDistance.toFixed(1)}`);
+                                console.log(`Found connection at start of feature ${feature.attributes.objectid}, distance: ${startDistance.toFixed(1)}m`);
                                 break;
-                            } else if (endDistance < connectionTolerance) {
+                            } else if (endDistance < bufferDistanceMeters) {
                                 connectionInfo = { pathIndex, pointIndex: path.length - 1, isStart: false };
                                 foundConnections++;
-                                console.log(`Found connection at end of feature ${feature.attributes.objectid}, distance: ${endDistance.toFixed(1)}`);
+                                console.log(`Found connection at end of feature ${feature.attributes.objectid}, distance: ${endDistance.toFixed(1)}m`);
                                 break;
                             }
                         }
