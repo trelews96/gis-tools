@@ -457,27 +457,36 @@
         async function findCoincidentLinesForVertexCreation(screenPoint, mapPoint) {
             try {
                 const coincidentLines = [];
-                const tolerance = SNAP_TOLERANCE * (mapView.resolution || 1) * 3;
+                const tolerance = SNAP_TOLERANCE * (mapView.resolution || 1) * 2; // Reduced multiplier
                 
-                // Try hit test first
+                console.log(`Looking for lines to add vertex at: ${mapPoint.x}, ${mapPoint.y} with tolerance: ${tolerance}`);
+                
+                // Try hit test first - this is often more reliable
                 if (mapView.hitTest) {
+                    console.log("Trying hit test for vertex creation...");
                     const hitResponse = await mapView.hitTest(screenPoint, {
                         include: mapView.map.allLayers.filter(l => l.type === "feature")
                     });
+                    
+                    console.log(`Hit test returned ${hitResponse.results.length} results`);
                     
                     if (hitResponse.results.length > 0) {
                         for (const result of hitResponse.results) {
                             if (result.graphic && result.graphic.geometry && result.graphic.geometry.type === "polyline") {
                                 const layerConfig = LAYER_CONFIG.lines.find(l => l.id === result.layer.layerId);
                                 if (layerConfig) {
+                                    console.log(`Hit test found line from layer: ${layerConfig.name}`);
                                     const segmentInfo = findClosestLineSegment(result.graphic.geometry, mapPoint);
                                     if (segmentInfo) {
+                                        console.log(`Segment info found, distance: ${segmentInfo.distance}`);
                                         coincidentLines.push({
                                             feature: result.graphic,
                                             layer: result.layer,
                                             layerConfig: layerConfig,
                                             segmentInfo: segmentInfo
                                         });
+                                    } else {
+                                        console.log("No segment info found for hit test result");
                                     }
                                 }
                             }
@@ -489,17 +498,29 @@
                 for (const lineConfig of LAYER_CONFIG.lines) {
                     try {
                         const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
-                        if (!layer || !layer.visible || coincidentLines.some(cl => cl.layer.layerId === lineConfig.id)) continue;
+                        if (!layer || !layer.visible) {
+                            console.log(`Skipping layer ${lineConfig.name} - not found or not visible`);
+                            continue;
+                        }
+                        
+                        // Skip if already found by hit test
+                        if (coincidentLines.some(cl => cl.layer.layerId === lineConfig.id)) {
+                            console.log(`Skipping layer ${lineConfig.name} - already found by hit test`);
+                            continue;
+                        }
                         
                         await layer.load();
                         
+                        // Use a larger extent for the query
                         const extent = {
-                            xmin: mapPoint.x - tolerance * 3,
-                            ymin: mapPoint.y - tolerance * 3,
-                            xmax: mapPoint.x + tolerance * 3,
-                            ymax: mapPoint.y + tolerance * 3,
+                            xmin: mapPoint.x - tolerance,
+                            ymin: mapPoint.y - tolerance,
+                            xmax: mapPoint.x + tolerance,
+                            ymax: mapPoint.y + tolerance,
                             spatialReference: mapView.spatialReference
                         };
+                        
+                        console.log(`Querying layer ${lineConfig.name} with extent:`, extent);
                         
                         const result = await layer.queryFeatures({
                             geometry: extent,
@@ -508,19 +529,24 @@
                             outFields: ["*"]
                         });
                         
+                        console.log(`Layer ${lineConfig.name} query returned ${result.features.length} features`);
+                        
                         for (const feature of result.features) {
                             const segmentInfo = findClosestLineSegment(feature.geometry, mapPoint);
                             if (segmentInfo) {
-                                coincidentLines.push({
-                                    feature: feature,
-                                    layer: layer,
-                                    layerConfig: lineConfig,
-                                    segmentInfo: segmentInfo
-                                });
+                                console.log(`Found segment for vertex creation in ${lineConfig.name}, distance: ${segmentInfo.distance}, tolerance: ${tolerance}`);
+                                if (segmentInfo.distance <= tolerance) {
+                                    coincidentLines.push({
+                                        feature: feature,
+                                        layer: layer,
+                                        layerConfig: lineConfig,
+                                        segmentInfo: segmentInfo
+                                    });
+                                }
                             }
                         }
                     } catch (error) {
-                        console.error("Error querying line layer for vertex creation:", error);
+                        console.error(`Error querying line layer ${lineConfig.name} for vertex creation:`, error);
                     }
                 }
                 
@@ -624,12 +650,17 @@
         
         async function findConnectedLines(pointGeometry) {
             const connected = [];
-            const tolerance = (mapView.resolution || 1) * 5;
+            const tolerance = (mapView.resolution || 1) * 10; // Increased tolerance
+            
+            console.log(`Looking for connected lines near point: ${pointGeometry.x}, ${pointGeometry.y} with tolerance: ${tolerance}`);
             
             for (const lineConfig of LAYER_CONFIG.lines) {
                 try {
                     const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
-                    if (!layer) continue;
+                    if (!layer || !layer.visible) {
+                        console.log(`Skipping layer ${lineConfig.name} - not found or not visible`);
+                        continue;
+                    }
                     
                     await layer.load();
                     
@@ -648,6 +679,8 @@
                         outFields: ["*"]
                     });
                     
+                    console.log(`Layer ${lineConfig.name} returned ${result.features.length} features`);
+                    
                     for (const feature of result.features) {
                         const geometry = feature.geometry;
                         if (!geometry || !geometry.paths) continue;
@@ -655,17 +688,23 @@
                         let connectionInfo = null;
                         for (let pathIndex = 0; pathIndex < geometry.paths.length; pathIndex++) {
                             const path = geometry.paths[pathIndex];
+                            if (path.length < 2) continue;
+                            
                             const startPoint = { x: path[0][0], y: path[0][1] };
                             const endPoint = { x: path[path.length - 1][0], y: path[path.length - 1][1] };
                             
                             const startDistance = calculateDistance(pointGeometry, startPoint);
                             const endDistance = calculateDistance(pointGeometry, endPoint);
                             
+                            console.log(`Feature ${feature.attributes.objectid}: start distance = ${startDistance}, end distance = ${endDistance}, tolerance = ${tolerance}`);
+                            
                             if (startDistance < tolerance) {
                                 connectionInfo = { pathIndex, pointIndex: 0, isStart: true };
+                                console.log(`Found connection at start of feature ${feature.attributes.objectid}`);
                                 break;
                             } else if (endDistance < tolerance) {
                                 connectionInfo = { pathIndex, pointIndex: path.length - 1, isStart: false };
+                                console.log(`Found connection at end of feature ${feature.attributes.objectid}`);
                                 break;
                             }
                         }
@@ -684,10 +723,11 @@
                         }
                     }
                 } catch (error) {
-                    console.error("Error finding connected lines:", error);
+                    console.error(`Error finding connected lines for layer ${lineConfig.name}:`, error);
                 }
             }
             
+            console.log(`Found ${connected.length} connected lines total`);
             return connected;
         }
         
@@ -740,7 +780,7 @@
             updateStatus("Adding vertex to line...");
             
             try {
-                console.log("Ctrl+Click detected - searching for lines...");
+                console.log("Add vertex triggered - searching for lines...");
                 const coincidentLines = await findCoincidentLinesForVertexCreation(screenPoint, mapPoint);
                 console.log(`Found ${coincidentLines.length} lines for vertex addition`);
                 
@@ -928,17 +968,20 @@
             
             event.stopPropagation();
             
-            // Check for modifier keys
-            if (event.ctrlKey && vertexMode === "add") {
+            // Handle vertex modification modes first
+            if (vertexMode === "add") {
+                console.log("Add vertex mode - handling click");
                 await addVertexToLine(event);
                 return;
             }
             
-            if (event.altKey && vertexMode === "delete") {
+            if (vertexMode === "delete") {
+                console.log("Delete vertex mode - handling click");
                 await deleteVertexFromLine(event);
                 return;
             }
             
+            // Handle feature selection and movement
             if (!selectedFeature) {
                 await handleFeatureSelection(event);
             } else if (!waitingForDestination) {
@@ -1076,7 +1119,7 @@
             
             if (toolActive) {
                 updateStatus(vertexMode === "add" ? 
-                    "Add Vertex mode active. Click on any line segment to add a vertex." : 
+                    "Add Vertex mode active. Click anywhere on a line to add a vertex at that location." : 
                     "Mode cleared. Click on features to select them.");
             }
         }
@@ -1091,7 +1134,7 @@
             
             if (toolActive) {
                 updateStatus(vertexMode === "delete" ? 
-                    "Delete Vertex mode active. Click on any vertex to delete it." : 
+                    "Delete Vertex mode active. Click on any existing vertex to delete it." : 
                     "Mode cleared. Click on features to select them.");
             }
         }
