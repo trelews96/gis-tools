@@ -693,33 +693,4 @@
         alert("Error creating Parent/Child Reconciliation Tool: " + (error.message || error));
     }
 })();",
-                        repeatLabel: false,
-                        removeDuplicates: "none"
-                    }];
-                    undergroundLayer.labelsVisible = true;
-                }
-                
-                if (aerialMismatches.length > 0 && aerialLayer) {
-                    const aerialOids = aerialMismatches.map(x => x.spanOid);
-                    aerialLayer.definitionExpression = "objectid IN (" + aerialOids.join(",") + ")";
-                    
-                    const aerialLabels = [];
-                    for (const guid in guidToQuantity) {
-                        aerialLabels.push('"' + guid + '"');
-                        aerialLabels.push('"Aerial: ' + guidToQuantity[guid] + '"');
-                    }
-                    
-                    const aerialExpression = 'var id=$feature.globalid; Decode(id,' + aerialLabels.join(',') + ',"Aerial: N/A")';
-                    
-                    aerialLayer.labelingInfo = [{
-                        labelExpressionInfo: { expression: aerialExpression },
-                        symbol: {
-                            type: "text",
-                            color: "purple",
-                            haloSize: 3,
-                            haloColor: "white",
-                            font: { size: 16, family: "Arial", weight: "bold" },
-                            xoffset: 40,
-                            yoffset: -30
-                        },
-                        deconflictionStrategy: "none
+                        
