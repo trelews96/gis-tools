@@ -459,11 +459,12 @@
         async function findCoincidentLinesForVertexCreation(screenPoint, mapPoint) {
             try {
                 const coincidentLines = [];
-                const tolerance = 50; // Fixed tolerance instead of resolution-based
+                const queryTolerance = 20; // Small extent for query
+                const snapTolerance = 50; // Larger tolerance for actual snapping
                 
-                console.log(`Looking for lines to add vertex at: ${mapPoint.x}, ${mapPoint.y} with tolerance: ${tolerance}`);
+                console.log(`Looking for lines to add vertex at: ${mapPoint.x}, ${mapPoint.y}`);
                 
-                // Try hit test first - this is often more reliable
+                // Try hit test first - this is often more reliable and doesn't query many features
                 if (mapView.hitTest) {
                     const hitResponse = await mapView.hitTest(screenPoint, {
                         include: mapView.map.allLayers.filter(l => l.type === "feature")
@@ -475,7 +476,7 @@
                                 const layerConfig = LAYER_CONFIG.lines.find(l => l.id === result.layer.layerId);
                                 if (layerConfig) {
                                     const segmentInfo = findClosestLineSegment(result.graphic.geometry, mapPoint);
-                                    if (segmentInfo && segmentInfo.distance <= tolerance) {
+                                    if (segmentInfo && segmentInfo.distance <= snapTolerance) {
                                         console.log(`Hit test found line from layer: ${layerConfig.name}, distance: ${segmentInfo.distance.toFixed(1)}`);
                                         coincidentLines.push({
                                             feature: result.graphic,
@@ -490,55 +491,58 @@
                     }
                 }
                 
-                // Query remaining layers not found by hit test
-                for (const lineConfig of LAYER_CONFIG.lines) {
-                    try {
-                        const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
-                        if (!layer || !layer.visible) {
-                            continue;
-                        }
-                        
-                        // Skip if already found by hit test
-                        if (coincidentLines.some(cl => cl.layer.layerId === lineConfig.id)) {
-                            continue;
-                        }
-                        
-                        await layer.load();
-                        
-                        const extent = {
-                            xmin: mapPoint.x - tolerance,
-                            ymin: mapPoint.y - tolerance,
-                            xmax: mapPoint.x + tolerance,
-                            ymax: mapPoint.y + tolerance,
-                            spatialReference: mapView.spatialReference
-                        };
-                        
-                        const result = await layer.queryFeatures({
-                            geometry: extent,
-                            spatialRelationship: "intersects",
-                            returnGeometry: true,
-                            outFields: ["*"]
-                        });
-                        
-                        let foundForLayer = 0;
-                        for (const feature of result.features) {
-                            const segmentInfo = findClosestLineSegment(feature.geometry, mapPoint);
-                            if (segmentInfo && segmentInfo.distance <= tolerance) {
-                                foundForLayer++;
-                                coincidentLines.push({
-                                    feature: feature,
-                                    layer: layer,
-                                    layerConfig: lineConfig,
-                                    segmentInfo: segmentInfo
-                                });
+                // Only query additional layers if hit test didn't find anything
+                if (coincidentLines.length === 0) {
+                    for (const lineConfig of LAYER_CONFIG.lines) {
+                        try {
+                            const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
+                            if (!layer || !layer.visible) {
+                                continue;
                             }
+                            
+                            await layer.load();
+                            
+                            // Use a small extent for the query
+                            const extent = {
+                                xmin: mapPoint.x - queryTolerance,
+                                ymin: mapPoint.y - queryTolerance,
+                                xmax: mapPoint.x + queryTolerance,
+                                ymax: mapPoint.y + queryTolerance,
+                                spatialReference: mapView.spatialReference
+                            };
+                            
+                            const result = await layer.queryFeatures({
+                                geometry: extent,
+                                spatialRelationship: "intersects",
+                                returnGeometry: true,
+                                outFields: ["*"],
+                                maxRecordCount: 50 // Limit the number of features returned
+                            });
+                            
+                            if (result.features.length > 25) {
+                                console.warn(`Layer ${lineConfig.name} returned ${result.features.length} features for vertex creation - query area may be too large`);
+                            }
+                            
+                            let foundForLayer = 0;
+                            for (const feature of result.features) {
+                                const segmentInfo = findClosestLineSegment(feature.geometry, mapPoint);
+                                if (segmentInfo && segmentInfo.distance <= snapTolerance) {
+                                    foundForLayer++;
+                                    coincidentLines.push({
+                                        feature: feature,
+                                        layer: layer,
+                                        layerConfig: lineConfig,
+                                        segmentInfo: segmentInfo
+                                    });
+                                }
+                            }
+                            
+                            if (foundForLayer > 0) {
+                                console.log(`Found ${foundForLayer} lines in layer ${lineConfig.name} for vertex creation`);
+                            }
+                        } catch (error) {
+                            console.error(`Error querying line layer ${lineConfig.name} for vertex creation:`, error);
                         }
-                        
-                        if (foundForLayer > 0) {
-                            console.log(`Found ${foundForLayer} lines in layer ${lineConfig.name} for vertex creation`);
-                        }
-                    } catch (error) {
-                        console.error(`Error querying line layer ${lineConfig.name} for vertex creation:`, error);
                     }
                 }
                 
@@ -554,9 +558,10 @@
             try {
                 const coincidentLines = [];
                 const clickMapPoint = mapView.toMap(screenPoint);
-                const tolerance = 50; // Fixed tolerance
+                const queryTolerance = 20; // Small extent for query
+                const snapTolerance = 50; // Larger tolerance for snapping
                 
-                // Try hit test first
+                // Try hit test first - more efficient
                 if (mapView.hitTest) {
                     const hitResponse = await mapView.hitTest(screenPoint, {
                         include: mapView.map.allLayers.filter(l => l.type === "feature")
@@ -568,7 +573,7 @@
                                 const layerConfig = LAYER_CONFIG.lines.find(l => l.id === result.layer.layerId);
                                 if (layerConfig) {
                                     const vertexInfo = findClosestVertex(result.graphic.geometry, clickMapPoint);
-                                    if (vertexInfo && vertexInfo.distance < tolerance) {
+                                    if (vertexInfo && vertexInfo.distance < snapTolerance) {
                                         coincidentLines.push({
                                             feature: result.graphic,
                                             layer: result.layer,
@@ -582,42 +587,49 @@
                     }
                 }
                 
-                // Query remaining layers
-                for (const lineConfig of LAYER_CONFIG.lines) {
-                    try {
-                        const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
-                        if (!layer || !layer.visible || coincidentLines.some(cl => cl.layer.layerId === lineConfig.id)) continue;
-                        
-                        await layer.load();
-                        
-                        const extent = {
-                            xmin: clickMapPoint.x - tolerance,
-                            ymin: clickMapPoint.y - tolerance,
-                            xmax: clickMapPoint.x + tolerance,
-                            ymax: clickMapPoint.y + tolerance,
-                            spatialReference: mapView.spatialReference
-                        };
-                        
-                        const result = await layer.queryFeatures({
-                            geometry: extent,
-                            spatialRelationship: "intersects",
-                            returnGeometry: true,
-                            outFields: ["*"]
-                        });
-                        
-                        for (const feature of result.features) {
-                            const vertexInfo = findClosestVertex(feature.geometry, clickMapPoint);
-                            if (vertexInfo && vertexInfo.distance < tolerance) {
-                                coincidentLines.push({
-                                    feature: feature,
-                                    layer: layer,
-                                    layerConfig: lineConfig,
-                                    vertex: vertexInfo
-                                });
+                // Only query additional layers if hit test didn't find anything
+                if (coincidentLines.length === 0) {
+                    for (const lineConfig of LAYER_CONFIG.lines) {
+                        try {
+                            const layer = mapView.map.allLayers.find(l => l.layerId === lineConfig.id);
+                            if (!layer || !layer.visible) continue;
+                            
+                            await layer.load();
+                            
+                            const extent = {
+                                xmin: clickMapPoint.x - queryTolerance,
+                                ymin: clickMapPoint.y - queryTolerance,
+                                xmax: clickMapPoint.x + queryTolerance,
+                                ymax: clickMapPoint.y + queryTolerance,
+                                spatialReference: mapView.spatialReference
+                            };
+                            
+                            const result = await layer.queryFeatures({
+                                geometry: extent,
+                                spatialRelationship: "intersects",
+                                returnGeometry: true,
+                                outFields: ["*"],
+                                maxRecordCount: 50
+                            });
+                            
+                            if (result.features.length > 25) {
+                                console.warn(`Layer ${lineConfig.name} returned ${result.features.length} features for vertex selection - query area may be too large`);
                             }
+                            
+                            for (const feature of result.features) {
+                                const vertexInfo = findClosestVertex(feature.geometry, clickMapPoint);
+                                if (vertexInfo && vertexInfo.distance < snapTolerance) {
+                                    coincidentLines.push({
+                                        feature: feature,
+                                        layer: layer,
+                                        layerConfig: lineConfig,
+                                        vertex: vertexInfo
+                                    });
+                                }
+                            }
+                        } catch (error) {
+                            console.error("Error querying line layer for vertices:", error);
                         }
-                    } catch (error) {
-                        console.error("Error querying line layer for vertices:", error);
                     }
                 }
                 
@@ -626,7 +638,7 @@
                     const groupedLines = [];
                     
                     for (const lineInfo of coincidentLines) {
-                        if (calculateDistance(referenceVertex, lineInfo.vertex.coordinates) < tolerance) {
+                        if (calculateDistance(referenceVertex, lineInfo.vertex.coordinates) < snapTolerance) {
                             groupedLines.push(lineInfo);
                         }
                     }
@@ -642,10 +654,11 @@
         
         async function findConnectedLines(pointGeometry) {
             const connected = [];
-            // Much larger tolerance - use a fixed value that works with your coordinate system
-            const tolerance = 50; // Fixed tolerance instead of resolution-based
+            // Much smaller tolerance for the initial spatial query
+            const queryTolerance = 10; // Small extent for query
+            const connectionTolerance = 50; // Larger tolerance for actual connection check
             
-            console.log(`Looking for connected lines near point: ${pointGeometry.x}, ${pointGeometry.y} with tolerance: ${tolerance}`);
+            console.log(`Looking for connected lines near point: ${pointGeometry.x}, ${pointGeometry.y}`);
             
             for (const lineConfig of LAYER_CONFIG.lines) {
                 try {
@@ -656,11 +669,12 @@
                     
                     await layer.load();
                     
+                    // Use a very small extent for the initial query
                     const extent = {
-                        xmin: pointGeometry.x - tolerance,
-                        ymin: pointGeometry.y - tolerance,
-                        xmax: pointGeometry.x + tolerance,
-                        ymax: pointGeometry.y + tolerance,
+                        xmin: pointGeometry.x - queryTolerance,
+                        ymin: pointGeometry.y - queryTolerance,
+                        xmax: pointGeometry.x + queryTolerance,
+                        ymax: pointGeometry.y + queryTolerance,
                         spatialReference: pointGeometry.spatialReference
                     };
                     
@@ -668,10 +682,17 @@
                         geometry: extent,
                         spatialRelationship: "intersects",
                         returnGeometry: true,
-                        outFields: ["*"]
+                        outFields: ["*"],
+                        maxRecordCount: 100 // Limit the number of features returned
                     });
                     
                     console.log(`Layer ${lineConfig.name} returned ${result.features.length} features`);
+                    
+                    // If we got too many features, the query tolerance is probably too large
+                    if (result.features.length > 50) {
+                        console.warn(`Layer ${lineConfig.name} returned ${result.features.length} features - query area may be too large`);
+                    }
+                    
                     let foundConnections = 0;
                     
                     for (const feature of result.features) {
@@ -689,18 +710,16 @@
                             const startDistance = calculateDistance(pointGeometry, startPoint);
                             const endDistance = calculateDistance(pointGeometry, endPoint);
                             
-                            // Only log if distance is close to tolerance for debugging
-                            if (startDistance < tolerance * 2 || endDistance < tolerance * 2) {
-                                console.log(`Feature ${feature.attributes.objectid}: start=${startDistance.toFixed(1)}, end=${endDistance.toFixed(1)}, tolerance=${tolerance}`);
-                            }
-                            
-                            if (startDistance < tolerance) {
+                            // Use the larger tolerance for actual connection detection
+                            if (startDistance < connectionTolerance) {
                                 connectionInfo = { pathIndex, pointIndex: 0, isStart: true };
                                 foundConnections++;
+                                console.log(`Found connection at start of feature ${feature.attributes.objectid}, distance: ${startDistance.toFixed(1)}`);
                                 break;
-                            } else if (endDistance < tolerance) {
+                            } else if (endDistance < connectionTolerance) {
                                 connectionInfo = { pathIndex, pointIndex: path.length - 1, isStart: false };
                                 foundConnections++;
+                                console.log(`Found connection at end of feature ${feature.attributes.objectid}, distance: ${endDistance.toFixed(1)}`);
                                 break;
                             }
                         }
