@@ -481,7 +481,7 @@
                 const undergroundMismatches = processCoincidences(undergroundCoincident, guidToQuantity);
                 const aerialMismatches = processCoincidences(aerialCoincident, guidToQuantity);
                 
-                let finalHTML = document.getElementById("results").innerHTML;
+                let finalHTML = results.innerHTML;
                 
                 if (undergroundMismatches.length > 0) {
                     finalHTML += '<h4 style="margin:8px 0 4px 0;font-size:11px;">';
@@ -571,7 +571,7 @@
                     finalHTML += '<p style="font-size:10px;margin:2px 0;">No coincident features found for comparison.</p>';
                 }
                 
-                // Apply map filters and labels for mismatched features
+                // Apply map filters and labels
                 if (undergroundMismatches.length > 0 && undergroundLayer) {
                     const undergroundOids = undergroundMismatches.map(x => x.spanOid);
                     undergroundLayer.definitionExpression = "objectid IN (" + undergroundOids.join(",") + ")";
@@ -624,7 +624,7 @@
                             haloColor: "white",
                             font: { size: 16, family: "Arial", weight: "bold" },
                             xoffset: 0,
-                            yoffset: 25
+                            yoffset: 20
                         },
                         deconflictionStrategy: "none",
                         repeatLabel: false,
@@ -636,61 +636,46 @@
                 updateResults(finalHTML);
                 
                 if (exportData.length > 0) {
-                    $("#exportBtn").style.display = "inline";
+                    $("#exportBtn").style.display = "inline-block";
                 }
                 
-                updateStatus("Analysis complete - " + exportData.length + " mismatches found");
-                
+                // Zoom to filtered features
                 const layersToZoom = [];
                 if (undergroundMismatches.length > 0 && undergroundLayer) layersToZoom.push(undergroundLayer);
                 if (aerialMismatches.length > 0 && aerialLayer) layersToZoom.push(aerialLayer);
-                if (allMismatchedFiberOids.length > 0 && fiberLayer) layersToZoom.push(fiberLayer);
+                if (allMismatchedFiberOids.length > 0) layersToZoom.push(fiberLayer);
                 
                 if (layersToZoom.length > 0) {
-                    zoomToLayers(layersToZoom);
+                    zoomToLayers(layersToZoom).then(() => {
+                        updateStatus("Analysis complete - " + (undergroundMismatches.length + aerialMismatches.length) + " mismatches found");
+                    });
+                } else {
+                    updateStatus("Analysis complete - No quantity mismatches found");
                 }
                 
             } catch (error) {
                 updateStatus("Error: " + (error.message || error));
+                console.error("Analysis error:", error);
             }
         }
         
-        function cleanup() {
-            const allLayers = mapView.map.allLayers.filter(layer => layer.type === "feature");
-            
-            for (const layer of allLayers) {
-                layer.definitionExpression = null;
-                layer.labelingInfo = null;
-                layer.labelsVisible = false;
-            }
-            
-            if (window.zoomToFeature) {
-                delete window.zoomToFeature;
-            }
-            
-            toolBox.remove();
-            console.log('Parent/Child Reconciliation Tool cleaned up');
-        }
-        
+        // Event listeners
         $("#runBtn").addEventListener("click", runAnalysis);
         $("#resetBtn").addEventListener("click", resetFilters);
         $("#exportBtn").addEventListener("click", exportToCSV);
-        $("#closeTool").onclick = () => {
-            window.gisToolHost.closeTool('parent-child-reconciliation');
-        };
-        
-        loadWorkOrders();
-        
-        window.gisToolHost.activeTools.set('parent-child-reconciliation', {
-            cleanup: cleanup,
-            toolBox: toolBox
+        $("#closeTool").addEventListener("click", () => {
+            toolBox.remove();
+            window.gisToolHost.activeTools.delete('parent-child-reconciliation');
         });
         
-        console.log('Parent/Child Reconciliation Tool loaded successfully');
+        // Initialize
+        loadWorkOrders();
+        window.gisToolHost.activeTools.add('parent-child-reconciliation');
+        
+        updateStatus("Tool loaded successfully");
         
     } catch (error) {
-        console.error('Error loading Parent/Child Reconciliation Tool:', error);
-        alert("Error creating Parent/Child Reconciliation Tool: " + (error.message || error));
+        console.error("Tool initialization error:", error);
+        alert("Error initializing Parent/Child Reconciliation Tool: " + (error.message || error));
     }
 })();
-                        
