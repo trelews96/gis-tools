@@ -7,24 +7,17 @@
         if (!window.gisToolHost) {
             window.gisToolHost = {};
         }
-        if (!window.gisToolHost.activeTools) {
+        
+        // Ensure activeTools is always a proper Set
+        if (!window.gisToolHost.activeTools || !(window.gisToolHost.activeTools instanceof Set)) {
+            console.warn('Creating new Set for activeTools');
             window.gisToolHost.activeTools = new Set();
         }
         
-        // Additional safety check to ensure it's actually a Set
-        if (!(window.gisToolHost.activeTools instanceof Set)) {
-            console.warn('activeTools is not a Set, creating new Set');
-            window.gisToolHost.activeTools = new Set();
-        }
-        
-        // Safe check for existing tool
-        try {
-            if (window.gisToolHost.activeTools.has('parent-child-reconciliation')) {
-                console.log('Parent/Child Reconciliation Tool already active');
-                return;
-            }
-        } catch (e) {
-            console.warn('Error checking active tools, proceeding anyway:', e);
+        // Check for existing tool
+        if (window.gisToolHost.activeTools.has('parent-child-reconciliation')) {
+            console.log('Parent/Child Reconciliation Tool already active');
+            return;
         }
         
         const existingToolbox = document.getElementById('parentChildReconciliationToolbox');
@@ -618,6 +611,36 @@
                         repeatLabel: false,
                         removeDuplicates: "none"
                     }];
+                    undergroundLayer.labelsVisible = true;
+                }
+                
+                if (aerialMismatches.length > 0 && aerialLayer) {
+                    const aerialOids = aerialMismatches.map(x => x.spanOid);
+                    aerialLayer.definitionExpression = "objectid IN (" + aerialOids.join(",") + ")";
+                    
+                    const aerialLabels = [];
+                    for (const guid in guidToQuantity) {
+                        aerialLabels.push('"' + guid + '"');
+                        aerialLabels.push('"Aerial: ' + guidToQuantity[guid] + '"');
+                    }
+                    
+                    const aerialExpression = 'var id=$feature.globalid; Decode(id,' + aerialLabels.join(',') + ',"Aerial: N/A")';
+                    
+                    aerialLayer.labelingInfo = [{
+                        labelExpressionInfo: { expression: aerialExpression },
+                        symbol: {
+                            type: "text",
+                            color: "red",
+                            haloSize: 3,
+                            haloColor: "white",
+                            font: { size: 16, family: "Arial", weight: "bold" },
+                            xoffset: -40,
+                            yoffset: -30
+                        },
+                        deconflictionStrategy: "none",
+                        repeatLabel: false,
+                        removeDuplicates: "none"
+                    }];
                     aerialLayer.labelsVisible = true;
                 }
                 
@@ -685,7 +708,7 @@
         $("#closeTool").addEventListener("click", () => {
             toolBox.remove();
             // Safe removal from active tools
-            if (window.gisToolHost && window.gisToolHost.activeTools && typeof window.gisToolHost.activeTools.delete === 'function') {
+            if (window.gisToolHost && window.gisToolHost.activeTools && window.gisToolHost.activeTools instanceof Set) {
                 window.gisToolHost.activeTools.delete('parent-child-reconciliation');
             }
         });
@@ -693,10 +716,8 @@
         // Initialize and register tool
         loadWorkOrders();
         
-        // Safe registration with active tools
-        if (window.gisToolHost && window.gisToolHost.activeTools && typeof window.gisToolHost.activeTools.add === 'function') {
-            window.gisToolHost.activeTools.add('parent-child-reconciliation');
-        }
+        // Register tool as active
+        window.gisToolHost.activeTools.add('parent-child-reconciliation');
         
         updateStatus("Tool loaded successfully");
         
