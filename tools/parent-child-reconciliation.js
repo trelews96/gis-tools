@@ -11,9 +11,20 @@
             window.gisToolHost.activeTools = new Set();
         }
         
-        if (window.gisToolHost.activeTools.has('parent-child-reconciliation')) {
-            console.log('Parent/Child Reconciliation Tool already active');
-            return;
+        // Additional safety check to ensure it's actually a Set
+        if (!(window.gisToolHost.activeTools instanceof Set)) {
+            console.warn('activeTools is not a Set, creating new Set');
+            window.gisToolHost.activeTools = new Set();
+        }
+        
+        // Safe check for existing tool
+        try {
+            if (window.gisToolHost.activeTools.has('parent-child-reconciliation')) {
+                console.log('Parent/Child Reconciliation Tool already active');
+                return;
+            }
+        } catch (e) {
+            console.warn('Error checking active tools, proceeding anyway:', e);
         }
         
         const existingToolbox = document.getElementById('parentChildReconciliationToolbox');
