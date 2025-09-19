@@ -692,5 +692,5 @@
         console.error('Error loading Parent/Child Reconciliation Tool:', error);
         alert("Error creating Parent/Child Reconciliation Tool: " + (error.message || error));
     }
-})();",
+})();
                         
