@@ -176,6 +176,10 @@
         function clearHighlight() {
             if (currentHighlight) {
                 mapView.graphics.remove(currentHighlight);
+                // Also remove pulse graphic if it exists
+                if (currentHighlight.pulseGraphic) {
+                    mapView.graphics.remove(currentHighlight.pulseGraphic);
+                }
                 currentHighlight = null;
             }
         }
@@ -188,25 +192,26 @@
                 symbol = {
                     type: "simple-marker",
                     color: color,
-                    size: 16,
+                    size: 20,
                     outline: {
-                        color: [255, 0, 0, 1],
-                        width: 3
+                        color: [255, 255, 255, 1],
+                        width: 4
                     }
                 };
             } else if (feature.geometry.type === "polyline") {
                 symbol = {
                     type: "simple-line",
                     color: color,
-                    width: 6
+                    width: 8,
+                    style: "solid"
                 };
             } else if (feature.geometry.type === "polygon") {
                 symbol = {
                     type: "simple-fill",
                     color: color,
                     outline: {
-                        color: [255, 0, 0, 1],
-                        width: 3
+                        color: [255, 255, 255, 1],
+                        width: 4
                     }
                 };
             }
@@ -218,8 +223,51 @@
             
             mapView.graphics.add(currentHighlight);
             
-            // Zoom to feature
-            mapView.goTo(feature.geometry, {duration: 500});
+            // Add a pulsing effect by creating a second, larger graphic
+            let pulseSymbol;
+            if (feature.geometry.type === "point") {
+                pulseSymbol = {
+                    type: "simple-marker",
+                    color: [color[0], color[1], color[2], 0.3],
+                    size: 30,
+                    outline: {
+                        color: [255, 255, 255, 0.8],
+                        width: 2
+                    }
+                };
+            } else if (feature.geometry.type === "polyline") {
+                pulseSymbol = {
+                    type: "simple-line",
+                    color: [color[0], color[1], color[2], 0.5],
+                    width: 12,
+                    style: "solid"
+                };
+            } else if (feature.geometry.type === "polygon") {
+                pulseSymbol = {
+                    type: "simple-fill",
+                    color: [color[0], color[1], color[2], 0.3],
+                    outline: {
+                        color: [255, 255, 255, 0.8],
+                        width: 6
+                    }
+                };
+            }
+            
+            const pulseGraphic = {
+                geometry: feature.geometry,
+                symbol: pulseSymbol
+            };
+            
+            mapView.graphics.add(pulseGraphic);
+            
+            // Store both graphics for cleanup
+            currentHighlight.pulseGraphic = pulseGraphic;
+            
+            // Zoom to feature with padding
+            mapView.goTo({
+                target: feature.geometry,
+                scale: Math.min(mapView.scale, 2000) // Don't zoom out if already closer
+            }, {duration: 800});
         }
         
         function enablePolygonDrawing() {
@@ -362,7 +410,10 @@
             
             currentSlackloopIndex = 0;
             setPhase('slackloop');
-            showCurrentSlackloop();
+            // Add a small delay to ensure the UI phase change completes before highlighting
+            setTimeout(() => {
+                showCurrentSlackloop();
+            }, 100);
         }
         
         function showCurrentSlackloop() {
@@ -375,6 +426,13 @@
             const objectId = current.attributes[current.layer.objectIdField];
             const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
             
+            console.log(`Showing slackloop ${currentSlackloopIndex + 1}:`, {
+                objectId,
+                gisId,
+                geometry: current.geometry,
+                attributes: current.attributes
+            });
+            
             // Update progress
             $("#slackloopProgress").innerHTML = `
                 <strong>Progress:</strong> ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} slack loops
@@ -384,17 +442,24 @@
             $("#slackloopInfo").innerHTML = `
                 <strong>Current Slack Loop:</strong><br>
                 GIS ID: ${gisId}<br>
-                Object ID: ${objectId}
+                Object ID: ${objectId}<br>
+                <span style="color:#28a745;font-weight:bold;">⚡ Currently highlighted on map</span>
             `;
             
             // Pre-fill current values
             $("#sequentialInInput").value = current.attributes.sequential_in || '';
             $("#sequentialOutInput").value = current.attributes.sequential_out || '';
             
-            // Highlight feature
+            // Highlight feature - ensure this happens
+            console.log('Highlighting slackloop feature...');
             highlightFeature(current, [0, 255, 0, 0.8]);
             
-            updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length}`);
+            updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} - Feature highlighted on map`);
+            
+            // Focus on first input for better UX
+            setTimeout(() => {
+                $("#sequentialInInput").focus();
+            }, 200);
         }
         
         async function submitSlackloop() {
