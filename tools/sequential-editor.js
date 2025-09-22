@@ -106,6 +106,8 @@
                     <button id="submitSlackloopBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Submit & Next</button>
                     <button id="skipSlackloopBtn" style="flex:1;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Skip This One</button>
                 </div>
+                
+                <button id="clearHighlightsBtn2" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
             
             <!-- Fiber Cable Phase -->
@@ -122,13 +124,16 @@
                     <button id="nextFiberCableBtn" style="flex:1;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;">Next Feature</button>
                     <button id="openLinkBtn" style="flex:1;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Open Link</button>
                 </div>
+                
+                <button id="clearHighlightsBtn3" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
             
             <!-- Complete Phase -->
             <div id="completePhase" style="display:none;">
                 <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
                 <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
-                <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
+                <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Start Over</button>
+                <button id="clearHighlightsBtn4" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
             
             <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:8px;">
@@ -879,6 +884,9 @@
             startSlackloopEditing();
         };
         $("#clearHighlightsBtn").onclick = clearAllHighlights;
+        $("#clearHighlightsBtn2").onclick = clearAllHighlights;
+        $("#clearHighlightsBtn3").onclick = clearAllHighlights;
+        $("#clearHighlightsBtn4").onclick = clearAllHighlights;
         
         $("#submitSlackloopBtn").onclick = submitSlackloop;
         $("#skipSlackloopBtn").onclick = skipSlackloop;
