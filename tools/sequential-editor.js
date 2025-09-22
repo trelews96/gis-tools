@@ -536,6 +536,7 @@
             const objectId = current.attributes[objectIdField];
             const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
             
+            console.log(`=== SHOWING SLACKLOOP ${currentSlackloopIndex + 1} ===`);
             console.log(`Showing slackloop ${currentSlackloopIndex + 1}:`, {
                 objectIdField,
                 objectId,
@@ -561,9 +562,9 @@
             $("#sequentialInInput").value = current.attributes.sequential_in || '';
             $("#sequentialOutInput").value = current.attributes.sequential_out || '';
             
-            // Highlight feature - ensure this happens
-            console.log('Highlighting slackloop feature...');
-            highlightFeature(current, [0, 255, 0, 0.8]);
+            // Highlight feature with popup - THIS IS WHERE POPUP SHOULD TRIGGER
+            console.log('About to call highlightFeature with popup=true...');
+            highlightFeature(current, [0, 255, 0, 0.8], true); // showPopup = true
             
             updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} - Feature highlighted on map`);
             
