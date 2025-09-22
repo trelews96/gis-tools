@@ -187,11 +187,18 @@
         function getObjectIdField(feature) {
             console.log('getObjectIdField called with feature:', feature);
             
-            // Check if feature has attributes
-            if (!feature || !feature.attributes) {
+            // Robust validation as suggested
+            if (!feature) {
+                console.error('Feature is null or undefined');
+                return null;
+            }
+            
+            if (!feature.attributes) {
                 console.error('Feature missing attributes property:', feature);
                 return null;
             }
+            
+            console.log('Feature attributes keys:', Object.keys(feature.attributes));
             
             // Simplified object ID field detection for your system
             let objectIdField = null;
@@ -221,19 +228,31 @@
                 }
             }
             
-            console.log('Determined object ID field:', objectIdField, 'Value:', feature.attributes[objectIdField]);
+            console.log('Determined object ID field:', objectIdField, 'Value:', objectIdField ? feature.attributes[objectIdField] : 'N/A');
             return objectIdField;
         }
         
         function highlightFeature(feature, color = [255, 255, 0, 0.8]) {
             try {
                 console.log('highlightFeature called with:', feature, color);
-                clearHighlight();
                 
-                if (!feature || !feature.geometry) {
-                    console.error('Invalid feature for highlighting:', feature);
+                // Validate feature structure
+                if (!feature) {
+                    console.error('No feature provided to highlightFeature');
                     return;
                 }
+                
+                if (!feature.geometry) {
+                    console.error('Feature missing geometry:', feature);
+                    return;
+                }
+                
+                if (!feature.attributes) {
+                    console.error('Feature missing attributes:', feature);
+                    return;
+                }
+                
+                clearHighlight();
                 
                 console.log('Feature geometry type:', feature.geometry.type);
                 
@@ -493,15 +512,7 @@
             console.log('Setting phase to slackloop');
             setPhase('slackloop');
             
-            // Force immediate highlighting of first slackloop
-            console.log('About to highlight first slackloop');
-            const firstSlackloop = selectedSlackloops[0];
-            console.log('First slackloop:', firstSlackloop);
-            
-            // Highlight immediately
-            highlightFeature(firstSlackloop, [0, 255, 0, 0.8]);
-            
-            // Then show the UI details
+            // Don't highlight immediately - wait for showCurrentSlackloop to handle it properly
             setTimeout(() => {
                 showCurrentSlackloop();
             }, 200);
@@ -570,7 +581,8 @@
                     objectIdField,
                     objectId,
                     sequentialIn,
-                    sequentialOut
+                    sequentialOut,
+                    layer: current.layer
                 });
                 
                 // Prepare the feature for update
@@ -582,22 +594,56 @@
                     }
                 };
                 
+                console.log('Update feature object:', updateFeature);
+                console.log('Layer capabilities:', current.layer.capabilities);
+                console.log('Layer editing enabled:', current.layer.capabilities?.operations?.supportsUpdate);
+                
                 // Apply the edit
                 const result = await current.layer.applyEdits({
                     updateFeatures: [updateFeature]
                 });
                 
-                if (result.updateFeatureResults && result.updateFeatureResults[0] && result.updateFeatureResults[0].success) {
-                    updateStatus("Slack loop updated successfully!");
+                console.log('Full applyEdits result:', result);
+                
+                if (result.updateFeatureResults && result.updateFeatureResults.length > 0) {
+                    const updateResult = result.updateFeatureResults[0];
+                    console.log('Update result details:', updateResult);
                     
-                    // Move to next
-                    currentSlackloopIndex++;
-                    setTimeout(() => {
-                        showCurrentSlackloop();
-                    }, 500);
+                    if (updateResult.success === true) {
+                        updateStatus("Slack loop updated successfully!");
+                        
+                        // Move to next
+                        currentSlackloopIndex++;
+                        setTimeout(() => {
+                            showCurrentSlackloop();
+                        }, 500);
+                    } else {
+                        // Enhanced error details
+                        let errorMessage = "Unknown error";
+                        if (updateResult.error) {
+                            if (updateResult.error.message) {
+                                errorMessage = updateResult.error.message;
+                            } else if (updateResult.error.description) {
+                                errorMessage = updateResult.error.description;
+                            } else if (typeof updateResult.error === 'string') {
+                                errorMessage = updateResult.error;
+                            } else {
+                                errorMessage = JSON.stringify(updateResult.error);
+                            }
+                        }
+                        
+                        console.error('Update failed with details:', {
+                            success: updateResult.success,
+                            error: updateResult.error,
+                            objectId: updateResult.objectId,
+                            globalId: updateResult.globalId
+                        });
+                        
+                        throw new Error(`Update failed: ${errorMessage}`);
+                    }
                 } else {
-                    const error = result.updateFeatureResults?.[0]?.error?.message || "Unknown error";
-                    throw new Error(`Update failed: ${error}`);
+                    console.error('No updateFeatureResults returned:', result);
+                    throw new Error('No update results returned from server');
                 }
                 
             } catch (error) {
