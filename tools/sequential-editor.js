@@ -185,6 +185,14 @@
         }
         
         function getObjectIdField(feature) {
+            console.log('getObjectIdField called with feature:', feature);
+            
+            // Check if feature has attributes
+            if (!feature || !feature.attributes) {
+                console.error('Feature missing attributes property:', feature);
+                return null;
+            }
+            
             // Simplified object ID field detection for your system
             let objectIdField = null;
             
@@ -403,10 +411,21 @@
                     outFields: ['*']
                 });
                 
-                selectedSlackloops = slackloopQuery.features.map(feature => ({
-                    ...feature,
-                    layer: slackloopLayer
-                }));
+                console.log('Raw slackloop query results:', slackloopQuery.features);
+                
+                selectedSlackloops = slackloopQuery.features.map(feature => {
+                    console.log('Processing slackloop feature:', feature);
+                    console.log('Feature attributes:', feature.attributes);
+                    console.log('Feature geometry:', feature.geometry);
+                    
+                    return {
+                        attributes: feature.attributes,
+                        geometry: feature.geometry,
+                        layer: slackloopLayer
+                    };
+                });
+                
+                console.log('Processed selectedSlackloops:', selectedSlackloops);
                 
                 // Query fiber cable features
                 const fiberCableQuery = await fiberCableLayer.queryFeatures({
@@ -417,7 +436,8 @@
                 });
                 
                 selectedFiberCables = fiberCableQuery.features.map(feature => ({
-                    ...feature,
+                    attributes: feature.attributes,
+                    geometry: feature.geometry,
                     layer: fiberCableLayer
                 }));
                 
