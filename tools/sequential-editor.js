@@ -80,6 +80,8 @@
                 <div id="selectionResults" style="margin-bottom:12px;"></div>
                 
                 <button id="startEditingBtn" style="width:100%;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;display:none;">Start Sequential Editing</button>
+                
+                <button id="clearHighlightsBtn" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-top:8px;">Clear All Highlights</button>
             </div>
             
             <!-- Slackloop Editing Phase -->
@@ -751,7 +753,7 @@
         }
         
         function generateDailyTrackingLink(fiberCableFeature) {
-            // Implementing the arcade expression logic:
+            // Implementing the arcade expression logic with better field handling:
             // var baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?'
             // var serviceUrl = 'serviceUrl=' + GetFeatureSetInfo($layer).ServiceLayerUrl  
             // var dtg = 'dtg=' + $feature.globalid
@@ -759,22 +761,79 @@
             // return baseUrl + dtg + "&" + rfg + "&" + serviceUrl
             
             const baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?';
-            const globalId = fiberCableFeature.attributes.globalid || fiberCableFeature.attributes.GlobalID;
-            const featureclassType = fiberCableFeature.attributes.featureclass_type || 'fiber_cable';
+            const globalId = fiberCableFeature.attributes.globalid || 
+                            fiberCableFeature.attributes.GlobalID || 
+                            fiberCableFeature.attributes.GLOBALID;
             
-            // Get service URL from layer
-            const serviceLayerUrl = fiberCableFeature.layer.url || mapView.map.portalItem?.portal?.url + '/rest/services/';
+            // Get featureclass_type, with fallback options
+            const featureclassType = fiberCableFeature.attributes.featureclass_type || 
+                                   fiberCableFeature.attributes.FeatureClass_Type ||
+                                   fiberCableFeature.attributes.FEATURECLASS_TYPE ||
+                                   'fiber_cable'; // fallback
+            
+            // Get service URL from layer - with better URL construction
+            let serviceLayerUrl = '';
+            if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
+                serviceLayerUrl = fiberCableFeature.layer.url;
+            } else if (mapView.map.portalItem && mapView.map.portalItem.portal) {
+                serviceLayerUrl = mapView.map.portalItem.portal.url + '/rest/services/';
+            }
+            
+            // Build the related GUID field name (rel_ + featureclass_type + _guid)
+            const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
+            let rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
+            
+            // If the exact field isn't found, try some variations
+            if (!rfgValue) {
+                const possibleFields = [
+                    `rel_${featureclassType}_guid`,
+                    `REL_${featureclassType.toUpperCase()}_GUID`,
+                    `Rel_${featureclassType}_Guid`,
+                    'rel_fiber_cable_guid',
+                    'REL_FIBER_CABLE_GUID'
+                ];
+                
+                for (const fieldName of possibleFields) {
+                    if (fiberCableFeature.attributes[fieldName]) {
+                        rfgValue = fiberCableFeature.attributes[fieldName];
+                        console.log(`Found related GUID in field: ${fieldName}`);
+                        break;
+                    }
+                }
+            }
             
             // Build parameters
             const serviceUrl = `serviceUrl=${encodeURIComponent(serviceLayerUrl)}`;
             const dtg = `dtg=${globalId}`;
-            
-            // Build the related GUID field name (rel_ + featureclass_type + _guid)
-            const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
-            const rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
             const rfg = `rfg=${rfgValue}`;
             
-            return `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
+            const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
+            
+            console.log('Generated OutSystems link:', {
+                globalId,
+                featureclassType,
+                relGuidFieldName,
+                rfgValue,
+                serviceLayerUrl,
+                finalUrl
+            });
+            
+            return finalUrl;
+        }
+        
+        function clearAllHighlights() {
+            // Clear current highlight
+            clearHighlight();
+            
+            // Clear polygon selection
+            clearPolygonSelection();
+            
+            // Close any open popup
+            if (mapView.popup) {
+                mapView.popup.close();
+            }
+            
+            updateStatus("All highlights cleared.");
         }
         
         function nextFiberCable() {
@@ -819,6 +878,7 @@
             // Start the editing process
             startSlackloopEditing();
         };
+        $("#clearHighlightsBtn").onclick = clearAllHighlights;
         
         $("#submitSlackloopBtn").onclick = submitSlackloop;
         $("#skipSlackloopBtn").onclick = skipSlackloop;
