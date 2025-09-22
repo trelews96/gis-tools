@@ -585,18 +585,33 @@
                     layer: current.layer
                 });
                 
-                // Prepare the feature for update
-                const updateFeature = {
-                    attributes: {
-                        [objectIdField]: objectId,
-                        sequential_in: sequentialIn ? parseInt(sequentialIn) : null,
-                        sequential_out: sequentialOut ? parseInt(sequentialOut) : null
-                    }
+                // Create a more conservative update that preserves existing attributes
+                // Only include the objectId and the fields we want to change
+                const updateAttributes = {
+                    [objectIdField]: objectId
                 };
                 
-                console.log('Update feature object:', updateFeature);
-                console.log('Layer capabilities:', current.layer.capabilities);
-                console.log('Layer editing enabled:', current.layer.capabilities?.operations?.supportsUpdate);
+                // Only add fields that have values or are being explicitly cleared
+                if (sequentialIn !== '') {
+                    updateAttributes.sequential_in = parseInt(sequentialIn);
+                }
+                if (sequentialOut !== '') {
+                    updateAttributes.sequential_out = parseInt(sequentialOut);
+                }
+                
+                const updateFeature = {
+                    attributes: updateAttributes
+                };
+                
+                console.log('Conservative update feature object:', updateFeature);
+                console.log('Current feature attributes for reference:', current.attributes);
+                
+                // Check if layer supports editing
+                if (current.layer.capabilities && current.layer.capabilities.operations) {
+                    console.log('Layer editing capabilities:', current.layer.capabilities.operations);
+                } else {
+                    console.log('Layer capabilities not available or unclear');
+                }
                 
                 // Apply the edit
                 const result = await current.layer.applyEdits({
@@ -620,6 +635,8 @@
                     } else {
                         // Enhanced error details
                         let errorMessage = "Unknown error";
+                        let errorCode = null;
+                        
                         if (updateResult.error) {
                             if (updateResult.error.message) {
                                 errorMessage = updateResult.error.message;
@@ -630,16 +647,25 @@
                             } else {
                                 errorMessage = JSON.stringify(updateResult.error);
                             }
+                            
+                            if (updateResult.error.code) {
+                                errorCode = updateResult.error.code;
+                            }
                         }
                         
                         console.error('Update failed with details:', {
                             success: updateResult.success,
                             error: updateResult.error,
                             objectId: updateResult.objectId,
-                            globalId: updateResult.globalId
+                            globalId: updateResult.globalId,
+                            errorCode: errorCode
                         });
                         
-                        throw new Error(`Update failed: ${errorMessage}`);
+                        const fullErrorMsg = errorCode ? 
+                            `${errorMessage} (Code: ${errorCode})` : 
+                            errorMessage;
+                            
+                        throw new Error(`Update failed: ${fullErrorMsg}`);
                     }
                 } else {
                     console.error('No updateFeatureResults returned:', result);
@@ -647,7 +673,11 @@
                 }
                 
             } catch (error) {
-                console.error("Update error:", error);
+                console.error("Update error details:", {
+                    error: error,
+                    message: error.message,
+                    stack: error.stack
+                });
                 updateStatus("Error updating slack loop: " + error.message);
                 alert("Error updating slack loop: " + error.message);
             }
