@@ -185,89 +185,113 @@
         }
         
         function highlightFeature(feature, color = [255, 255, 0, 0.8]) {
-            clearHighlight();
-            
-            let symbol;
-            if (feature.geometry.type === "point") {
-                symbol = {
-                    type: "simple-marker",
-                    color: color,
-                    size: 20,
-                    outline: {
-                        color: [255, 255, 255, 1],
-                        width: 4
-                    }
+            try {
+                console.log('highlightFeature called with:', feature, color);
+                clearHighlight();
+                
+                if (!feature || !feature.geometry) {
+                    console.error('Invalid feature for highlighting:', feature);
+                    return;
+                }
+                
+                console.log('Feature geometry type:', feature.geometry.type);
+                
+                let symbol;
+                if (feature.geometry.type === "point") {
+                    symbol = {
+                        type: "simple-marker",
+                        color: color,
+                        size: 20,
+                        outline: {
+                            color: [255, 255, 255, 1],
+                            width: 4
+                        }
+                    };
+                } else if (feature.geometry.type === "polyline") {
+                    symbol = {
+                        type: "simple-line",
+                        color: color,
+                        width: 8,
+                        style: "solid"
+                    };
+                } else if (feature.geometry.type === "polygon") {
+                    symbol = {
+                        type: "simple-fill",
+                        color: color,
+                        outline: {
+                            color: [255, 255, 255, 1],
+                            width: 4
+                        }
+                    };
+                }
+                
+                console.log('Created symbol:', symbol);
+                
+                currentHighlight = {
+                    geometry: feature.geometry,
+                    symbol: symbol
                 };
-            } else if (feature.geometry.type === "polyline") {
-                symbol = {
-                    type: "simple-line",
-                    color: color,
-                    width: 8,
-                    style: "solid"
+                
+                console.log('Adding highlight graphic to map');
+                mapView.graphics.add(currentHighlight);
+                
+                // Add a pulsing effect by creating a second, larger graphic
+                let pulseSymbol;
+                if (feature.geometry.type === "point") {
+                    pulseSymbol = {
+                        type: "simple-marker",
+                        color: [color[0], color[1], color[2], 0.3],
+                        size: 30,
+                        outline: {
+                            color: [255, 255, 255, 0.8],
+                            width: 2
+                        }
+                    };
+                } else if (feature.geometry.type === "polyline") {
+                    pulseSymbol = {
+                        type: "simple-line",
+                        color: [color[0], color[1], color[2], 0.5],
+                        width: 12,
+                        style: "solid"
+                    };
+                } else if (feature.geometry.type === "polygon") {
+                    pulseSymbol = {
+                        type: "simple-fill",
+                        color: [color[0], color[1], color[2], 0.3],
+                        outline: {
+                            color: [255, 255, 255, 0.8],
+                            width: 6
+                        }
+                    };
+                }
+                
+                const pulseGraphic = {
+                    geometry: feature.geometry,
+                    symbol: pulseSymbol
                 };
-            } else if (feature.geometry.type === "polygon") {
-                symbol = {
-                    type: "simple-fill",
-                    color: color,
-                    outline: {
-                        color: [255, 255, 255, 1],
-                        width: 4
-                    }
-                };
+                
+                console.log('Adding pulse graphic to map');
+                mapView.graphics.add(pulseGraphic);
+                
+                // Store both graphics for cleanup
+                currentHighlight.pulseGraphic = pulseGraphic;
+                
+                console.log('Zooming to feature');
+                // Zoom to feature with padding
+                mapView.goTo({
+                    target: feature.geometry,
+                    scale: Math.min(mapView.scale, 2000) // Don't zoom out if already closer
+                }, {duration: 800}).then(() => {
+                    console.log('Zoom completed');
+                }).catch(err => {
+                    console.error('Zoom failed:', err);
+                });
+                
+                console.log('Highlighting completed successfully');
+            } catch (error) {
+                console.error('Error in highlightFeature:', error);
+                updateStatus('Error highlighting feature: ' + error.message);
             }
-            
-            currentHighlight = {
-                geometry: feature.geometry,
-                symbol: symbol
-            };
-            
-            mapView.graphics.add(currentHighlight);
-            
-            // Add a pulsing effect by creating a second, larger graphic
-            let pulseSymbol;
-            if (feature.geometry.type === "point") {
-                pulseSymbol = {
-                    type: "simple-marker",
-                    color: [color[0], color[1], color[2], 0.3],
-                    size: 30,
-                    outline: {
-                        color: [255, 255, 255, 0.8],
-                        width: 2
-                    }
-                };
-            } else if (feature.geometry.type === "polyline") {
-                pulseSymbol = {
-                    type: "simple-line",
-                    color: [color[0], color[1], color[2], 0.5],
-                    width: 12,
-                    style: "solid"
-                };
-            } else if (feature.geometry.type === "polygon") {
-                pulseSymbol = {
-                    type: "simple-fill",
-                    color: [color[0], color[1], color[2], 0.3],
-                    outline: {
-                        color: [255, 255, 255, 0.8],
-                        width: 6
-                    }
-                };
-            }
-            
-            const pulseGraphic = {
-                geometry: feature.geometry,
-                symbol: pulseSymbol
-            };
-            
-            mapView.graphics.add(pulseGraphic);
-            
-            // Store both graphics for cleanup
-            currentHighlight.pulseGraphic = pulseGraphic;
-            
-            // Zoom to feature with padding
-            mapView.goTo({
-                target: feature.geometry,
-                scale: Math.min(mapView.scale, 2000) // Don't zoom out if already closer
-            }, {duration: 800});
         }
         
         function enablePolygonDrawing() {
@@ -403,17 +427,31 @@
         }
         
         function startSlackloopEditing() {
+            console.log('Starting slackloop editing...');
+            console.log('Selected slackloops:', selectedSlackloops);
+            
             if (selectedSlackloops.length === 0) {
+                console.log('No slackloops, moving to fiber cable phase');
                 startFiberCablePhase();
                 return;
             }
             
             currentSlackloopIndex = 0;
+            console.log('Setting phase to slackloop');
             setPhase('slackloop');
-            // Add a small delay to ensure the UI phase change completes before highlighting
+            
+            // Force immediate highlighting of first slackloop
+            console.log('About to highlight first slackloop');
+            const firstSlackloop = selectedSlackloops[0];
+            console.log('First slackloop:', firstSlackloop);
+            
+            // Highlight immediately
+            highlightFeature(firstSlackloop, [0, 255, 0, 0.8]);
+            
+            // Then show the UI details
             setTimeout(() => {
                 showCurrentSlackloop();
-            }, 100);
+            }, 200);
         }
         
         function showCurrentSlackloop() {
@@ -625,7 +663,13 @@
         // Event listeners
         $("#drawPolygonBtn").onclick = enablePolygonDrawing;
         $("#clearPolygonBtn").onclick = clearPolygonSelection;
-        $("#startEditingBtn").onclick = startSlackloopEditing;
+        $("#startEditingBtn").onclick = () => {
+            // Clear any existing highlights first
+            clearHighlight();
+            
+            // Start the editing process
+            startSlackloopEditing();
+        };
         
         $("#submitSlackloopBtn").onclick = submitSlackloop;
         $("#skipSlackloopBtn").onclick = skipSlackloop;
