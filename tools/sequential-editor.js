@@ -184,6 +184,39 @@
             }
         }
         
+        function getObjectIdField(feature) {
+            // Simplified object ID field detection for your system
+            let objectIdField = null;
+            
+            // Check for your system's standard "objectid" field first
+            if (feature.attributes.objectid !== undefined) {
+                objectIdField = 'objectid';
+            } else if (feature.layer && feature.layer.objectIdField) {
+                // Use layer's declared objectIdField as backup
+                objectIdField = feature.layer.objectIdField;
+            } else {
+                // Check for other common variations as fallback
+                const attrs = Object.keys(feature.attributes);
+                const upperAttrs = attrs.map(a => a.toUpperCase());
+                
+                if (upperAttrs.includes('OBJECTID')) {
+                    objectIdField = attrs.find(a => a.toUpperCase() === 'OBJECTID');
+                } else if (upperAttrs.includes('OBJECTID_1')) {
+                    objectIdField = attrs.find(a => a.toUpperCase() === 'OBJECTID_1');
+                } else if (upperAttrs.includes('OID')) {
+                    objectIdField = attrs.find(a => a.toUpperCase() === 'OID');
+                } else if (upperAttrs.includes('FID')) {
+                    objectIdField = attrs.find(a => a.toUpperCase() === 'FID');
+                } else if (feature.attributes.gis_id) {
+                    // Final fallback to gis_id
+                    objectIdField = 'gis_id';
+                }
+            }
+            
+            console.log('Determined object ID field:', objectIdField, 'Value:', feature.attributes[objectIdField]);
+            return objectIdField;
+        }
+        
         function highlightFeature(feature, color = [255, 255, 0, 0.8]) {
             try {
                 console.log('highlightFeature called with:', feature, color);
@@ -461,14 +494,16 @@
             }
             
             const current = selectedSlackloops[currentSlackloopIndex];
-            const objectId = current.attributes[current.layer.objectIdField];
+            const objectIdField = getObjectIdField(current);
+            const objectId = current.attributes[objectIdField];
             const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
             
             console.log(`Showing slackloop ${currentSlackloopIndex + 1}:`, {
+                objectIdField,
                 objectId,
                 gisId,
                 geometry: current.geometry,
-                attributes: current.attributes
+                allAttributes: Object.keys(current.attributes)
             });
             
             // Update progress
@@ -508,10 +543,20 @@
                 
                 updateStatus("Updating slack loop...");
                 
+                const objectIdField = getObjectIdField(current);
+                const objectId = current.attributes[objectIdField];
+                
+                console.log('Submitting slackloop update:', {
+                    objectIdField,
+                    objectId,
+                    sequentialIn,
+                    sequentialOut
+                });
+                
                 // Prepare the feature for update
                 const updateFeature = {
                     attributes: {
-                        [current.layer.objectIdField]: current.attributes[current.layer.objectIdField],
+                        [objectIdField]: objectId,
                         sequential_in: sequentialIn ? parseInt(sequentialIn) : null,
                         sequential_out: sequentialOut ? parseInt(sequentialOut) : null
                     }
@@ -565,9 +610,10 @@
             }
             
             const current = selectedFiberCables[currentFiberCableIndex];
-            const objectId = current.attributes[current.layer.objectIdField];
+            const objectIdField = getObjectIdField(current);
+            const objectId = current.attributes[objectIdField];
             const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
-            const globalId = current.attributes.globalid || current.attributes.GlobalID;
+            const globalId = current.attributes.globalid || current.attributes.GlobalID || current.attributes.GLOBALID;
             
             // Update progress
             $("#fiberCableProgress").innerHTML = `
