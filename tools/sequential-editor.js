@@ -624,8 +624,15 @@
                     const updateResult = result.updateFeatureResults[0];
                     console.log('Update result details:', updateResult);
                     
-                    if (updateResult.success === true) {
+                    // Check for success in multiple ways
+                    const isSuccess = updateResult.success === true || 
+                                    (updateResult.success === undefined && 
+                                     updateResult.error === null && 
+                                     (updateResult.objectId || updateResult.globalId));
+                    
+                    if (isSuccess) {
                         updateStatus("Slack loop updated successfully!");
+                        console.log('Update successful! ObjectId:', updateResult.objectId, 'GlobalId:', updateResult.globalId);
                         
                         // Move to next
                         currentSlackloopIndex++;
