@@ -785,7 +785,7 @@ generateDailyTrackingLink(current).then(link => {
         fiberGlobalId = `${fiberGlobalId}}`;
     }
     
-    console.log('Fiber cable globalid:', fiberGlobalId);
+    //console.log('Fiber cable globalid:', fiberGlobalId);
     
     let dtgValue = ''; // Daily tracking record's globalid
     let rfgValue = ''; // Daily tracking record's rel_fiber_cable_guid field
@@ -824,14 +824,14 @@ generateDailyTrackingLink(current).then(link => {
             await dailyTrackingSource.load();
             
             if (dailyTrackingSource.fields) {
-                console.log('Daily tracking fields:', dailyTrackingSource.fields.map(f => f.name));
+                //console.log('Daily tracking fields:', dailyTrackingSource.fields.map(f => f.name));
             }
             
             // Query daily tracking table where rel_fiber_cable_guid matches our fiber cable's globalid
             // Remove braces for the query (database fields typically store GUIDs without braces)
             const fiberGlobalIdForQuery = fiberGlobalId.replace(/[{}]/g, '');
             
-            console.log(`Searching daily tracking for rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`);
+            //console.log(`Searching daily tracking for rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`);
             
             const relatedQuery = await dailyTrackingSource.queryFeatures({
                 where: `rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`,
@@ -839,7 +839,7 @@ generateDailyTrackingLink(current).then(link => {
                 returnGeometry: false
             });
             
-            console.log(`Query returned ${relatedQuery.features.length} daily tracking records`);
+            //console.log(`Query returned ${relatedQuery.features.length} daily tracking records`);
             
             if (relatedQuery.features.length > 0) {
                 const dailyTrackingRecord = relatedQuery.features[0];
@@ -853,12 +853,12 @@ generateDailyTrackingLink(current).then(link => {
                 rfgValue = dailyTrackingRecord.attributes.rel_fiber_cable_guid || 
                           dailyTrackingRecord.attributes.REL_FIBER_CABLE_GUID;
                 
-                console.log('Found daily tracking record!');
-                console.log('DTG (daily tracking globalid):', dtgValue);
-                console.log('RFG (daily tracking rel_fiber_cable_guid):', rfgValue);
-                console.log('Verification - should match fiber cable globalid:', fiberGlobalIdForQuery);
+                //console.log('Found daily tracking record!');
+                //console.log('DTG (daily tracking globalid):', dtgValue);
+                //console.log('RFG (daily tracking rel_fiber_cable_guid):', rfgValue);
+                //console.log('Verification - should match fiber cable globalid:', fiberGlobalIdForQuery);
             } else {
-                console.log('No daily tracking records found for this fiber cable');
+                //console.log('No daily tracking records found for this fiber cable');
                 
                 // Try with braces in case that's how they're stored
                 const altQuery = await dailyTrackingSource.queryFeatures({
@@ -867,7 +867,7 @@ generateDailyTrackingLink(current).then(link => {
                     returnGeometry: false
                 });
                 
-                console.log(`Alternative query with braces returned ${altQuery.features.length} records`);
+                //console.log(`Alternative query with braces returned ${altQuery.features.length} records`);
                 
                 if (altQuery.features.length > 0) {
                     const dailyTrackingRecord = altQuery.features[0];
@@ -876,7 +876,7 @@ generateDailyTrackingLink(current).then(link => {
                               dailyTrackingRecord.attributes.GLOBALID;
                     rfgValue = dailyTrackingRecord.attributes.rel_fiber_cable_guid || 
                               dailyTrackingRecord.attributes.REL_FIBER_CABLE_GUID;
-                    console.log('Found with braces query - DTG:', dtgValue, 'RFG:', rfgValue);
+                    //console.log('Found with braces query - DTG:', dtgValue, 'RFG:', rfgValue);
                 } else {
                     // Show sample data to understand the structure
                     const sampleQuery = await dailyTrackingSource.queryFeatures({
@@ -896,7 +896,7 @@ generateDailyTrackingLink(current).then(link => {
                             // Show all *_guid fields
                             Object.keys(record.attributes).forEach(key => {
                                 if (key.endsWith('_guid')) {
-                                    console.log(`  ${key}: ${record.attributes[key]}`);
+                                    //console.log(`  ${key}: ${record.attributes[key]}`);
                                 }
                             });
                         });
@@ -906,12 +906,12 @@ generateDailyTrackingLink(current).then(link => {
         } else {
             console.log('Daily tracking source not found');
             if (mapView.map.allTables) {
-                console.log('Available tables:', mapView.map.allTables.map(t => t.title));
+                //console.log('Available tables:', mapView.map.allTables.map(t => t.title));
             }
         }
         
     } catch (error) {
-        console.log('Error querying daily tracking:', error);
+        //console.log('Error querying daily tracking:', error);
     }
     
     // Ensure values have proper GUID format with braces
@@ -953,11 +953,11 @@ generateDailyTrackingLink(current).then(link => {
     
     const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
     
-    console.log('Link Generation Results:');
-    console.log('DTG (Daily tracking globalid):', dtgValue);
-    console.log('RFG (Daily tracking rel_fiber_cable_guid):', rfgValue);
-    console.log('Service Layer URL:', serviceLayerUrl);
-    console.log('Generated URL:', finalUrl);
+    //console.log('Link Generation Results:');
+    //console.log('DTG (Daily tracking globalid):', dtgValue);
+    //console.log('RFG (Daily tracking rel_fiber_cable_guid):', rfgValue);
+    //console.log('Service Layer URL:', serviceLayerUrl);
+    //console.log('Generated URL:', finalUrl);
     
     return finalUrl;
 }
