@@ -39,6 +39,7 @@
         let currentFiberCableIndex = 0;
         let currentPhase = 'selection'; // 'selection', 'slackloop', 'fiber_cable', 'complete'
         let currentHighlight = null;
+        let highlightGraphics = []; 
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -179,14 +180,31 @@
         }
         
         function clearHighlight() {
-            if (currentHighlight) {
-                mapView.graphics.remove(currentHighlight);
-                if (currentHighlight.pulseGraphic) {
-                    mapView.graphics.remove(currentHighlight.pulseGraphic);
-                }
-                currentHighlight = null;
+    // Remove all tracked highlight graphics
+    if (highlightGraphics.length > 0) {
+        highlightGraphics.forEach(graphic => {
+            try {
+                mapView.graphics.remove(graphic);
+            } catch (e) {
+                // Ignore errors if graphic is already removed
             }
+        });
+        highlightGraphics = [];
+    }
+    
+    // Also clear the current highlight reference
+    if (currentHighlight) {
+        try {
+            mapView.graphics.remove(currentHighlight);
+            if (currentHighlight.pulseGraphic) {
+                mapView.graphics.remove(currentHighlight.pulseGraphic);
+            }
+        } catch (e) {
+            // Ignore errors if graphics are already removed
         }
+        currentHighlight = null;
+    }
+}
         
         function getObjectIdField(feature) {
             if (!feature || !feature.attributes) {
@@ -314,6 +332,7 @@
                 };
                 
                 mapView.graphics.add(currentHighlight);
+                highlightGraphics.push(currentHighlight);
                 
                 // Add a pulsing effect by creating a second, larger graphic
                 let pulseSymbol;
@@ -354,6 +373,7 @@
                 
                 // Store both graphics for cleanup
                 currentHighlight.pulseGraphic = pulseGraphic;
+                highlightGraphics.push(pulseGraphic);
                 
                 // Zoom to feature with padding
                 mapView.goTo({
@@ -942,20 +962,45 @@ generateDailyTrackingLink(current).then(link => {
     return finalUrl;
 }
         
-        function clearAllHighlights() {
-            // Clear current highlight
-            clearHighlight();
-            
-            // Clear polygon selection
-            clearPolygonSelection();
-            
-            // Close any open popup
-            if (mapView.popup) {
-                mapView.popup.close();
+       function clearAllHighlights() {
+    // Clear current highlight
+    clearHighlight();
+    
+    // Clear polygon selection
+    clearPolygonSelection();
+    
+    // Also clear any remaining graphics that might be left over
+    // This is a more aggressive cleanup approach
+    try {
+        const graphicsToRemove = [];
+        mapView.graphics.forEach(graphic => {
+            // Check if it's likely a highlight graphic based on its symbol properties
+            if (graphic.symbol) {
+                const symbol = graphic.symbol;
+                if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
+                    (symbol.type === "simple-line" && symbol.width >= 8) ||
+                    (symbol.type === "simple-fill" && symbol.outline && symbol.outline.width >= 4)) {
+                    graphicsToRemove.push(graphic);
+                }
             }
-            
-            updateStatus("All highlights cleared.");
-        }
+        });
+        
+        graphicsToRemove.forEach(graphic => {
+            mapView.graphics.remove(graphic);
+        });
+        
+    } catch (e) {
+        // If the aggressive cleanup fails, that's okay
+        console.log('Aggressive highlight cleanup encountered an error:', e);
+    }
+    
+    // Close any open popup
+    if (mapView.popup) {
+        mapView.popup.close();
+    }
+    
+    updateStatus("All highlights cleared.");
+}
         
         function nextFiberCable() {
             currentFiberCableIndex++;
@@ -984,7 +1029,7 @@ generateDailyTrackingLink(current).then(link => {
             if (polygonGraphic) {
                 mapView.graphics.remove(polygonGraphic);
             }
-            
+            highlightGraphics = [];
             toolBox.remove();
         }
         
