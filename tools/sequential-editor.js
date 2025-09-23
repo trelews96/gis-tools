@@ -767,24 +767,46 @@
                            fiberCableFeature.attributes.FEATURECLASS_TYPE ||
                            'fiber_cable';
     
+    // Debug: Log all available attributes to find the rfg field
+    console.log('All feature attributes:', Object.keys(fiberCableFeature.attributes));
+    console.log('Feature class type:', featureclassType);
+    
     // Build the related GUID field name using lowercase (matching Arcade: Lower('rel_' + $feature.featureclass_type + '_guid'))
     const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
     let rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
     
-    // If the exact field isn't found, try variations
+    // If the exact field isn't found, try all possible variations including case-insensitive search
     if (!rfgValue) {
+        const allAttrKeys = Object.keys(fiberCableFeature.attributes);
+        
+        // Try exact matches first
         const possibleFields = [
+            `rel_${featureclassType.toLowerCase()}_guid`,
             `rel_${featureclassType}_guid`,
             `REL_${featureclassType.toUpperCase()}_GUID`,
             `Rel_${featureclassType}_Guid`,
             'rel_fiber_cable_guid',
-            'REL_FIBER_CABLE_GUID'
+            'REL_FIBER_CABLE_GUID',
+            'rel_fiberoptic_guid',
+            'REL_FIBEROPTIC_GUID'
         ];
         
         for (const fieldName of possibleFields) {
             if (fiberCableFeature.attributes[fieldName]) {
                 rfgValue = fiberCableFeature.attributes[fieldName];
+                console.log('Found RFG value using field:', fieldName, 'Value:', rfgValue);
                 break;
+            }
+        }
+        
+        // If still not found, do a case-insensitive search for any field containing "rel" and "guid"
+        if (!rfgValue) {
+            const relGuidField = allAttrKeys.find(key => 
+                key.toLowerCase().includes('rel_') && key.toLowerCase().includes('_guid')
+            );
+            if (relGuidField) {
+                rfgValue = fiberCableFeature.attributes[relGuidField];
+                console.log('Found RFG value using case-insensitive search:', relGuidField, 'Value:', rfgValue);
             }
         }
     }
@@ -797,10 +819,29 @@
         rfgValue = `${rfgValue}}`;
     }
     
-    // Get service URL - this needs to match the working example format exactly
+    // Get service URL and ensure it includes the layer ID
     let serviceLayerUrl = '';
     if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
         serviceLayerUrl = fiberCableFeature.layer.url;
+        
+        // Check if the URL already ends with a layer ID (number)
+        const urlParts = serviceLayerUrl.split('/');
+        const lastPart = urlParts[urlParts.length - 1];
+        
+        // If it doesn't end with a number, we need to add the layer ID
+        if (isNaN(parseInt(lastPart))) {
+            // Try to get layer ID from the layer object
+            let layerId = '';
+            if (fiberCableFeature.layer.layerId !== undefined) {
+                layerId = fiberCableFeature.layer.layerId;
+            } else if (fiberCableFeature.layer.id !== undefined) {
+                layerId = fiberCableFeature.layer.id;
+            }
+            
+            if (layerId !== '') {
+                serviceLayerUrl = `${serviceLayerUrl}/${layerId}`;
+            }
+        }
     }
     
     // Build parameters in the same order as the working example
