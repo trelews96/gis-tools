@@ -97,7 +97,9 @@
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;">
                         <div>
                             <label>Client Code:</label><br>
-                            <input type="text" id="client_code" style="width:100%;padding:2px;font-size:10px;">
+                            <select id="client_code" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
                         </div>
                         <div>
                             <label>Project ID:</label><br>
@@ -123,35 +125,37 @@
                             <label>Workflow Stage:</label><br>
                             <select id="workflow_stage" style="width:100%;padding:2px;font-size:10px;">
                                 <option value="">Select...</option>
-                                <option value="Design">Design</option>
-                                <option value="Construction">Construction</option>
-                                <option value="Complete">Complete</option>
                             </select>
                         </div>
                         <div>
                             <label>Workflow Status:</label><br>
                             <select id="workflow_status" style="width:100%;padding:2px;font-size:10px;">
                                 <option value="">Select...</option>
-                                <option value="Planned">Planned</option>
-                                <option value="In Progress">In Progress</option>
-                                <option value="Complete">Complete</option>
                             </select>
                         </div>
                         <div>
                             <label>Work Type:</label><br>
-                            <input type="text" id="work_type" style="width:100%;padding:2px;font-size:10px;">
+                            <select id="work_type" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
                         </div>
                         <div>
                             <label>Supervisor:</label><br>
-                            <input type="text" id="supervisor" style="width:100%;padding:2px;font-size:10px;">
+                            <select id="supervisor" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
                         </div>
                         <div>
                             <label>Crew:</label><br>
-                            <input type="text" id="crew" style="width:100%;padding:2px;font-size:10px;">
+                            <select id="crew" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
                         </div>
                         <div>
                             <label>Construction Sub:</label><br>
-                            <input type="text" id="construction_subcontractor" style="width:100%;padding:2px;font-size:10px;">
+                            <select id="construction_subcontractor" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
                         </div>
                     </div>
                     <div style="margin-top:6px;">
@@ -327,7 +331,19 @@
                                 field.value = attributes[fieldName];
                             }
                         } else {
-                            field.value = attributes[fieldName];
+                            // Handle both input and select fields
+                            if (field.tagName === 'SELECT') {
+                                // For select fields, check if the value exists as an option
+                                const option = Array.from(field.options).find(opt => opt.value === attributes[fieldName]);
+                                if (option) {
+                                    field.value = attributes[fieldName];
+                                } else {
+                                    console.warn(`Template value "${attributes[fieldName]}" not found in dropdown for field ${fieldName}`);
+                                }
+                            } else {
+                                // For text inputs
+                                field.value = attributes[fieldName];
+                            }
                         }
                     }
                 }
@@ -347,8 +363,8 @@
             }
         }
         
-        // Initialize layer dropdown
-        function populateLayerDropdown() {
+        // Initialize layer dropdown and load domains
+        async function populateLayerDropdown() {
             layerSelect.innerHTML = '<option value="">Select Layer...</option>';
             
             for (const layerConfig of LINE_LAYER_CONFIG) {
@@ -358,6 +374,92 @@
                     option.value = layerConfig.id;
                     option.textContent = layerConfig.name;
                     layerSelect.appendChild(option);
+                }
+            }
+        }
+        
+        // Load field domains from selected layer
+        async function loadFieldDomains(layer) {
+            if (!layer) return;
+            
+            try {
+                await layer.load();
+                
+                if (!layer.fields) {
+                    console.warn('Layer has no field information');
+                    return;
+                }
+                
+                updateStatus("Loading field domains...");
+                
+                // Process each field that has domains
+                for (const field of layer.fields) {
+                    if (field.domain && field.domain.codedValues) {
+                        const fieldElement = $(field.name);
+                        if (fieldElement && fieldElement.tagName === 'SELECT') {
+                            // Clear existing options except the first one
+                            while (fieldElement.children.length > 1) {
+                                fieldElement.removeChild(fieldElement.lastChild);
+                            }
+                            
+                            // Add domain values
+                            for (const codedValue of field.domain.codedValues) {
+                                const option = document.createElement('option');
+                                option.value = codedValue.code;
+                                option.textContent = codedValue.name;
+                                fieldElement.appendChild(option);
+                            }
+                            
+                            console.log(`Loaded ${field.domain.codedValues.length} domain values for field: ${field.name}`);
+                        }
+                    }
+                }
+                
+                // Convert text fields to select fields if they have domains
+                await convertFieldsWithDomains(layer);
+                
+                updateStatus("Field domains loaded. Fill in attributes and enable drawing.");
+                
+            } catch (error) {
+                console.error("Error loading field domains:", error);
+                updateStatus("Could not load field domains, using default form.");
+            }
+        }
+        
+        // Convert text inputs to select dropdowns if the layer has domains for those fields
+        async function convertFieldsWithDomains(layer) {
+            const fieldsWithDomains = layer.fields.filter(f => 
+                f.domain && 
+                f.domain.codedValues && 
+                attributeFields.includes(f.name)
+            );
+            
+            for (const field of fieldsWithDomains) {
+                const currentElement = $(field.name);
+                if (currentElement && currentElement.tagName === 'INPUT') {
+                    // Create new select element
+                    const selectElement = document.createElement('select');
+                    selectElement.id = field.name;
+                    selectElement.style.cssText = currentElement.style.cssText;
+                    
+                    // Add default option
+                    const defaultOption = document.createElement('option');
+                    defaultOption.value = '';
+                    defaultOption.textContent = 'Select...';
+                    selectElement.appendChild(defaultOption);
+                    
+                    // Add domain values
+                    for (const codedValue of field.domain.codedValues) {
+                        const option = document.createElement('option');
+                        option.value = codedValue.code;
+                        option.textContent = codedValue.name;
+                        selectElement.appendChild(option);
+                    }
+                    
+                    // Replace the input with select
+                    currentElement.parentNode.replaceChild(selectElement, currentElement);
+                    
+                    console.log(`Converted ${field.name} from input to select with ${field.domain.codedValues.length} options`);
                 }
             }
         }
@@ -867,8 +969,16 @@
         }
         
         if (layerSelect) {
-            layerSelect.onchange = function() {
-                updateStatus("Layer selected. Fill in attributes and click Enable Drawing to start.");
+            layerSelect.onchange = async function() {
+                const layerId = parseInt(this.value);
+                if (layerId) {
+                    const layer = mapView.map.allLayers.find(l => l.layerId === layerId);
+                    if (layer) {
+                        await loadFieldDomains(layer);
+                    }
+                } else {
+                    updateStatus("Select a layer to load field domains.");
+                }
             };
         }
         
