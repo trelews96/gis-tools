@@ -106,6 +106,10 @@
                     <button id="skipSlackloopBtn" style="flex:1;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Skip This One</button>
                 </div>
                 
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button id="prevSlackloopBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">← Previous</button>
+                </div>
+                
                 <button id="clearHighlightsBtn2" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
             
@@ -123,7 +127,10 @@
                     Review the tracking information and use any links provided in the popup.
                 </div>
                 
-                <button id="nextFiberCableBtn" style="width:100%;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Next Feature</button>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button id="nextFiberCableBtn" style="flex:1;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;">Next Feature</button>
+                    <button id="prevFiberCableBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">← Previous</button>
+                </div>
                 
                 <button id="clearHighlightsBtn3" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
@@ -704,6 +711,9 @@
             $("#sequentialInInput").value = current.attributes.sequential_in || '';
             $("#sequentialOutInput").value = current.attributes.sequential_out || '';
             
+            // Update button states
+            $("#prevSlackloopBtn").disabled = currentSlackloopIndex === 0;
+            
             // Highlight feature with popup
             highlightFeature(current, [0, 255, 0, 0.8], true);
             
@@ -791,6 +801,13 @@
             showCurrentSlackloop();
         }
         
+        function prevSlackloop() {
+            if (currentSlackloopIndex > 0) {
+                currentSlackloopIndex--;
+                showCurrentSlackloop();
+            }
+        }
+        
         function startFiberCablePhase() {
             if (selectedFiberCables.length === 0) {
                 setPhase('complete');
@@ -827,6 +844,9 @@
                 Global ID: ${globalId}<br>
                 <span style="color:#dc3545;font-weight:bold;">⚡ Currently highlighted on map with daily tracking popup</span>
             `;
+            
+            // Update button states
+            $("#prevFiberCableBtn").disabled = currentFiberCableIndex === 0;
             
             // Highlight feature and show daily tracking popup
             highlightFeature(current, [255, 0, 255, 0.8]);
@@ -884,6 +904,13 @@
             showCurrentFiberCable();
         }
         
+        function prevFiberCable() {
+            if (currentFiberCableIndex > 0) {
+                currentFiberCableIndex--;
+                showCurrentFiberCable();
+            }
+        }
+        
         function startOver() {
             currentSlackloopIndex = 0;
             currentFiberCableIndex = 0;
@@ -927,8 +954,10 @@
         
         $("#submitSlackloopBtn").onclick = submitSlackloop;
         $("#skipSlackloopBtn").onclick = skipSlackloop;
+        $("#prevSlackloopBtn").onclick = prevSlackloop;
         
         $("#nextFiberCableBtn").onclick = nextFiberCable;
+        $("#prevFiberCableBtn").onclick = prevFiberCable;
         
         $("#startOverBtn").onclick = startOver;
         
