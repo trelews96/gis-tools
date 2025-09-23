@@ -746,56 +746,82 @@
         }
         
         function generateDailyTrackingLink(fiberCableFeature) {
-            const baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?';
-            const globalId = fiberCableFeature.attributes.globalid || 
-                            fiberCableFeature.attributes.GlobalID || 
-                            fiberCableFeature.attributes.GLOBALID;
-            
-            // Get featureclass_type, with fallback options
-            const featureclassType = fiberCableFeature.attributes.featureclass_type || 
-                                   fiberCableFeature.attributes.FeatureClass_Type ||
-                                   fiberCableFeature.attributes.FEATURECLASS_TYPE ||
-                                   'fiber_cable'; // fallback
-            
-            // Get service URL from layer - with better URL construction
-            let serviceLayerUrl = '';
-            if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
-                serviceLayerUrl = fiberCableFeature.layer.url;
-            } else if (mapView.map.portalItem && mapView.map.portalItem.portal) {
-                serviceLayerUrl = mapView.map.portalItem.portal.url + '/rest/services/';
+    const baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?';
+    
+    // Get globalid - ensure it's properly formatted with braces
+    let globalId = fiberCableFeature.attributes.globalid || 
+                   fiberCableFeature.attributes.GlobalID || 
+                   fiberCableFeature.attributes.GLOBALID;
+    
+    // Ensure globalid has proper GUID format with braces
+    if (globalId && !globalId.startsWith('{')) {
+        globalId = `{${globalId}}`;
+    }
+    if (globalId && !globalId.endsWith('}')) {
+        globalId = `${globalId}}`;
+    }
+    
+    // Get featureclass_type
+    const featureclassType = fiberCableFeature.attributes.featureclass_type || 
+                           fiberCableFeature.attributes.FeatureClass_Type ||
+                           fiberCableFeature.attributes.FEATURECLASS_TYPE ||
+                           'fiber_cable';
+    
+    // Build the related GUID field name using lowercase (matching Arcade: Lower('rel_' + $feature.featureclass_type + '_guid'))
+    const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
+    let rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
+    
+    // If the exact field isn't found, try variations
+    if (!rfgValue) {
+        const possibleFields = [
+            `rel_${featureclassType}_guid`,
+            `REL_${featureclassType.toUpperCase()}_GUID`,
+            `Rel_${featureclassType}_Guid`,
+            'rel_fiber_cable_guid',
+            'REL_FIBER_CABLE_GUID'
+        ];
+        
+        for (const fieldName of possibleFields) {
+            if (fiberCableFeature.attributes[fieldName]) {
+                rfgValue = fiberCableFeature.attributes[fieldName];
+                break;
             }
-            
-            // Build the related GUID field name (rel_ + featureclass_type + _guid)
-            const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
-            let rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
-            
-            // If the exact field isn't found, try some variations
-            if (!rfgValue) {
-                const possibleFields = [
-                    `rel_${featureclassType}_guid`,
-                    `REL_${featureclassType.toUpperCase()}_GUID`,
-                    `Rel_${featureclassType}_Guid`,
-                    'rel_fiber_cable_guid',
-                    'REL_FIBER_CABLE_GUID'
-                ];
-                
-                for (const fieldName of possibleFields) {
-                    if (fiberCableFeature.attributes[fieldName]) {
-                        rfgValue = fiberCableFeature.attributes[fieldName];
-                        break;
-                    }
-                }
-            }
-            
-            // Build parameters
-            const serviceUrl = `serviceUrl=${encodeURIComponent(serviceLayerUrl)}`;
-            const dtg = `dtg=${globalId}`;
-            const rfg = `rfg=${rfgValue}`;
-            
-            const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
-            
-            return finalUrl;
         }
+    }
+    
+    // Ensure rfgValue has proper GUID format with braces
+    if (rfgValue && !rfgValue.startsWith('{')) {
+        rfgValue = `{${rfgValue}}`;
+    }
+    if (rfgValue && !rfgValue.endsWith('}')) {
+        rfgValue = `${rfgValue}}`;
+    }
+    
+    // Get service URL - this needs to match the working example format exactly
+    let serviceLayerUrl = '';
+    if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
+        serviceLayerUrl = fiberCableFeature.layer.url;
+    }
+    
+    // Build parameters in the same order as the working example
+    const dtg = `dtg=${globalId}`;
+    const rfg = `rfg=${rfgValue}`;
+    const serviceUrl = `serviceUrl=${encodeURIComponent(serviceLayerUrl)}`;
+    
+    // Construct final URL matching the working pattern exactly
+    const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
+    
+    // Debug logging to help troubleshoot
+    console.log('Link Generation Debug Info:');
+    console.log('Global ID:', globalId);
+    console.log('Feature Class Type:', featureclassType);
+    console.log('RFG Field Name:', relGuidFieldName);
+    console.log('RFG Value:', rfgValue);
+    console.log('Service Layer URL:', serviceLayerUrl);
+    console.log('Generated URL:', finalUrl);
+    
+    return finalUrl;
+}
         
         function clearAllHighlights() {
             // Clear current highlight
