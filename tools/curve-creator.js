@@ -865,12 +865,18 @@
             updateStatus("Creating feature...");
             
             try {
+                // Use the smoothed path for feature creation - this is the correct geometry
                 const pathCoords = smoothedPath.map(p => [p.x, p.y]);
                 const geometry = {
                     type: "polyline",
                     paths: [pathCoords],
                     spatialReference: mapView.spatialReference
                 };
+                
+                console.log("Creating feature with smoothed geometry:");
+                console.log("- First coordinate:", pathCoords[0]);
+                console.log("- Last coordinate:", pathCoords[pathCoords.length - 1]);
+                console.log("- Total coordinates:", pathCoords.length);
                 
                 const length = calculateGeodeticLength(geometry);
                 
@@ -936,12 +942,6 @@
                 };
                 
                 console.log("Creating feature with attributes:", newFeature.attributes);
-                console.log("Layer fields for reference:", selectedLayer.fields.map(f => ({
-                    name: f.name, 
-                    type: f.type, 
-                    nullable: f.nullable,
-                    hasDomain: !!(f.domain && f.domain.codedValues)
-                })));
                 
                 // Add to layer with detailed error handling
                 if (selectedLayer.applyEdits) {
@@ -955,16 +955,26 @@
                         const addResult = result.addFeatureResults[0];
                         console.log("Add feature result:", addResult);
                         
-                        if (addResult.success) {
+                        if (addResult.success && addResult.objectId) {
                             updateStatus(`✅ Created curve feature with length ${length}ft! ObjectID: ${addResult.objectId}`);
                         } else {
                             // Enhanced error reporting
                             let errorMessage = "Unknown error";
                             if (addResult.error) {
-                                errorMessage = addResult.error.message || addResult.error.description || JSON.stringify(addResult.error);
+                                if (addResult.error.message) {
+                                    errorMessage = addResult.error.message;
+                                } else if (addResult.error.description) {
+                                    errorMessage = addResult.error.description;
+                                } else if (typeof addResult.error === 'string') {
+                                    errorMessage = addResult.error;
+                                } else {
+                                    errorMessage = JSON.stringify(addResult.error);
+                                }
+                            } else if (!addResult.success) {
+                                errorMessage = "Feature creation returned success=false with no error details";
                             }
                             
-                            console.error("Add feature failed:", addResult.error);
+                            console.error("Add feature failed:", addResult);
                             console.error("Feature that failed:", newFeature);
                             
                             // Try to identify specific validation issues
