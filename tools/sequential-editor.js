@@ -363,16 +363,22 @@
                     // Show popup after zoom completes if requested
                     if (showPopup && mapView.popup) {
                         // Create a graphic for the popup with full feature information
+                        // Ensure we maintain the layer reference for proper popup template usage
                         const popupGraphic = {
                             geometry: feature.geometry,
                             attributes: feature.attributes,
-                            layer: feature.layer
+                            layer: feature.layer,
+                            sourceLayer: feature.layer, // Additional reference for popup templates
+                            // Preserve any popup template from the original feature
+                            popupTemplate: feature.layer?.popupTemplate || feature.popupTemplate
                         };
                         
                         // Set the popup content and location
                         mapView.popup.open({
                             features: [popupGraphic],
-                            location: getPopupLocation(feature.geometry)
+                            location: getPopupLocation(feature.geometry),
+                            // Ensure we use the layer's popup template if available
+                            updateLocationEnabled: true
                         });
                     }
                 }).catch(err => {
@@ -381,12 +387,15 @@
                         const popupGraphic = {
                             geometry: feature.geometry,
                             attributes: feature.attributes,
-                            layer: feature.layer
+                            layer: feature.layer,
+                            sourceLayer: feature.layer,
+                            popupTemplate: feature.layer?.popupTemplate || feature.popupTemplate
                         };
                         
                         mapView.popup.open({
                             features: [popupGraphic],
-                            location: getPopupLocation(feature.geometry)
+                            location: getPopupLocation(feature.geometry),
+                            updateLocationEnabled: true
                         });
                     }
                 });
