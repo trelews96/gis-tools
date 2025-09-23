@@ -82,10 +82,83 @@
             <div style="font-weight:bold;margin-bottom:8px;">🎨 Curve Drawing Tool</div>
             <div style="margin-bottom:8px;color:#666;font-size:11px;">
                 <strong>Instructions:</strong><br>
-                1. Select target layer<br>
-                2. Enable drawing mode<br>
-                3. Click and drag to draw curve<br>
-                4. Tool will auto-smooth your input
+                1. Fill in feature attributes<br>
+                2. Select target layer<br>
+                3. Enable drawing and draw curve<br>
+                4. Accept to create feature
+            </div>
+            
+            <!-- Collapsible Attributes Form -->
+            <div style="margin-bottom:8px;">
+                <button id="toggleAttributes" style="width:100%;padding:4px;background:#f8f9fa;border:1px solid #ccc;text-align:left;font-size:11px;cursor:pointer;">
+                    ▼ Feature Attributes (Required)
+                </button>
+                <div id="attributesForm" style="border:1px solid #ccc;border-top:none;padding:8px;background:#f8f9fa;display:block;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;">
+                        <div>
+                            <label>Client Code:</label><br>
+                            <input type="text" id="client_code" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Project ID:</label><br>
+                            <input type="text" id="project_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Job Number:</label><br>
+                            <input type="text" id="job_number" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Purchase Order:</label><br>
+                            <input type="text" id="purchase_order_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Work Order:</label><br>
+                            <input type="text" id="workorder_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Install Date:</label><br>
+                            <input type="date" id="installation_date" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Workflow Stage:</label><br>
+                            <select id="workflow_stage" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                                <option value="Design">Design</option>
+                                <option value="Construction">Construction</option>
+                                <option value="Complete">Complete</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Workflow Status:</label><br>
+                            <select id="workflow_status" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                                <option value="Planned">Planned</option>
+                                <option value="In Progress">In Progress</option>
+                                <option value="Complete">Complete</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Work Type:</label><br>
+                            <input type="text" id="work_type" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Supervisor:</label><br>
+                            <input type="text" id="supervisor" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Crew:</label><br>
+                            <input type="text" id="crew" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Construction Sub:</label><br>
+                            <input type="text" id="construction_subcontractor" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                    </div>
+                    <div style="margin-top:6px;">
+                        <button id="saveTemplate" style="padding:3px 6px;background:#007bff;color:white;border:none;border-radius:2px;font-size:10px;margin-right:4px;">Save as Template</button>
+                        <button id="loadTemplate" style="padding:3px 6px;background:#6c757d;color:white;border:none;border-radius:2px;font-size:10px;">Load Template</button>
+                    </div>
+                </div>
             </div>
             
             <div style="margin-bottom:8px;">
@@ -144,9 +217,134 @@
         const cancelBtn = $('cancelCurve');
         const closeBtn = $('closeTool');
         const status = $('curveStatus');
+        const toggleAttributesBtn = $('toggleAttributes');
+        const attributesForm = $('attributesForm');
+        const saveTemplateBtn = $('saveTemplate');
+        const loadTemplateBtn = $('loadTemplate');
+        
+        // Attribute form fields
+        const attributeFields = [
+            'client_code', 'project_id', 'job_number', 'purchase_order_id',
+            'workorder_id', 'installation_date', 'workflow_stage', 'workflow_status',
+            'work_type', 'supervisor', 'crew', 'construction_subcontractor'
+        ];
         
         function updateStatus(message) {
             if (status) status.textContent = message;
+        }
+        
+        // Attribute form functions
+        function toggleAttributesForm() {
+            const isVisible = attributesForm.style.display !== 'none';
+            attributesForm.style.display = isVisible ? 'none' : 'block';
+            toggleAttributesBtn.textContent = (isVisible ? '▶' : '▼') + ' Feature Attributes (Required)';
+        }
+        
+        function getFormAttributes() {
+            const attributes = {};
+            
+            for (const fieldName of attributeFields) {
+                const field = $(fieldName);
+                if (field) {
+                    let value = field.value.trim();
+                    
+                    // Handle date fields - convert to timestamp if needed
+                    if (fieldName === 'installation_date' && value) {
+                        try {
+                            const date = new Date(value);
+                            // Convert to timestamp (milliseconds since epoch)
+                            value = date.getTime();
+                        } catch (error) {
+                            console.error("Error parsing date:", error);
+                            value = null;
+                        }
+                    }
+                    
+                    attributes[fieldName] = value || null;
+                }
+            }
+            
+            return attributes;
+        }
+        
+        function validateAttributes() {
+            const requiredFields = ['client_code', 'project_id', 'job_number'];
+            const missing = [];
+            
+            for (const fieldName of requiredFields) {
+                const field = $(fieldName);
+                if (!field || !field.value.trim()) {
+                    missing.push(fieldName.replace('_', ' ').toUpperCase());
+                }
+            }
+            
+            if (missing.length > 0) {
+                updateStatus(`❌ Required fields missing: ${missing.join(', ')}`);
+                return false;
+            }
+            
+            return true;
+        }
+        
+        function saveAttributeTemplate() {
+            try {
+                const attributes = getFormAttributes();
+                localStorage.setItem('curveDrawingTool_attributeTemplate', JSON.stringify(attributes));
+                updateStatus('✅ Attribute template saved!');
+                
+                setTimeout(() => {
+                    if (drawingActive) {
+                        updateStatus("Drawing enabled! Hold Shift and drag to draw curves.");
+                    } else {
+                        updateStatus("Curve Drawing Tool loaded. Fill attributes and enable drawing to start.");
+                    }
+                }, 2000);
+            } catch (error) {
+                console.error("Error saving template:", error);
+                updateStatus('❌ Error saving template.');
+            }
+        }
+        
+        function loadAttributeTemplate() {
+            try {
+                const saved = localStorage.getItem('curveDrawingTool_attributeTemplate');
+                if (!saved) {
+                    updateStatus('❌ No saved template found.');
+                    return;
+                }
+                
+                const attributes = JSON.parse(saved);
+                
+                for (const fieldName of attributeFields) {
+                    const field = $(fieldName);
+                    if (field && attributes[fieldName] !== undefined && attributes[fieldName] !== null) {
+                        if (fieldName === 'installation_date' && attributes[fieldName]) {
+                            // Convert timestamp back to date string
+                            try {
+                                const date = new Date(attributes[fieldName]);
+                                field.value = date.toISOString().split('T')[0];
+                            } catch (error) {
+                                field.value = attributes[fieldName];
+                            }
+                        } else {
+                            field.value = attributes[fieldName];
+                        }
+                    }
+                }
+                
+                updateStatus('✅ Attribute template loaded!');
+                
+                setTimeout(() => {
+                    if (drawingActive) {
+                        updateStatus("Drawing enabled! Hold Shift and drag to draw curves.");
+                    } else {
+                        updateStatus("Template loaded. Select layer and enable drawing to start.");
+                    }
+                }, 2000);
+            } catch (error) {
+                console.error("Error loading template:", error);
+                updateStatus('❌ Error loading template.');
+            }
         }
         
         // Initialize layer dropdown
@@ -501,6 +699,11 @@
         async function acceptCurve() {
             if (!smoothedPath || !selectedLayer) return;
             
+            // Validate required attributes first
+            if (!validateAttributes()) {
+                return;
+            }
+            
             updateStatus("Creating feature...");
             
             try {
@@ -513,21 +716,39 @@
                 
                 const length = calculateGeodeticLength(geometry);
                 
-                // Create new feature
+                // Get attributes from form
+                const formAttributes = getFormAttributes();
+                
+                // Create new feature with all required attributes
                 const newFeature = {
                     geometry: geometry,
                     attributes: {
-                        calculated_length: length
-                        // Add other default attributes as needed
+                        calculated_length: length,
+                        ...formAttributes
                     }
                 };
                 
+                console.log("Creating feature with attributes:", newFeature.attributes);
+                
                 // Add to layer
                 if (selectedLayer.applyEdits) {
-                    await selectedLayer.applyEdits({ addFeatures: [newFeature] });
-                    updateStatus(`✅ Created curve feature with length ${length}ft!`);
+                    const result = await selectedLayer.applyEdits({ addFeatures: [newFeature] });
+                    
+                    if (result.addFeatureResults && result.addFeatureResults.length > 0) {
+                        const addResult = result.addFeatureResults[0];
+                        if (addResult.success) {
+                            updateStatus(`✅ Created curve feature with length ${length}ft! ObjectID: ${addResult.objectId}`);
+                        } else {
+                            console.error("Add feature failed:", addResult.error);
+                            updateStatus(`❌ Failed to create feature: ${addResult.error?.message || 'Unknown error'}`);
+                            return;
+                        }
+                    } else {
+                        updateStatus(`✅ Created curve feature with length ${length}ft!`);
+                    }
                 } else {
                     updateStatus("❌ Layer doesn't support editing.");
+                    return;
                 }
                 
                 // Clean up
@@ -574,6 +795,11 @@
             const layerId = parseInt(layerSelect.value);
             if (!layerId) {
                 updateStatus("❌ Please select a target layer first.");
+                return;
+            }
+            
+            // Check if minimum required attributes are filled
+            if (!validateAttributes()) {
                 return;
             }
             
@@ -628,9 +854,21 @@
         }
         
         // Event listeners
+        if (toggleAttributesBtn) {
+            toggleAttributesBtn.onclick = toggleAttributesForm;
+        }
+        
+        if (saveTemplateBtn) {
+            saveTemplateBtn.onclick = saveAttributeTemplate;
+        }
+        
+        if (loadTemplateBtn) {
+            loadTemplateBtn.onclick = loadAttributeTemplate;
+        }
+        
         if (layerSelect) {
             layerSelect.onchange = function() {
-                updateStatus("Layer selected. Click Enable Drawing to start.");
+                updateStatus("Layer selected. Fill in attributes and click Enable Drawing to start.");
             };
         }
         
@@ -666,7 +904,7 @@
         // Register tool as active
         window.gisToolHost.activeTools.add('curve-drawing-tool');
         
-        updateStatus("Curve Drawing Tool loaded. Select a layer and enable drawing to start.");
+        updateStatus("Curve Drawing Tool loaded. Fill in required attributes, select layer, and enable drawing.");
         
     } catch (error) {
         console.error("Error creating curve drawing tool:", error);
