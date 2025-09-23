@@ -727,17 +727,21 @@
             `;
             
             // Generate daily tracking link
-            const link = generateDailyTrackingLink(current);
-            
-            $("#dailyTrackingLink").innerHTML = `
-                <strong>Daily Tracking Link:</strong><br>
-                <div style="word-break:break-all;font-size:10px;margin-top:4px;padding:4px;background:#fff;border:1px solid #ddd;">
-                    <a href="${link}" target="_blank" style="color:#007bff;">${link}</a>
-                </div>
-            `;
-            
-            // Store link for open button
-            $("#openLinkBtn").onclick = () => window.open(link, '_blank');
+           // With this:
+generateDailyTrackingLink(current).then(link => {
+    $("#dailyTrackingLink").innerHTML = `
+        <strong>Daily Tracking Link:</strong><br>
+        <div style="word-break:break-all;font-size:10px;margin-top:4px;padding:4px;background:#fff;border:1px solid #ddd;">
+            <a href="${link}" target="_blank" style="color:#007bff;">${link}</a>
+        </div>
+    `;
+    
+    // Store link for open button
+    $("#openLinkBtn").onclick = () => window.open(link, '_blank');
+}).catch(error => {
+    console.error('Error generating daily tracking link:', error);
+    $("#dailyTrackingLink").innerHTML = `<div style="color:red;">Error generating link: ${error.message}</div>`;
+});
             
             // Highlight feature
             highlightFeature(current, [255, 0, 255, 0.8]);
@@ -745,7 +749,7 @@
             updateStatus(`Viewing fiber cable ${currentFiberCableIndex + 1} of ${selectedFiberCables.length}`);
         }
         
-        function generateDailyTrackingLink(fiberCableFeature) {
+        async function generateDailyTrackingLink(fiberCableFeature) {
     const baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?';
     
     // Get globalid - ensure it's properly formatted with braces
@@ -767,48 +771,71 @@
                            fiberCableFeature.attributes.FEATURECLASS_TYPE ||
                            'fiber_cable';
     
-    // Debug: Log all available attributes to find the rfg field
-    console.log('All feature attributes:', Object.keys(fiberCableFeature.attributes));
     console.log('Feature class type:', featureclassType);
+    console.log('Fiber cable globalid:', globalId);
     
-    // Build the related GUID field name using lowercase (matching Arcade: Lower('rel_' + $feature.featureclass_type + '_guid'))
-    const relGuidFieldName = `rel_${featureclassType.toLowerCase()}_guid`;
-    let rfgValue = fiberCableFeature.attributes[relGuidFieldName] || '';
+    // Now we need to query the related daily tracking table to get the rel_fiber_cable_guid
+    let rfgValue = '';
     
-    // If the exact field isn't found, try all possible variations including case-insensitive search
-    if (!rfgValue) {
-        const allAttrKeys = Object.keys(fiberCableFeature.attributes);
+    try {
+        // Find the daily tracking layer with layer ID 90100
+        const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+        const dailyTrackingLayer = allFL.find(l => l.layerId === 90100);
         
-        // Try exact matches first
-        const possibleFields = [
-            `rel_${featureclassType.toLowerCase()}_guid`,
-            `rel_${featureclassType}_guid`,
-            `REL_${featureclassType.toUpperCase()}_GUID`,
-            `Rel_${featureclassType}_Guid`,
-            'rel_fiber_cable_guid',
-            'REL_FIBER_CABLE_GUID',
-            'rel_fiberoptic_guid',
-            'REL_FIBEROPTIC_GUID'
-        ];
-        
-        for (const fieldName of possibleFields) {
-            if (fiberCableFeature.attributes[fieldName]) {
-                rfgValue = fiberCableFeature.attributes[fieldName];
-                console.log('Found RFG value using field:', fieldName, 'Value:', rfgValue);
-                break;
+        if (dailyTrackingLayer) {
+            await dailyTrackingLayer.load();
+            console.log('Found daily tracking layer:', dailyTrackingLayer.title);
+            
+            // Query the daily tracking table for records where rel_fiber_cable_guid matches the fiber cable's globalid
+            // Remove the braces from globalid for the query
+            const fiberGlobalIdForQuery = globalId.replace(/[{}]/g, '');
+            
+            const relatedQuery = await dailyTrackingLayer.queryFeatures({
+                where: `rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`,
+                outFields: ['*'],
+                returnGeometry: false
+            });
+            
+            console.log(`Querying daily tracking with: rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`);
+            console.log('Found related records:', relatedQuery.features.length);
+            
+            if (relatedQuery.features.length > 0) {
+                const relatedFeature = relatedQuery.features[0];
+                console.log('Related record attributes:', Object.keys(relatedFeature.attributes));
+                
+                // The rfg value should be the globalid of the related daily tracking record
+                rfgValue = relatedFeature.attributes.globalid || 
+                          relatedFeature.attributes.GlobalID || 
+                          relatedFeature.attributes.GLOBALID;
+                
+                console.log('Found RFG value from daily tracking record globalid:', rfgValue);
+            } else {
+                console.log('No related records found in daily tracking table for globalid:', fiberGlobalIdForQuery);
+                
+                // Try alternative query in case the field stores GUIDs with braces
+                const alternativeQuery = await dailyTrackingLayer.queryFeatures({
+                    where: `rel_fiber_cable_guid = '${globalId}'`,
+                    outFields: ['*'],
+                    returnGeometry: false
+                });
+                
+                console.log('Alternative query with braces found:', alternativeQuery.features.length);
+                
+                if (alternativeQuery.features.length > 0) {
+                    const relatedFeature = alternativeQuery.features[0];
+                    rfgValue = relatedFeature.attributes.globalid || 
+                              relatedFeature.attributes.GlobalID || 
+                              relatedFeature.attributes.GLOBALID;
+                    console.log('Found RFG value from alternative query:', rfgValue);
+                }
             }
+        } else {
+            console.log('Daily tracking layer (90100) not found');
+            console.log('Available layers:', allFL.map(l => `${l.layerId}: ${l.title}`));
         }
         
-        // If still not found, do a case-insensitive search for any field containing "rel" and "guid"
-        if (!rfgValue) {
-            const relGuidField = allAttrKeys.find(key => 
-                key.toLowerCase().includes('rel_') && key.toLowerCase().includes('_guid')
-            );
-            if (relGuidField) {
-                rfgValue = fiberCableFeature.attributes[relGuidField];
-                console.log('Found RFG value using case-insensitive search:', relGuidField, 'Value:', rfgValue);
-            }
-        }
+    } catch (error) {
+        console.log('Error querying related table:', error);
     }
     
     // Ensure rfgValue has proper GUID format with braces
@@ -819,35 +846,35 @@
         rfgValue = `${rfgValue}}`;
     }
     
-    // Get service URL and ensure it includes the layer ID
+    // Get service URL and fix the encoding issue
     let serviceLayerUrl = '';
     if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
         serviceLayerUrl = fiberCableFeature.layer.url;
+        
+        // The working URL uses layer 90100, but your code shows 41050
+        // We need to determine the correct layer ID for the Daily Tracking system
+        // Based on the working example, it might be a different layer ID than what's in the feature layer
         
         // Check if the URL already ends with a layer ID (number)
         const urlParts = serviceLayerUrl.split('/');
         const lastPart = urlParts[urlParts.length - 1];
         
-        // If it doesn't end with a number, we need to add the layer ID
-        if (isNaN(parseInt(lastPart))) {
-            // Try to get layer ID from the layer object
-            let layerId = '';
-            if (fiberCableFeature.layer.layerId !== undefined) {
-                layerId = fiberCableFeature.layer.layerId;
-            } else if (fiberCableFeature.layer.id !== undefined) {
-                layerId = fiberCableFeature.layer.id;
-            }
-            
-            if (layerId !== '') {
-                serviceLayerUrl = `${serviceLayerUrl}/${layerId}`;
-            }
+        // Replace the current layer ID with the one used in the working URL
+        if (!isNaN(parseInt(lastPart))) {
+            // Remove the current layer ID and replace with 90100
+            urlParts[urlParts.length - 1] = '90100';
+            serviceLayerUrl = urlParts.join('/');
+        } else {
+            // Add the layer ID if it's missing
+            serviceLayerUrl = `${serviceLayerUrl}/90100`;
         }
     }
     
     // Build parameters in the same order as the working example
     const dtg = `dtg=${globalId}`;
     const rfg = `rfg=${rfgValue}`;
-    const serviceUrl = `serviceUrl=${encodeURIComponent(serviceLayerUrl)}`;
+    // DON'T encode the service URL - the working URL doesn't have encoding
+    const serviceUrl = `serviceUrl=${serviceLayerUrl}`;
     
     // Construct final URL matching the working pattern exactly
     const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
@@ -856,7 +883,6 @@
     console.log('Link Generation Debug Info:');
     console.log('Global ID:', globalId);
     console.log('Feature Class Type:', featureclassType);
-    console.log('RFG Field Name:', relGuidFieldName);
     console.log('RFG Value:', rfgValue);
     console.log('Service Layer URL:', serviceLayerUrl);
     console.log('Generated URL:', finalUrl);
