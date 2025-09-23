@@ -1,5 +1,5 @@
 // tools/sequential-editor.js - Sequential Feature Editor with Polygon Selection
-// Allows editing slackloop sequential fields and generating daily tracking links for fiber cables
+// Allows editing slackloop sequential fields and viewing daily tracking popups for fiber cables
 
 (function() {
     try {
@@ -68,7 +68,7 @@
                 <div style="margin-bottom:12px;color:#666;font-size:11px;">
                     <strong>Step 1:</strong> Draw a polygon to select features<br>
                     <strong>Step 2:</strong> Edit slackloop sequential fields<br>
-                    <strong>Step 3:</strong> Access fiber cable daily tracking links
+                    <strong>Step 3:</strong> View daily tracking for fiber cables
                 </div>
                 
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
@@ -111,18 +111,19 @@
             
             <!-- Fiber Cable Phase -->
             <div id="fiberCablePhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;color:#dc3545;">Fiber Cable Daily Tracking</div>
+                <div style="font-weight:bold;margin-bottom:8px;color:#dc3545;">Daily Tracking Review</div>
                 
                 <div id="fiberCableProgress" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
                 
                 <div id="fiberCableInfo" style="margin-bottom:12px;padding:8px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:3px;"></div>
                 
-                <div id="dailyTrackingLink" style="margin-bottom:12px;padding:8px;background:#d1ecf1;border:1px solid #bee5eb;border-radius:3px;"></div>
-                
-                <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button id="nextFiberCableBtn" style="flex:1;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;">Next Feature</button>
-                    <button id="openLinkBtn" style="flex:1;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Open Link</button>
+                <div style="margin-bottom:12px;padding:8px;background:#d1ecf1;border:1px solid #bee5eb;border-radius:3px;">
+                    <strong>Daily Tracking:</strong><br>
+                    The feature is highlighted on the map and its daily tracking popup is displayed.
+                    Review the tracking information and use any links provided in the popup.
                 </div>
+                
+                <button id="nextFiberCableBtn" style="width:100%;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Next Feature</button>
                 
                 <button id="clearHighlightsBtn3" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
@@ -180,31 +181,31 @@
         }
         
         function clearHighlight() {
-    // Remove all tracked highlight graphics
-    if (highlightGraphics.length > 0) {
-        highlightGraphics.forEach(graphic => {
-            try {
-                mapView.graphics.remove(graphic);
-            } catch (e) {
-                // Ignore errors if graphic is already removed
+            // Remove all tracked highlight graphics
+            if (highlightGraphics.length > 0) {
+                highlightGraphics.forEach(graphic => {
+                    try {
+                        mapView.graphics.remove(graphic);
+                    } catch (e) {
+                        // Ignore errors if graphic is already removed
+                    }
+                });
+                highlightGraphics = [];
             }
-        });
-        highlightGraphics = [];
-    }
-    
-    // Also clear the current highlight reference
-    if (currentHighlight) {
-        try {
-            mapView.graphics.remove(currentHighlight);
-            if (currentHighlight.pulseGraphic) {
-                mapView.graphics.remove(currentHighlight.pulseGraphic);
+            
+            // Also clear the current highlight reference
+            if (currentHighlight) {
+                try {
+                    mapView.graphics.remove(currentHighlight);
+                    if (currentHighlight.pulseGraphic) {
+                        mapView.graphics.remove(currentHighlight.pulseGraphic);
+                    }
+                } catch (e) {
+                    // Ignore errors if graphics are already removed
+                }
+                currentHighlight = null;
             }
-        } catch (e) {
-            // Ignore errors if graphics are already removed
         }
-        currentHighlight = null;
-    }
-}
         
         function getObjectIdField(feature) {
             if (!feature || !feature.attributes) {
@@ -446,6 +447,86 @@
                     }],
                     location: getPopupLocation(feature.geometry)
                 });
+            }
+        }
+
+        // Function to show daily tracking popup for fiber cable
+        async function showDailyTrackingPopup(fiberCableFeature) {
+            try {
+                const fiberGlobalId = fiberCableFeature.attributes.globalid || 
+                                     fiberCableFeature.attributes.GlobalID || 
+                                     fiberCableFeature.attributes.GLOBALID;
+                
+                if (!fiberGlobalId) {
+                    updateStatus("No GlobalID found for fiber cable - showing feature popup instead");
+                    showFeaturePopup(fiberCableFeature);
+                    return;
+                }
+                
+                // Find the daily tracking source
+                let dailyTrackingSource = null;
+                
+                // First try allTables
+                if (mapView.map.allTables) {
+                    dailyTrackingSource = mapView.map.allTables.find(t => 
+                        t.title && t.title.toLowerCase().includes('daily tracking')
+                    );
+                }
+                
+                // If not found in tables, look for layer 90100
+                if (!dailyTrackingSource) {
+                    const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                    dailyTrackingSource = allFL.find(l => l.layerId === 90100);
+                }
+                
+                if (!dailyTrackingSource) {
+                    updateStatus("Daily tracking source not found - showing fiber cable popup instead");
+                    showFeaturePopup(fiberCableFeature);
+                    return;
+                }
+                
+                await dailyTrackingSource.load();
+                
+                // Query daily tracking table where rel_fiber_cable_guid matches our fiber cable's globalid
+                const fiberGlobalIdForQuery = fiberGlobalId.replace(/[{}]/g, '');
+                
+                const relatedQuery = await dailyTrackingSource.queryFeatures({
+                    where: `rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`,
+                    outFields: ['*'],
+                    returnGeometry: false
+                });
+                
+                if (relatedQuery.features.length > 0) {
+                    // Show popup for the daily tracking record
+                    mapView.popup.open({
+                        features: relatedQuery.features,
+                        location: getPopupLocation(fiberCableFeature.geometry)
+                    });
+                    updateStatus("Daily tracking popup displayed");
+                } else {
+                    // Try with braces in case that's how they're stored
+                    const altQuery = await dailyTrackingSource.queryFeatures({
+                        where: `rel_fiber_cable_guid = '${fiberGlobalId}'`,
+                        outFields: ['*'],
+                        returnGeometry: false
+                    });
+                    
+                    if (altQuery.features.length > 0) {
+                        mapView.popup.open({
+                            features: altQuery.features,
+                            location: getPopupLocation(fiberCableFeature.geometry)
+                        });
+                        updateStatus("Daily tracking popup displayed");
+                    } else {
+                        updateStatus("No daily tracking record found - showing fiber cable popup instead");
+                        showFeaturePopup(fiberCableFeature);
+                    }
+                }
+                
+            } catch (error) {
+                updateStatus("Error loading daily tracking: " + error.message);
+                // Fallback to showing the fiber cable popup
+                showFeaturePopup(fiberCableFeature);
             }
         }
         
@@ -743,264 +824,60 @@
                 <strong>Current Fiber Cable:</strong><br>
                 GIS ID: ${gisId}<br>
                 Object ID: ${objectId}<br>
-                Global ID: ${globalId}
+                Global ID: ${globalId}<br>
+                <span style="color:#dc3545;font-weight:bold;">⚡ Currently highlighted on map with daily tracking popup</span>
             `;
             
-            // Generate daily tracking link
-           // With this:
-generateDailyTrackingLink(current).then(link => {
-    $("#dailyTrackingLink").innerHTML = `
-        <strong>Daily Tracking Link:</strong><br>
-        <div style="word-break:break-all;font-size:10px;margin-top:4px;padding:4px;background:#fff;border:1px solid #ddd;">
-            <a href="${link}" target="_blank" style="color:#007bff;">${link}</a>
-        </div>
-    `;
-    
-    // Store link for open button
-    $("#openLinkBtn").onclick = () => window.open(link, '_blank');
-}).catch(error => {
-    console.error('Error generating daily tracking link:', error);
-    $("#dailyTrackingLink").innerHTML = `<div style="color:red;">Error generating link: ${error.message}</div>`;
-});
-            
-            // Highlight feature
+            // Highlight feature and show daily tracking popup
             highlightFeature(current, [255, 0, 255, 0.8]);
             
-            updateStatus(`Viewing fiber cable ${currentFiberCableIndex + 1} of ${selectedFiberCables.length}`);
+            // Show daily tracking popup
+            setTimeout(() => {
+                showDailyTrackingPopup(current);
+            }, 500);
+            
+            updateStatus(`Viewing fiber cable ${currentFiberCableIndex + 1} of ${selectedFiberCables.length} - Daily tracking popup displayed`);
         }
         
-        async function generateDailyTrackingLink(fiberCableFeature) {
-    const baseUrl = 'https://dycom.outsystemsenterprise.com/ECCGISHub/DailyTracking?';
-    
-    // Get fiber cable globalid
-    let fiberGlobalId = fiberCableFeature.attributes.globalid || 
-                        fiberCableFeature.attributes.GlobalID || 
-                        fiberCableFeature.attributes.GLOBALID;
-    
-    // Ensure globalid has proper GUID format with braces for final URL
-    if (fiberGlobalId && !fiberGlobalId.startsWith('{')) {
-        fiberGlobalId = `{${fiberGlobalId}}`;
-    }
-    if (fiberGlobalId && !fiberGlobalId.endsWith('}')) {
-        fiberGlobalId = `${fiberGlobalId}}`;
-    }
-    
-    //console.log('Fiber cable globalid:', fiberGlobalId);
-    
-    let dtgValue = ''; // Daily tracking record's globalid
-    let rfgValue = ''; // Daily tracking record's rel_fiber_cable_guid field
-    
-    try {
-        // Find the daily tracking source
-        let dailyTrackingSource = null;
-        
-        // First try allTables
-        if (mapView.map.allTables) {
-            dailyTrackingSource = mapView.map.allTables.find(t => 
-                t.title && t.title.toLowerCase().includes('daily tracking')
-            );
-            if (dailyTrackingSource) {
-                console.log('Found Daily Tracking table:', dailyTrackingSource.title);
-            }
-        }
-        
-        // If not found in tables, look for layer 90100
-        if (!dailyTrackingSource) {
-            const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-            dailyTrackingSource = allFL.find(l => l.layerId === 90100);
-            if (dailyTrackingSource) {
-                console.log('Found Daily Tracking layer 90100:', dailyTrackingSource.title);
-            } else {
-                console.log('Layer 90100 not found. Available layers:');
-                allFL.forEach(layer => {
-                    if (layer.layerId !== undefined) {
-                        console.log(`  Layer ${layer.layerId}: ${layer.title || 'No title'}`);
+        function clearAllHighlights() {
+            // Clear current highlight
+            clearHighlight();
+            
+            // Clear polygon selection
+            clearPolygonSelection();
+            
+            // Also clear any remaining graphics that might be left over
+            // This is a more aggressive cleanup approach
+            try {
+                const graphicsToRemove = [];
+                mapView.graphics.forEach(graphic => {
+                    // Check if it's likely a highlight graphic based on its symbol properties
+                    if (graphic.symbol) {
+                        const symbol = graphic.symbol;
+                        if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
+                            (symbol.type === "simple-line" && symbol.width >= 8) ||
+                            (symbol.type === "simple-fill" && symbol.outline && symbol.outline.width >= 4)) {
+                            graphicsToRemove.push(graphic);
+                        }
                     }
                 });
-            }
-        }
-        
-        if (dailyTrackingSource) {
-            await dailyTrackingSource.load();
-            
-            if (dailyTrackingSource.fields) {
-                //console.log('Daily tracking fields:', dailyTrackingSource.fields.map(f => f.name));
-            }
-            
-            // Query daily tracking table where rel_fiber_cable_guid matches our fiber cable's globalid
-            // Remove braces for the query (database fields typically store GUIDs without braces)
-            const fiberGlobalIdForQuery = fiberGlobalId.replace(/[{}]/g, '');
-            
-            //console.log(`Searching daily tracking for rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`);
-            
-            const relatedQuery = await dailyTrackingSource.queryFeatures({
-                where: `rel_fiber_cable_guid = '${fiberGlobalIdForQuery}'`,
-                outFields: ['*'],
-                returnGeometry: false
-            });
-            
-            //console.log(`Query returned ${relatedQuery.features.length} daily tracking records`);
-            
-            if (relatedQuery.features.length > 0) {
-                const dailyTrackingRecord = relatedQuery.features[0];
                 
-                // DTG = daily tracking record's globalid (not fiber cable's!)
-                dtgValue = dailyTrackingRecord.attributes.globalid || 
-                          dailyTrackingRecord.attributes.GlobalID || 
-                          dailyTrackingRecord.attributes.GLOBALID;
-                
-                // RFG = daily tracking record's rel_fiber_cable_guid field (contains fiber cable's globalid)
-                rfgValue = dailyTrackingRecord.attributes.rel_fiber_cable_guid || 
-                          dailyTrackingRecord.attributes.REL_FIBER_CABLE_GUID;
-                
-                //console.log('Found daily tracking record!');
-                //console.log('DTG (daily tracking globalid):', dtgValue);
-                //console.log('RFG (daily tracking rel_fiber_cable_guid):', rfgValue);
-                //console.log('Verification - should match fiber cable globalid:', fiberGlobalIdForQuery);
-            } else {
-                //console.log('No daily tracking records found for this fiber cable');
-                
-                // Try with braces in case that's how they're stored
-                const altQuery = await dailyTrackingSource.queryFeatures({
-                    where: `rel_fiber_cable_guid = '${fiberGlobalId}'`,
-                    outFields: ['*'],
-                    returnGeometry: false
+                graphicsToRemove.forEach(graphic => {
+                    mapView.graphics.remove(graphic);
                 });
                 
-                //console.log(`Alternative query with braces returned ${altQuery.features.length} records`);
-                
-                if (altQuery.features.length > 0) {
-                    const dailyTrackingRecord = altQuery.features[0];
-                    dtgValue = dailyTrackingRecord.attributes.globalid || 
-                              dailyTrackingRecord.attributes.GlobalID || 
-                              dailyTrackingRecord.attributes.GLOBALID;
-                    rfgValue = dailyTrackingRecord.attributes.rel_fiber_cable_guid || 
-                              dailyTrackingRecord.attributes.REL_FIBER_CABLE_GUID;
-                    //console.log('Found with braces query - DTG:', dtgValue, 'RFG:', rfgValue);
-                } else {
-                    // Show sample data to understand the structure
-                    const sampleQuery = await dailyTrackingSource.queryFeatures({
-                        where: '1=1',
-                        outFields: ['*'],
-                        returnGeometry: false,
-                        num: 2
-                    });
-                    
-                    if (sampleQuery.features.length > 0) {
-                        console.log('Sample daily tracking records for debugging:');
-                        sampleQuery.features.forEach((record, index) => {
-                            console.log(`Record ${index + 1}:`);
-                            console.log(`  globalid: ${record.attributes.globalid}`);
-                            console.log(`  rel_fiber_cable_guid: ${record.attributes.rel_fiber_cable_guid}`);
-                            
-                            // Show all *_guid fields
-                            Object.keys(record.attributes).forEach(key => {
-                                if (key.endsWith('_guid')) {
-                                    //console.log(`  ${key}: ${record.attributes[key]}`);
-                                }
-                            });
-                        });
-                    }
-                }
+            } catch (e) {
+                // If the aggressive cleanup fails, that's okay
+                console.log('Aggressive highlight cleanup encountered an error:', e);
             }
-        } else {
-            console.log('Daily tracking source not found');
-            if (mapView.map.allTables) {
-                //console.log('Available tables:', mapView.map.allTables.map(t => t.title));
+            
+            // Close any open popup
+            if (mapView.popup) {
+                mapView.popup.close();
             }
+            
+            updateStatus("All highlights cleared.");
         }
-        
-    } catch (error) {
-        //console.log('Error querying daily tracking:', error);
-    }
-    
-    // Ensure values have proper GUID format with braces
-    if (dtgValue && !dtgValue.startsWith('{')) {
-        dtgValue = `{${dtgValue}}`;
-    }
-    if (dtgValue && !dtgValue.endsWith('}')) {
-        dtgValue = `${dtgValue}}`;
-    }
-    
-    if (rfgValue && !rfgValue.startsWith('{')) {
-        rfgValue = `{${rfgValue}}`;
-    }
-    if (rfgValue && !rfgValue.endsWith('}')) {
-        rfgValue = `${rfgValue}}`;
-    }
-    
-    // Get service URL - use layer 90100 (daily tracking layer)
-    let serviceLayerUrl = '';
-    if (fiberCableFeature.layer && fiberCableFeature.layer.url) {
-        serviceLayerUrl = fiberCableFeature.layer.url;
-        
-        // Replace with layer 90100
-        const urlParts = serviceLayerUrl.split('/');
-        const lastPart = urlParts[urlParts.length - 1];
-        
-        if (!isNaN(parseInt(lastPart))) {
-            urlParts[urlParts.length - 1] = '90100';
-            serviceLayerUrl = urlParts.join('/');
-        } else {
-            serviceLayerUrl = `${serviceLayerUrl}/90100`;
-        }
-    }
-    
-    // Build parameters
-    const dtg = `dtg=${dtgValue}`;
-    const rfg = `rfg=${rfgValue}`;
-    const serviceUrl = `serviceUrl=${serviceLayerUrl}`;
-    
-    const finalUrl = `${baseUrl}${dtg}&${rfg}&${serviceUrl}`;
-    
-    //console.log('Link Generation Results:');
-    //console.log('DTG (Daily tracking globalid):', dtgValue);
-    //console.log('RFG (Daily tracking rel_fiber_cable_guid):', rfgValue);
-    //console.log('Service Layer URL:', serviceLayerUrl);
-    //console.log('Generated URL:', finalUrl);
-    
-    return finalUrl;
-}
-        
-       function clearAllHighlights() {
-    // Clear current highlight
-    clearHighlight();
-    
-    // Clear polygon selection
-    clearPolygonSelection();
-    
-    // Also clear any remaining graphics that might be left over
-    // This is a more aggressive cleanup approach
-    try {
-        const graphicsToRemove = [];
-        mapView.graphics.forEach(graphic => {
-            // Check if it's likely a highlight graphic based on its symbol properties
-            if (graphic.symbol) {
-                const symbol = graphic.symbol;
-                if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
-                    (symbol.type === "simple-line" && symbol.width >= 8) ||
-                    (symbol.type === "simple-fill" && symbol.outline && symbol.outline.width >= 4)) {
-                    graphicsToRemove.push(graphic);
-                }
-            }
-        });
-        
-        graphicsToRemove.forEach(graphic => {
-            mapView.graphics.remove(graphic);
-        });
-        
-    } catch (e) {
-        // If the aggressive cleanup fails, that's okay
-        console.log('Aggressive highlight cleanup encountered an error:', e);
-    }
-    
-    // Close any open popup
-    if (mapView.popup) {
-        mapView.popup.close();
-    }
-    
-    updateStatus("All highlights cleared.");
-}
         
         function nextFiberCable() {
             currentFiberCableIndex++;
