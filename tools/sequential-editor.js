@@ -361,47 +361,71 @@
                     scale: Math.min(mapView.scale, 2000) // Don't zoom out if already closer
                 }, {duration: 800}).then(() => {
                     // Show popup after zoom completes if requested
-                    if (showPopup && mapView.popup) {
-                        // Create a graphic for the popup with full feature information
-                        // Ensure we maintain the layer reference for proper popup template usage
-                        const popupGraphic = {
-                            geometry: feature.geometry,
-                            attributes: feature.attributes,
-                            layer: feature.layer,
-                            sourceLayer: feature.layer, // Additional reference for popup templates
-                            // Preserve any popup template from the original feature
-                            popupTemplate: feature.layer?.popupTemplate || feature.popupTemplate
-                        };
-                        
-                        // Set the popup content and location
-                        mapView.popup.open({
-                            features: [popupGraphic],
-                            location: getPopupLocation(feature.geometry),
-                            // Ensure we use the layer's popup template if available
-                            updateLocationEnabled: true
-                        });
+                    if (showPopup && mapView.popup && feature.layer) {
+                        showFeaturePopup(feature);
                     }
                 }).catch(err => {
                     // Still try to show popup even if zoom fails
-                    if (showPopup && mapView.popup) {
-                        const popupGraphic = {
-                            geometry: feature.geometry,
-                            attributes: feature.attributes,
-                            layer: feature.layer,
-                            sourceLayer: feature.layer,
-                            popupTemplate: feature.layer?.popupTemplate || feature.popupTemplate
-                        };
-                        
-                        mapView.popup.open({
-                            features: [popupGraphic],
-                            location: getPopupLocation(feature.geometry),
-                            updateLocationEnabled: true
-                        });
+                    if (showPopup && mapView.popup && feature.layer) {
+                        showFeaturePopup(feature);
                     }
                 });
                 
             } catch (error) {
                 updateStatus('Error highlighting feature: ' + error.message);
+            }
+        }
+        
+        // Separate function to handle popup display using proper feature query
+        async function showFeaturePopup(feature) {
+            try {
+                const objectIdField = getObjectIdField(feature);
+                const objectId = feature.attributes[objectIdField];
+                
+                if (!objectIdField || !objectId) {
+                    // Fallback to simple popup if we can't query
+                    mapView.popup.open({
+                        features: [{
+                            geometry: feature.geometry,
+                            attributes: feature.attributes
+                        }],
+                        location: getPopupLocation(feature.geometry)
+                    });
+                    return;
+                }
+                
+                // Query the feature directly from the layer to get proper ArcGIS Feature object
+                const queryResult = await feature.layer.queryFeatures({
+                    where: `${objectIdField} = ${objectId}`,
+                    outFields: ['*'],
+                    returnGeometry: true
+                });
+                
+                if (queryResult.features.length > 0) {
+                    // Use the properly queried feature which will have all ArcGIS API methods
+                    mapView.popup.open({
+                        features: queryResult.features,
+                        location: getPopupLocation(feature.geometry)
+                    });
+                } else {
+                    // Fallback if query fails
+                    mapView.popup.open({
+                        features: [{
+                            geometry: feature.geometry,
+                            attributes: feature.attributes
+                        }],
+                        location: getPopupLocation(feature.geometry)
+                    });
+                }
+            } catch (error) {
+                // Fallback to basic popup on any error
+                mapView.popup.open({
+                    features: [{
+                        geometry: feature.geometry,
+                        attributes: feature.attributes
+                    }],
+                    location: getPopupLocation(feature.geometry)
+                });
             }
         }
         
