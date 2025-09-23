@@ -387,82 +387,138 @@
                 
                 if (!layer.fields) {
                     console.warn('Layer has no field information');
+                    updateStatus("Layer loaded but no field domains available.");
                     return;
                 }
                 
                 updateStatus("Loading field domains...");
+                console.log("Available fields:", layer.fields.map(f => f.name));
                 
-                // Process each field that has domains
-                for (const field of layer.fields) {
-                    if (field.domain && field.domain.codedValues) {
-                        const fieldElement = $(field.name);
-                        if (fieldElement && fieldElement.tagName === 'SELECT') {
-                            // Clear existing options except the first one
-                            while (fieldElement.children.length > 1) {
-                                fieldElement.removeChild(fieldElement.lastChild);
-                            }
+                let domainsLoaded = 0;
+                
+                // Process each attribute field to check for domains
+                for (const fieldName of attributeFields) {
+                    try {
+                        const field = layer.fields.find(f => f.name === fieldName);
+                        if (field) {
+                            console.log(`Field ${fieldName} found:`, field);
                             
-                            // Add domain values
-                            for (const codedValue of field.domain.codedValues) {
-                                const option = document.createElement('option');
-                                option.value = codedValue.code;
-                                option.textContent = codedValue.name;
-                                fieldElement.appendChild(option);
+                            if (field.domain && field.domain.codedValues && field.domain.codedValues.length > 0) {
+                                console.log(`Field ${fieldName} has ${field.domain.codedValues.length} coded values:`, field.domain.codedValues);
+                                
+                                const fieldElement = $(fieldName);
+                                if (fieldElement) {
+                                    // Convert to select if it's currently an input
+                                    if (fieldElement.tagName === 'INPUT' && fieldElement.type !== 'date') {
+                                        await convertInputToSelect(fieldElement, field);
+                                        domainsLoaded++;
+                                    } else if (fieldElement.tagName === 'SELECT') {
+                                        // Update existing select with domain values
+                                        await populateSelectWithDomain(fieldElement, field);
+                                        domainsLoaded++;
+                                    }
+                                } else {
+                                    console.warn(`Field element for ${fieldName} not found in form`);
+                                }
+                            } else {
+                                console.log(`Field ${fieldName} has no domain or coded values`);
                             }
-                            
-                            console.log(`Loaded ${field.domain.codedValues.length} domain values for field: ${field.name}`);
+                        } else {
+                            console.log(`Field ${fieldName} not found in layer schema`);
                         }
+                    } catch (fieldError) {
+                        console.error(`Error processing field ${fieldName}:`, fieldError);
                     }
                 }
                 
-                // Convert text fields to select fields if they have domains
-                await convertFieldsWithDomains(layer);
-                
-                updateStatus("Field domains loaded. Fill in attributes and enable drawing.");
+                if (domainsLoaded > 0) {
+                    updateStatus(`Loaded domains for ${domainsLoaded} fields. Fill in attributes and enable drawing.`);
+                } else {
+                    updateStatus("No field domains found in layer. Using default form fields.");
+                }
                 
             } catch (error) {
                 console.error("Error loading field domains:", error);
-                updateStatus("Could not load field domains, using default form.");
+                updateStatus("Could not load field domains: " + error.message);
             }
         }
         
-        // Convert text inputs to select dropdowns if the layer has domains for those fields
-        async function convertFieldsWithDomains(layer) {
-            const fieldsWithDomains = layer.fields.filter(f => 
-                f.domain && 
-                f.domain.codedValues && 
-                attributeFields.includes(f.name)
-            );
-            
-            for (const field of fieldsWithDomains) {
-                const currentElement = $(field.name);
-                if (currentElement && currentElement.tagName === 'INPUT') {
-                    // Create new select element
-                    const selectElement = document.createElement('select');
-                    selectElement.id = field.name;
-                    selectElement.style.cssText = currentElement.style.cssText;
-                    
-                    // Add default option
-                    const defaultOption = document.createElement('option');
-                    defaultOption.value = '';
-                    defaultOption.textContent = 'Select...';
-                    selectElement.appendChild(defaultOption);
-                    
-                    // Add domain values
-                    for (const codedValue of field.domain.codedValues) {
-                        const option = document.createElement('option');
-                        option.value = codedValue.code;
-                        option.textContent = codedValue.name;
-                        selectElement.appendChild(option);
-                    }
-                    
-                    // Replace the input with select
-                    currentElement.parentNode.replaceChild(selectElement, currentElement);
-                    
-                    console.log(`Converted ${field.name} from input to select with ${field.domain.codedValues.length} options`);
+        // Convert input field to select dropdown with domain values
+        async function convertInputToSelect(inputElement, field) {
+            try {
+                // Store current value
+                const currentValue = inputElement.value;
+                
+                // Create new select element
+                const selectElement = document.createElement('select');
+                selectElement.id = inputElement.id;
+                selectElement.style.cssText = inputElement.style.cssText;
+                
+                // Add default option
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'Select...';
+                selectElement.appendChild(defaultOption);
+                
+                // Add domain values
+                for (const codedValue of field.domain.codedValues) {
+                    const option = document.createElement('option');
+                    option.value = codedValue.code;
+                    option.textContent = codedValue.name || codedValue.code;
+                    selectElement.appendChild(option);
                 }
+                
+                // Restore previous value if it exists in domain
+                if (currentValue) {
+                    const matchingOption = Array.from(selectElement.options).find(opt => opt.value === currentValue);
+                    if (matchingOption) {
+                        selectElement.value = currentValue;
+                    }
+                }
+                
+                // Replace the input with select
+                inputElement.parentNode.replaceChild(selectElement, inputElement);
+                
+                console.log(`Converted ${field.name} from input to select with ${field.domain.codedValues.length} options`);
+            } catch (error) {
+                console.error(`Error converting ${field.name} to select:`, error);
             }
         }
+        
+        // Populate existing select with domain values
+        async function populateSelectWithDomain(selectElement, field) {
+            try {
+                // Store current value
+                const currentValue = selectElement.value;
+                
+                // Clear existing options except the first one (Select...)
+                while (selectElement.children.length > 1) {
+                    selectElement.removeChild(selectElement.lastChild);
+                }
+                
+                // Add domain values
+                for (const codedValue of field.domain.codedValues) {
+                    const option = document.createElement('option');
+                    option.value = codedValue.code;
+                    option.textContent = codedValue.name || codedValue.code;
+                    selectElement.appendChild(option);
+                }
+                
+                // Restore previous value if it exists in domain
+                if (currentValue) {
+                    const matchingOption = Array.from(selectElement.options).find(opt => opt.value === currentValue);
+                    if (matchingOption) {
+                        selectElement.value = currentValue;
+                    }
+                }
+                
+                console.log(`Populated ${field.name} select with ${field.domain.codedValues.length} domain values`);
+            } catch (error) {
+                console.error(`Error populating ${field.name} select:`, error);
+            }
+        }
+        
+        // Remove the old convertFieldsWithDomains function since we're doing it inline now
         
         // Utility functions
         function calculateDistance(point1, point2) {
@@ -821,32 +877,110 @@
                 // Get attributes from form
                 const formAttributes = getFormAttributes();
                 
+                // Ensure layer is loaded to get field information
+                await selectedLayer.load();
+                
+                // Build complete attributes object with defaults for missing required fields
+                const completeAttributes = {
+                    calculated_length: length,
+                    ...formAttributes
+                };
+                
+                // Add any missing required fields with null values
+                if (selectedLayer.fields) {
+                    for (const field of selectedLayer.fields) {
+                        if (field.nullable === false && !(field.name in completeAttributes)) {
+                            // Field is required but not in our form - add default value
+                            console.warn(`Required field ${field.name} not in form, adding default value`);
+                            
+                            if (field.type === 'oid' || field.type === 'global-id') {
+                                // Skip auto-generated fields
+                                continue;
+                            } else if (field.type === 'string') {
+                                completeAttributes[field.name] = '';
+                            } else if (field.type === 'integer' || field.type === 'double') {
+                                completeAttributes[field.name] = 0;
+                            } else if (field.type === 'date') {
+                                completeAttributes[field.name] = null;
+                            } else {
+                                completeAttributes[field.name] = null;
+                            }
+                        }
+                    }
+                }
+                
+                // Handle date fields - ensure proper format
+                if (completeAttributes.installation_date && typeof completeAttributes.installation_date === 'number') {
+                    // Verify the timestamp is reasonable (not too far in future/past)
+                    const date = new Date(completeAttributes.installation_date);
+                    const now = new Date();
+                    const yearFromNow = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+                    const tenYearsAgo = new Date(now.getFullYear() - 10, now.getMonth(), now.getDate());
+                    
+                    if (date > yearFromNow || date < tenYearsAgo) {
+                        console.warn("Installation date seems unreasonable:", date);
+                        // Try converting from date string instead
+                        const originalDateValue = $('installation_date').value;
+                        if (originalDateValue) {
+                            const localDate = new Date(originalDateValue + 'T12:00:00');
+                            completeAttributes.installation_date = localDate.getTime();
+                            console.log("Corrected installation date to:", new Date(completeAttributes.installation_date));
+                        }
+                    }
+                }
+                
                 // Create new feature with all required attributes
                 const newFeature = {
                     geometry: geometry,
-                    attributes: {
-                        calculated_length: length,
-                        ...formAttributes
-                    }
+                    attributes: completeAttributes
                 };
                 
                 console.log("Creating feature with attributes:", newFeature.attributes);
+                console.log("Layer fields for reference:", selectedLayer.fields.map(f => ({
+                    name: f.name, 
+                    type: f.type, 
+                    nullable: f.nullable,
+                    hasDomain: !!(f.domain && f.domain.codedValues)
+                })));
                 
-                // Add to layer
+                // Add to layer with detailed error handling
                 if (selectedLayer.applyEdits) {
-                    const result = await selectedLayer.applyEdits({ addFeatures: [newFeature] });
+                    const result = await selectedLayer.applyEdits({ 
+                        addFeatures: [newFeature]
+                    });
+                    
+                    console.log("ApplyEdits result:", result);
                     
                     if (result.addFeatureResults && result.addFeatureResults.length > 0) {
                         const addResult = result.addFeatureResults[0];
+                        console.log("Add feature result:", addResult);
+                        
                         if (addResult.success) {
                             updateStatus(`✅ Created curve feature with length ${length}ft! ObjectID: ${addResult.objectId}`);
                         } else {
+                            // Enhanced error reporting
+                            let errorMessage = "Unknown error";
+                            if (addResult.error) {
+                                errorMessage = addResult.error.message || addResult.error.description || JSON.stringify(addResult.error);
+                            }
+                            
                             console.error("Add feature failed:", addResult.error);
-                            updateStatus(`❌ Failed to create feature: ${addResult.error?.message || 'Unknown error'}`);
+                            console.error("Feature that failed:", newFeature);
+                            
+                            // Try to identify specific validation issues
+                            if (errorMessage.toLowerCase().includes('constraint') || 
+                                errorMessage.toLowerCase().includes('domain') ||
+                                errorMessage.toLowerCase().includes('coded value')) {
+                                errorMessage += " - Check that all dropdown values are valid domain codes.";
+                            }
+                            
+                            updateStatus(`❌ Failed to create feature: ${errorMessage}`);
                             return;
                         }
                     } else {
-                        updateStatus(`✅ Created curve feature with length ${length}ft!`);
+                        console.error("No addFeatureResults returned");
+                        updateStatus("❌ No results returned from feature creation");
+                        return;
                     }
                 } else {
                     updateStatus("❌ Layer doesn't support editing.");
@@ -863,7 +997,13 @@
                 
             } catch (error) {
                 console.error("Error creating feature:", error);
+                console.error("Error stack:", error.stack);
                 updateStatus("❌ Error creating feature: " + error.message);
+                
+                // Additional debugging for common issues
+                if (error.message.includes('domain') || error.message.includes('constraint')) {
+                    console.error("This looks like a domain/constraint violation. Check your field values against the layer's domain codes.");
+                }
             }
         }
         
