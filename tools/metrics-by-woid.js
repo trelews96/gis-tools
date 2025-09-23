@@ -1,695 +1,1079 @@
-// tools/metrics-by-woid.js - Converted from bookmarklet format
-// Layer Metrics Report with Purchase Order and Work Order filtering
+// tools/curve-drawing-tool.js - Freehand Curve Drawing and Smoothing Tool
+// Allows users to draw rough curves that get smoothed into proper geometric curves
 
 (function() {
     try {
-        // Check if tool is already active
-        if (window.gisToolHost.activeTools.has('metrics-by-woid')) {
-            console.log('Metrics By WOID Tool already active');
+        // Initialize tool host system if it doesn't exist
+        if (!window.gisToolHost) {
+            window.gisToolHost = {};
+        }
+        
+        // Ensure activeTools is always a proper Set
+        if (!window.gisToolHost.activeTools || !(window.gisToolHost.activeTools instanceof Set)) {
+            console.warn('Creating new Set for activeTools');
+            window.gisToolHost.activeTools = new Set();
+        }
+        
+        // Check for existing tool
+        if (window.gisToolHost.activeTools.has('curve-drawing-tool')) {
+            console.log('Curve Drawing Tool already active');
             return;
         }
         
-        // Remove any leftover toolbox
-        const existingToolbox = document.getElementById('metricsByWoidToolbox');
+        const existingToolbox = document.getElementById('curveDrawingToolbox');
         if (existingToolbox) {
             existingToolbox.remove();
-            console.log('Removed leftover metrics by woid toolbox');
+            console.log('Removed leftover curve drawing toolbox');
         }
         
-        // Use shared utilities
-        const utils = window.gisSharedUtils;
-        if (!utils) {
-            throw new Error('Shared utilities not loaded');
+        // Get map view with fallback methods
+        function getMapView() {
+            // Try shared utils first
+            if (window.gisSharedUtils && window.gisSharedUtils.getMapView) {
+                const mv = window.gisSharedUtils.getMapView();
+                if (mv) return mv;
+            }
+            
+            // Fallback to searching window objects
+            const mapView = Object.values(window).find(obj => 
+                obj && 
+                obj.constructor && 
+                obj.constructor.name === "MapView" &&
+                obj.map &&
+                obj.center
+            );
+            
+            if (mapView) return mapView;
+            
+            // Additional fallback for common variable names
+            if (window.view && window.view.map) return window.view;
+            if (window.mapView && window.mapView.map) return window.mapView;
+            
+            throw new Error('MapView not found');
         }
         
-        const mapView = utils.getMapView();
+        const mapView = getMapView();
         
-        // Target layers configuration
-        const targetLayers = [
-            {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'"},
-            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length"},
-            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'"},
-            {id: 42100, name: "Vault", metric: "count", field: "objectid"},
-            {id: 41150, name: "Splice Closure", metric: "count", field: "objectid"},
-            {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid"}
+        const LINE_LAYER_CONFIG = [
+            { id: 41050, name: "Fiber Cable" },
+            { id: 42050, name: "Underground Span" },
+            { id: 43050, name: "Aerial Span" }
         ];
         
         const z = 99999;
         
-        // Tool state variables
-        let selectedWorkorders = [];
-        let allWorkorders = [];
-        let selectedPurchaseOrders = [];
-        let allPurchaseOrders = [];
-        let currentTableData = [];
-        
-        // Create tool UI
         const toolBox = document.createElement("div");
-        toolBox.id = "metricsByWoidToolbox";
+        toolBox.id = "curveDrawingToolbox";
         toolBox.style.cssText = `
-            position: fixed;
-            top: 80px;
-            right: 40px;
-            z-index: ${z};
-            background: #fff;
-            border: 1px solid #333;
-            padding: 12px;
-            max-width: 90vw;
-            max-height: 80vh;
-            overflow: auto;
-            font: 12px/1.3 Arial, sans-serif;
-            box-shadow: 0 4px 16px rgba(0,0,0,.2);
+            position: fixed; 
+            top: 120px; 
+            right: 40px; 
+            z-index: ${z}; 
+            background: #fff; 
+            border: 1px solid #333; 
+            padding: 12px; 
+            max-width: 360px; 
+            font: 12px/1.3 Arial, sans-serif; 
+            box-shadow: 0 4px 16px rgba(0,0,0,.2); 
+            border-radius: 4px;
         `;
         
         toolBox.innerHTML = `
-            <div style="font-weight:bold;margin-bottom:8px;">📊 Layer Metrics Report</div>
-            
-            <label>Purchase Order ID:</label><br>
-            <div style="position:relative;margin:4px 0 8px 0;">
-                <div id="purchaseDropdown" style="width:100%;border:1px solid #ccc;padding:4px;background:#fff;cursor:pointer;min-height:20px;">
-                    <span id="purchasePlaceholder" style="color:#999;">Loading purchase orders...</span>
-                </div>
-                <div id="purchaseOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;"></div>
+            <div style="font-weight:bold;margin-bottom:8px;">🎨 Curve Drawing Tool</div>
+            <div style="margin-bottom:8px;color:#666;font-size:11px;">
+                <strong>Instructions:</strong><br>
+                1. Fill in feature attributes<br>
+                2. Select target layer<br>
+                3. Enable drawing and draw curve<br>
+                4. Accept to create feature
             </div>
             
-            <label>Work Order ID:</label><br>
-            <div style="position:relative;margin:4px 0 8px 0;">
-                <div id="workorderDropdown" style="width:100%;border:1px solid #ccc;padding:4px;background:#fff;cursor:pointer;min-height:20px;">
-                    <span id="workorderPlaceholder" style="color:#999;">Loading work orders...</span>
+            <!-- Collapsible Attributes Form -->
+            <div style="margin-bottom:8px;">
+                <button id="toggleAttributes" style="width:100%;padding:4px;background:#f8f9fa;border:1px solid #ccc;text-align:left;font-size:11px;cursor:pointer;">
+                    ▼ Feature Attributes (Required)
+                </button>
+                <div id="attributesForm" style="border:1px solid #ccc;border-top:none;padding:8px;background:#f8f9fa;display:block;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;">
+                        <div>
+                            <label>Client Code:</label><br>
+                            <select id="client_code" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Project ID:</label><br>
+                            <input type="text" id="project_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Job Number:</label><br>
+                            <input type="text" id="job_number" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Purchase Order:</label><br>
+                            <input type="text" id="purchase_order_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Work Order:</label><br>
+                            <input type="text" id="workorder_id" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Install Date:</label><br>
+                            <input type="date" id="installation_date" style="width:100%;padding:2px;font-size:10px;">
+                        </div>
+                        <div>
+                            <label>Workflow Stage:</label><br>
+                            <select id="workflow_stage" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Workflow Status:</label><br>
+                            <select id="workflow_status" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Work Type:</label><br>
+                            <select id="work_type" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Supervisor:</label><br>
+                            <select id="supervisor" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Crew:</label><br>
+                            <select id="crew" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Construction Sub:</label><br>
+                            <select id="construction_subcontractor" style="width:100%;padding:2px;font-size:10px;">
+                                <option value="">Select...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-top:6px;">
+                        <button id="saveTemplate" style="padding:3px 6px;background:#007bff;color:white;border:none;border-radius:2px;font-size:10px;margin-right:4px;">Save as Template</button>
+                        <button id="loadTemplate" style="padding:3px 6px;background:#6c757d;color:white;border:none;border-radius:2px;font-size:10px;">Load Template</button>
+                    </div>
                 </div>
-                <div id="workorderOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;"></div>
             </div>
             
-            <div style="display:flex;gap:8px;margin:4px 0 8px 0;">
-                <div style="flex:1;">
-                    <label>Start date</label><br>
-                    <input type="date" id="startDate" style="width:100%;">
-                </div>
-                <div style="flex:1;">
-                    <label>End date</label><br>
-                    <input type="date" id="endDate" style="width:100%;">
-                </div>
-                <div style="flex:0;">
-                    <label>&nbsp;</label><br>
-                    <button id="allTimeBtn" style="height:100%;padding:0 12px;">All Time</button>
-                </div>
+            <div style="margin-bottom:8px;">
+                <label style="font-weight:bold;font-size:11px;">Target Layer:</label><br>
+                <select id="layerSelect" style="width:100%;padding:4px;margin-top:2px;font-size:11px;">
+                    <option value="">Select Layer...</option>
+                </select>
             </div>
             
-            <div style="display:flex;gap:8px;">
-                <button id="runBtn">Run Report</button>
-                <button id="exportBtn" style="display:none;">Export CSV</button>
-                <button id="clearBtn" style="display:none;">Clear Filters</button>
-                <button id="closeTool">Close</button>
+            <div style="margin-bottom:8px;">
+                <label style="font-weight:bold;font-size:11px;">Smoothing Level:</label><br>
+                <input type="range" id="smoothingSlider" min="1" max="5" value="3" style="width:100%;margin-top:2px;">
+                <div style="font-size:10px;color:#666;">Light ← → Heavy</div>
             </div>
             
-            <div id="toolStatus" style="margin-top:8px;color:#3367d6;"></div>
-            <div id="resultsTable" style="margin-top:12px;"></div>
+            <div style="display:flex;gap:4px;margin-bottom:8px;">
+                <button id="enableDrawing" style="flex:1;padding:6px 8px;background:#28a745;color:white;border:none;border-radius:2px;font-size:11px;">Enable Drawing</button>
+                <button id="disableDrawing" style="flex:1;padding:6px 8px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;" disabled>Disable Drawing</button>
+            </div>
+            
+            <div style="display:flex;gap:4px;margin-bottom:8px;">
+                <button id="previewCurve" style="flex:1;padding:6px 8px;background:#3367d6;color:white;border:none;border-radius:2px;font-size:11px;" disabled>Preview</button>
+                <button id="acceptCurve" style="flex:1;padding:6px 8px;background:#ff9800;color:white;border:none;border-radius:2px;font-size:11px;" disabled>Accept</button>
+            </div>
+            
+            <div style="display:flex;gap:4px;margin-bottom:8px;">
+                <button id="cancelCurve" style="flex:1;padding:6px 8px;background:#dc3545;color:white;border:none;border-radius:2px;font-size:11px;" disabled>Cancel</button>
+                <button id="closeTool" style="flex:1;padding:6px 8px;background:#6c757d;color:white;border:none;border-radius:2px;font-size:11px;">Close</button>
+            </div>
+            
+            <div id="curveStatus" style="margin-top:8px;color:#3367d6;font-size:11px;min-height:16px;"></div>
         `;
         
-        // Add to page
         document.body.appendChild(toolBox);
         
-        // Get UI elements
-        const $ = (id) => toolBox.querySelector(id);
-        const status = $("#toolStatus");
+        // Tool state
+        let drawingActive = false;
+        let isDrawing = false;
+        let currentPath = [];
+        let rawPoints = [];
+        let smoothedPath = null;
+        let previewGraphic = null;
+        let selectedLayer = null;
+        let dragHandler = null;
+        let pointerMoveHandler = null;
+        let pointerUpHandler = null;
+        
+        // UI Elements
+        const $ = (id) => toolBox.querySelector('#' + id);
+        const layerSelect = $('layerSelect');
+        const smoothingSlider = $('smoothingSlider');
+        const enableBtn = $('enableDrawing');
+        const disableBtn = $('disableDrawing');
+        const previewBtn = $('previewCurve');
+        const acceptBtn = $('acceptCurve');
+        const cancelBtn = $('cancelCurve');
+        const closeBtn = $('closeTool');
+        const status = $('curveStatus');
+        const toggleAttributesBtn = $('toggleAttributes');
+        const attributesForm = $('attributesForm');
+        const saveTemplateBtn = $('saveTemplate');
+        const loadTemplateBtn = $('loadTemplate');
+        
+        // Attribute form fields
+        const attributeFields = [
+            'client_code', 'project_id', 'job_number', 'purchase_order_id',
+            'workorder_id', 'installation_date', 'workflow_stage', 'workflow_status',
+            'work_type', 'supervisor', 'crew', 'construction_subcontractor'
+        ];
         
         function updateStatus(message) {
-            status.textContent = message;
+            if (status) status.textContent = message;
         }
         
-        // Load purchase orders from fiber layer
-        async function loadPurchaseOrders() {
-            try {
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                const fiberLayer = allFL.find(l => l.layerId === 41050);
-                
-                if (!fiberLayer) {
-                    $("#purchasePlaceholder").textContent = "No fiber layer found";
-                    return;
-                }
-                
-                await fiberLayer.load();
-                const uniqueQuery = await fiberLayer.queryFeatures({
-                    where: "purchase_order_id IS NOT NULL AND purchase_order_id <> ''",
-                    outFields: ["purchase_order_id"],
-                    returnGeometry: false,
-                    returnDistinctValues: true
-                });
-                
-                const uniqueValues = [...new Set(
-                    uniqueQuery.features
-                        .map(f => f.attributes.purchase_order_id)
-                        .filter(v => v && v.toString().trim())
-                )].sort();
-                
-                let purchaseField;
-                try {
-                    purchaseField = fiberLayer.fields.find(f => f.name === "purchase_order_id");
-                } catch (e) {
-                    console.log("Could not access field info for aliases");
-                }
-                
-                allPurchaseOrders = uniqueValues.map(value => {
-                    let displayName = value;
-                    if (purchaseField && purchaseField.domain && purchaseField.domain.codedValues) {
-                        const codedValue = purchaseField.domain.codedValues.find(cv => cv.code === value);
-                        if (codedValue) displayName = codedValue.name;
+        // Attribute form functions
+        function toggleAttributesForm() {
+            const isVisible = attributesForm.style.display !== 'none';
+            attributesForm.style.display = isVisible ? 'none' : 'block';
+            toggleAttributesBtn.textContent = (isVisible ? '▶' : '▼') + ' Feature Attributes (Required)';
+        }
+        
+        function getFormAttributes() {
+            const attributes = {};
+            
+            for (const fieldName of attributeFields) {
+                const field = $(fieldName);
+                if (field) {
+                    let value = field.value.trim();
+                    
+                    // Handle date fields - convert to timestamp if needed
+                    if (fieldName === 'installation_date' && value) {
+                        try {
+                            const date = new Date(value);
+                            // Convert to timestamp (milliseconds since epoch)
+                            value = date.getTime();
+                        } catch (error) {
+                            console.error("Error parsing date:", error);
+                            value = null;
+                        }
                     }
-                    return { code: value, name: displayName };
-                });
+                    
+                    attributes[fieldName] = value || null;
+                }
+            }
+            
+            return attributes;
+        }
+        
+        function validateAttributes() {
+            const requiredFields = ['client_code', 'project_id', 'job_number'];
+            const missing = [];
+            
+            for (const fieldName of requiredFields) {
+                const field = $(fieldName);
+                if (!field || !field.value.trim()) {
+                    missing.push(fieldName.replace('_', ' ').toUpperCase());
+                }
+            }
+            
+            if (missing.length > 0) {
+                updateStatus(`❌ Required fields missing: ${missing.join(', ')}`);
+                return false;
+            }
+            
+            return true;
+        }
+        
+        function saveAttributeTemplate() {
+            try {
+                const attributes = getFormAttributes();
+                localStorage.setItem('curveDrawingTool_attributeTemplate', JSON.stringify(attributes));
+                updateStatus('✅ Attribute template saved!');
                 
-                if (!allPurchaseOrders.length) {
-                    $("#purchasePlaceholder").textContent = "No purchase orders found";
+                setTimeout(() => {
+                    if (drawingActive) {
+                        updateStatus("Drawing enabled! Hold Shift and drag to draw curves.");
+                    } else {
+                        updateStatus("Curve Drawing Tool loaded. Fill attributes and enable drawing to start.");
+                    }
+                }, 2000);
+            } catch (error) {
+                console.error("Error saving template:", error);
+                updateStatus('❌ Error saving template.');
+            }
+        }
+        
+        function loadAttributeTemplate() {
+            try {
+                const saved = localStorage.getItem('curveDrawingTool_attributeTemplate');
+                if (!saved) {
+                    updateStatus('❌ No saved template found.');
                     return;
                 }
                 
-                const optionsHtml = allPurchaseOrders.map(po => `
-                    <div class="purchase-option" data-value="${po.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
-                        <input type="checkbox" style="margin-right:6px;"> ${po.name}
-                    </div>
-                `).join('');
+                const attributes = JSON.parse(saved);
                 
-                $("#purchaseOptions").innerHTML = optionsHtml;
-                $("#purchasePlaceholder").textContent = "Select purchase orders...";
-                
-                $("#purchaseDropdown").onclick = () => {
-                    $("#purchaseOptions").style.display = $("#purchaseOptions").style.display === 'none' ? 'block' : 'none';
-                };
-                
-                $("#purchaseOptions").addEventListener('click', (e) => {
-                    if (e.target.classList.contains('purchase-option') || e.target.type === 'checkbox') {
-                        const option = e.target.classList.contains('purchase-option') ? e.target : e.target.parentElement;
-                        const checkbox = option.querySelector('input[type="checkbox"]');
-                        const value = option.dataset.value;
-                        
-                        checkbox.checked = !checkbox.checked;
-                        
-                        if (checkbox.checked) {
-                            if (!selectedPurchaseOrders.includes(value)) {
-                                selectedPurchaseOrders.push(value);
+                for (const fieldName of attributeFields) {
+                    const field = $(fieldName);
+                    if (field && attributes[fieldName] !== undefined && attributes[fieldName] !== null) {
+                        if (fieldName === 'installation_date' && attributes[fieldName]) {
+                            // Convert timestamp back to date string
+                            try {
+                                const date = new Date(attributes[fieldName]);
+                                field.value = date.toISOString().split('T')[0];
+                            } catch (error) {
+                                field.value = attributes[fieldName];
                             }
                         } else {
-                            selectedPurchaseOrders = selectedPurchaseOrders.filter(p => p !== value);
+                            // Handle both input and select fields
+                            if (field.tagName === 'SELECT') {
+                                // For select fields, check if the value exists as an option
+                                const option = Array.from(field.options).find(opt => opt.value === attributes[fieldName]);
+                                if (option) {
+                                    field.value = attributes[fieldName];
+                                } else {
+                                    console.warn(`Template value "${attributes[fieldName]}" not found in dropdown for field ${fieldName}`);
+                                }
+                            } else {
+                                // For text inputs
+                                field.value = attributes[fieldName];
+                            }
                         }
-                        
-                        updatePurchaseDropdownDisplay();
-                        e.stopPropagation();
                     }
-                });
+                }
                 
+                updateStatus('✅ Attribute template loaded!');
+                
+                setTimeout(() => {
+                    if (drawingActive) {
+                        updateStatus("Drawing enabled! Hold Shift and drag to draw curves.");
+                    } else {
+                        updateStatus("Template loaded. Select layer and enable drawing to start.");
+                    }
+                }, 2000);
             } catch (error) {
-                console.error("Error loading purchase orders:", error);
-                $("#purchasePlaceholder").textContent = "Error loading purchase orders";
+                console.error("Error loading template:", error);
+                updateStatus('❌ Error loading template.');
             }
         }
         
-        function updatePurchaseDropdownDisplay() {
-            const placeholder = $("#purchasePlaceholder");
+        // Initialize layer dropdown and load domains
+        async function populateLayerDropdown() {
+            layerSelect.innerHTML = '<option value="">Select Layer...</option>';
             
-            if (selectedPurchaseOrders.length === 0) {
-                placeholder.textContent = "Select purchase orders...";
-                placeholder.style.color = "#999";
-            } else if (selectedPurchaseOrders.length === 1) {
-                const selected = allPurchaseOrders.find(p => p.code.toString() === selectedPurchaseOrders[0]);
-                placeholder.textContent = selected ? selected.name : selectedPurchaseOrders[0];
-                placeholder.style.color = "#000";
-            } else {
-                placeholder.textContent = `${selectedPurchaseOrders.length} purchase orders selected`;
-                placeholder.style.color = "#000";
+            for (const layerConfig of LINE_LAYER_CONFIG) {
+                const layer = mapView.map.allLayers.find(l => l.layerId === layerConfig.id);
+                if (layer && layer.visible) {
+                    const option = document.createElement('option');
+                    option.value = layerConfig.id;
+                    option.textContent = layerConfig.name;
+                    layerSelect.appendChild(option);
+                }
             }
         }
         
-        // Load work orders from fiber layer
-        async function loadWorkorders() {
+        // Load field domains from selected layer
+        async function loadFieldDomains(layer) {
+            if (!layer) return;
+            
             try {
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                const fiberLayer = allFL.find(l => l.layerId === 41050);
+                await layer.load();
                 
-                if (!fiberLayer) {
-                    $("#workorderPlaceholder").textContent = "No fiber layer found";
+                if (!layer.fields) {
+                    console.warn('Layer has no field information');
+                    updateStatus("Layer loaded but no field domains available.");
                     return;
                 }
                 
-                await fiberLayer.load();
-                const uniqueQuery = await fiberLayer.queryFeatures({
-                    where: "workorder_id IS NOT NULL AND workorder_id <> ''",
-                    outFields: ["workorder_id"],
-                    returnGeometry: false,
-                    returnDistinctValues: true
-                });
+                updateStatus("Loading field domains...");
+                console.log("Available fields:", layer.fields.map(f => f.name));
                 
-                const uniqueValues = [...new Set(
-                    uniqueQuery.features
-                        .map(f => f.attributes.workorder_id)
-                        .filter(v => v && v.toString().trim())
-                )].sort();
+                let domainsLoaded = 0;
                 
-                let workorderField;
-                try {
-                    workorderField = fiberLayer.fields.find(f => f.name === "workorder_id");
-                } catch (e) {
-                    console.log("Could not access field info for aliases");
-                }
-                
-                allWorkorders = uniqueValues.map(value => {
-                    let displayName = value;
-                    if (workorderField && workorderField.domain && workorderField.domain.codedValues) {
-                        const codedValue = workorderField.domain.codedValues.find(cv => cv.code === value);
-                        if (codedValue) displayName = codedValue.name;
-                    }
-                    return { code: value, name: displayName };
-                });
-                
-                if (!allWorkorders.length) {
-                    $("#workorderPlaceholder").textContent = "No work orders found";
-                    return;
-                }
-                
-                const optionsHtml = allWorkorders.map(wo => `
-                    <div class="workorder-option" data-value="${wo.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
-                        <input type="checkbox" style="margin-right:6px;"> ${wo.name}
-                    </div>
-                `).join('');
-                
-                $("#workorderOptions").innerHTML = optionsHtml;
-                $("#workorderPlaceholder").textContent = "Select work orders...";
-                
-                $("#workorderDropdown").onclick = () => {
-                    $("#workorderOptions").style.display = $("#workorderOptions").style.display === 'none' ? 'block' : 'none';
-                };
-                
-                $("#workorderOptions").addEventListener('click', (e) => {
-                    if (e.target.classList.contains('workorder-option') || e.target.type === 'checkbox') {
-                        const option = e.target.classList.contains('workorder-option') ? e.target : e.target.parentElement;
-                        const checkbox = option.querySelector('input[type="checkbox"]');
-                        const value = option.dataset.value;
-                        
-                        checkbox.checked = !checkbox.checked;
-                        
-                        if (checkbox.checked) {
-                            if (!selectedWorkorders.includes(value)) {
-                                selectedWorkorders.push(value);
+                // Process each attribute field to check for domains
+                for (const fieldName of attributeFields) {
+                    try {
+                        const field = layer.fields.find(f => f.name === fieldName);
+                        if (field) {
+                            console.log(`Field ${fieldName} found:`, field);
+                            
+                            if (field.domain && field.domain.codedValues && field.domain.codedValues.length > 0) {
+                                console.log(`Field ${fieldName} has ${field.domain.codedValues.length} coded values:`, field.domain.codedValues);
+                                
+                                const fieldElement = $(fieldName);
+                                if (fieldElement) {
+                                    // Convert to select if it's currently an input
+                                    if (fieldElement.tagName === 'INPUT' && fieldElement.type !== 'date') {
+                                        await convertInputToSelect(fieldElement, field);
+                                        domainsLoaded++;
+                                    } else if (fieldElement.tagName === 'SELECT') {
+                                        // Update existing select with domain values
+                                        await populateSelectWithDomain(fieldElement, field);
+                                        domainsLoaded++;
+                                    }
+                                } else {
+                                    console.warn(`Field element for ${fieldName} not found in form`);
+                                }
+                            } else {
+                                console.log(`Field ${fieldName} has no domain or coded values`);
                             }
                         } else {
-                            selectedWorkorders = selectedWorkorders.filter(w => w !== value);
+                            console.log(`Field ${fieldName} not found in layer schema`);
                         }
-                        
-                        updateWorkorderDropdownDisplay();
-                        e.stopPropagation();
+                    } catch (fieldError) {
+                        console.error(`Error processing field ${fieldName}:`, fieldError);
                     }
-                });
+                }
+                
+                if (domainsLoaded > 0) {
+                    updateStatus(`Loaded domains for ${domainsLoaded} fields. Fill in attributes and enable drawing.`);
+                } else {
+                    updateStatus("No field domains found in layer. Using default form fields.");
+                }
                 
             } catch (error) {
-                console.error("Error loading work orders:", error);
-                $("#workorderPlaceholder").textContent = "Error loading work orders";
+                console.error("Error loading field domains:", error);
+                updateStatus("Could not load field domains: " + error.message);
             }
         }
         
-        function updateWorkorderDropdownDisplay() {
-            const placeholder = $("#workorderPlaceholder");
+        // Convert input field to select dropdown with domain values
+        async function convertInputToSelect(inputElement, field) {
+            try {
+                // Store current value
+                const currentValue = inputElement.value;
+                
+                // Create new select element
+                const selectElement = document.createElement('select');
+                selectElement.id = inputElement.id;
+                selectElement.style.cssText = inputElement.style.cssText;
+                
+                // Add default option
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'Select...';
+                selectElement.appendChild(defaultOption);
+                
+                // Add domain values
+                for (const codedValue of field.domain.codedValues) {
+                    const option = document.createElement('option');
+                    option.value = codedValue.code;
+                    option.textContent = codedValue.name || codedValue.code;
+                    selectElement.appendChild(option);
+                }
+                
+                // Restore previous value if it exists in domain
+                if (currentValue) {
+                    const matchingOption = Array.from(selectElement.options).find(opt => opt.value === currentValue);
+                    if (matchingOption) {
+                        selectElement.value = currentValue;
+                    }
+                }
+                
+                // Replace the input with select
+                inputElement.parentNode.replaceChild(selectElement, inputElement);
+                
+                console.log(`Converted ${field.name} from input to select with ${field.domain.codedValues.length} options`);
+            } catch (error) {
+                console.error(`Error converting ${field.name} to select:`, error);
+            }
+        }
+        
+        // Populate existing select with domain values
+        async function populateSelectWithDomain(selectElement, field) {
+            try {
+                // Store current value
+                const currentValue = selectElement.value;
+                
+                // Clear existing options except the first one (Select...)
+                while (selectElement.children.length > 1) {
+                    selectElement.removeChild(selectElement.lastChild);
+                }
+                
+                // Add domain values
+                for (const codedValue of field.domain.codedValues) {
+                    const option = document.createElement('option');
+                    option.value = codedValue.code;
+                    option.textContent = codedValue.name || codedValue.code;
+                    selectElement.appendChild(option);
+                }
+                
+                // Restore previous value if it exists in domain
+                if (currentValue) {
+                    const matchingOption = Array.from(selectElement.options).find(opt => opt.value === currentValue);
+                    if (matchingOption) {
+                        selectElement.value = currentValue;
+                    }
+                }
+                
+                console.log(`Populated ${field.name} select with ${field.domain.codedValues.length} domain values`);
+            } catch (error) {
+                console.error(`Error populating ${field.name} select:`, error);
+            }
+        }
+        
+        // Remove the old convertFieldsWithDomains function since we're doing it inline now
+        
+        // Utility functions
+        function calculateDistance(point1, point2) {
+            const dx = point1.x - point2.x;
+            const dy = point1.y - point2.y;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+        
+        function calculateGeodeticLength(geometry) {
+            try {
+                if (!geometry || !geometry.paths || geometry.paths.length === 0) return 0;
+                
+                let totalLength = 0;
+                for (const path of geometry.paths) {
+                    if (path.length < 2) continue;
+                    
+                    for (let i = 0; i < path.length - 1; i++) {
+                        const point1 = {
+                            x: path[i][0],
+                            y: path[i][1],
+                            spatialReference: geometry.spatialReference
+                        };
+                        const point2 = {
+                            x: path[i + 1][0],
+                            y: path[i + 1][1],
+                            spatialReference: geometry.spatialReference
+                        };
+                        totalLength += calculateGeodeticDistanceBetweenPoints(point1, point2);
+                    }
+                }
+                return Math.round(totalLength);
+            } catch (error) {
+                console.error("Error calculating geodetic length:", error);
+                return 0;
+            }
+        }
+        
+        function calculateGeodeticDistanceBetweenPoints(point1, point2) {
+            try {
+                const latLng1 = convertMapPointToLatLng(point1);
+                const latLng2 = convertMapPointToLatLng(point2);
+                const earthRadiusFeet = 20902231.0;
+                const lat1Rad = latLng1.lat * Math.PI / 180;
+                const lat2Rad = latLng2.lat * Math.PI / 180;
+                const deltaLatRad = (latLng2.lat - latLng1.lat) * Math.PI / 180;
+                const deltaLngRad = (latLng2.lng - latLng1.lng) * Math.PI / 180;
+                
+                const a = Math.sin(deltaLatRad / 2) * Math.sin(deltaLatRad / 2) +
+                         Math.cos(lat1Rad) * Math.cos(lat2Rad) *
+                         Math.sin(deltaLngRad / 2) * Math.sin(deltaLngRad / 2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                
+                return earthRadiusFeet * c;
+            } catch (error) {
+                console.error("Error calculating distance between points:", error);
+                return 0;
+            }
+        }
+        
+        function convertMapPointToLatLng(mapPoint) {
+            try {
+                const sr = mapPoint.spatialReference;
+                if (!sr || sr.wkid === 3857 || sr.wkid === 102100) {
+                    return convertWebMercatorToLatLng(mapPoint.x, mapPoint.y);
+                } else if (sr.wkid === 4326 || sr.wkid === 4269) {
+                    return { lat: mapPoint.y, lng: mapPoint.x };
+                } else {
+                    return convertWebMercatorToLatLng(mapPoint.x, mapPoint.y);
+                }
+            } catch (error) {
+                console.error("Error converting map point:", error);
+                return { lat: 0, lng: 0 };
+            }
+        }
+        
+        function convertWebMercatorToLatLng(x, y) {
+            const lng = (x / 20037508.34) * 180;
+            let lat = (y / 20037508.34) * 180;
+            lat = 180 / Math.PI * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
+            return { lat: lat, lng: lng };
+        }
+        
+        // Curve smoothing algorithms
+        function douglasPeucker(points, tolerance) {
+            if (points.length <= 2) return points;
             
-            if (selectedWorkorders.length === 0) {
-                placeholder.textContent = "Select work orders...";
-                placeholder.style.color = "#999";
-            } else if (selectedWorkorders.length === 1) {
-                const selected = allWorkorders.find(w => w.code.toString() === selectedWorkorders[0]);
-                placeholder.textContent = selected ? selected.name : selectedWorkorders[0];
-                placeholder.style.color = "#000";
+            // Find the point with maximum distance from line between first and last points
+            let maxDistance = 0;
+            let maxIndex = 0;
+            const firstPoint = points[0];
+            const lastPoint = points[points.length - 1];
+            
+            for (let i = 1; i < points.length - 1; i++) {
+                const distance = perpendicularDistance(points[i], firstPoint, lastPoint);
+                if (distance > maxDistance) {
+                    maxDistance = distance;
+                    maxIndex = i;
+                }
+            }
+            
+            if (maxDistance > tolerance) {
+                // Recursively simplify both halves
+                const firstHalf = douglasPeucker(points.slice(0, maxIndex + 1), tolerance);
+                const secondHalf = douglasPeucker(points.slice(maxIndex), tolerance);
+                
+                // Combine results (remove duplicate point at connection)
+                return firstHalf.slice(0, -1).concat(secondHalf);
             } else {
-                placeholder.textContent = `${selectedWorkorders.length} work orders selected`;
-                placeholder.style.color = "#000";
+                return [firstPoint, lastPoint];
             }
         }
         
-        // Date controls
-        $("#allTimeBtn").onclick = () => {
-            $("#startDate").value = "";
-            $("#endDate").value = "";
-            $("#startDate").disabled = true;
-            $("#endDate").disabled = true;
-            $("#allTimeBtn").style.background = "#3367d6";
-            $("#allTimeBtn").style.color = "#fff";
-        };
-        
-        $("#startDate").onclick = $("#endDate").onclick = () => {
-            $("#startDate").disabled = false;
-            $("#endDate").disabled = false;
-            $("#allTimeBtn").style.background = "";
-            $("#allTimeBtn").style.color = "";
-        };
-        
-        // Build filter clause for queries
-        function buildFilterClause() {
-            const clauses = [];
+        function perpendicularDistance(point, lineStart, lineEnd) {
+            const A = lineEnd.y - lineStart.y;
+            const B = lineStart.x - lineEnd.x;
+            const C = lineEnd.x * lineStart.y - lineStart.x * lineEnd.y;
             
-            if (selectedPurchaseOrders.length > 0) {
-                const purchaseClause = selectedPurchaseOrders
-                    .map(po => `purchase_order_id='${po.toString().replace(/'/g, "''")}'`)
-                    .join(' OR ');
-                clauses.push(`(${purchaseClause})`);
-            }
-            
-            if (selectedWorkorders.length > 0) {
-                const workorderClause = selectedWorkorders
-                    .map(wo => `workorder_id='${wo.toString().replace(/'/g, "''")}'`)
-                    .join(' OR ');
-                clauses.push(`(${workorderClause})`);
-            }
-            
-            return clauses.length > 0 ? clauses.join(' OR ') : "1=1";
+            return Math.abs(A * point.x + B * point.y + C) / Math.sqrt(A * A + B * B);
         }
         
-        // CSV export utility
-        const csvEsc = (v) => {
-            if (v == null) v = "";
-            v = String(v);
-            return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-        };
-        
-        // Export CSV function
-        $("#exportBtn").onclick = () => {
-            if (!currentTableData.length) return alert("No data to export");
+        function smoothPath(points, smoothingLevel) {
+            if (points.length < 3) return points;
             
-            const csvRows = [["Category", ...targetLayers.map(l => l.name)]];
-            currentTableData.forEach(row => {
-                csvRows.push([csvEsc(row.category), ...row.values.map(v => csvEsc(v))]);
+            // Apply Douglas-Peucker first to remove excessive points
+            const tolerance = Math.max(1, mapView.resolution * (6 - smoothingLevel));
+            let simplified = douglasPeucker(points, tolerance);
+            
+            // Apply moving average smoothing
+            if (smoothingLevel > 2 && simplified.length > 3) {
+                simplified = applyMovingAverage(simplified, smoothingLevel);
+            }
+            
+            return simplified;
+        }
+        
+        function applyMovingAverage(points, windowSize) {
+            if (points.length <= 2) return points;
+            
+            const smoothed = [points[0]]; // Keep first point unchanged
+            const window = Math.min(windowSize, Math.floor(points.length / 3));
+            
+            for (let i = 1; i < points.length - 1; i++) {
+                let sumX = 0, sumY = 0, count = 0;
+                
+                const start = Math.max(0, i - window);
+                const end = Math.min(points.length, i + window + 1);
+                
+                for (let j = start; j < end; j++) {
+                    sumX += points[j].x;
+                    sumY += points[j].y;
+                    count++;
+                }
+                
+                smoothed.push({
+                    x: sumX / count,
+                    y: sumY / count
+                });
+            }
+            
+            smoothed.push(points[points.length - 1]); // Keep last point unchanged
+            return smoothed;
+        }
+        
+        function detectCurveType(points) {
+            if (points.length < 5) return 'line';
+            
+            // Simple heuristic: if the path curves consistently in one direction, it might be circular
+            let totalTurnAngle = 0;
+            let turnCount = 0;
+            
+            for (let i = 1; i < points.length - 1; i++) {
+                const prev = points[i - 1];
+                const curr = points[i];
+                const next = points[i + 1];
+                
+                const angle1 = Math.atan2(curr.y - prev.y, curr.x - prev.x);
+                const angle2 = Math.atan2(next.y - curr.y, next.x - curr.x);
+                let turnAngle = angle2 - angle1;
+                
+                // Normalize angle to [-π, π]
+                if (turnAngle > Math.PI) turnAngle -= 2 * Math.PI;
+                if (turnAngle < -Math.PI) turnAngle += 2 * Math.PI;
+                
+                totalTurnAngle += Math.abs(turnAngle);
+                turnCount++;
+            }
+            
+            const avgTurnAngle = totalTurnAngle / turnCount;
+            
+            if (avgTurnAngle > 0.1) {
+                return 'curve';
+            } else {
+                return 'line';
+            }
+        }
+        
+        // Drawing functions
+        function startDrawing(event) {
+            if (!drawingActive || !selectedLayer) return;
+            
+            isDrawing = true;
+            currentPath = [];
+            rawPoints = [];
+            
+            const mapPoint = mapView.toMap({ x: event.x, y: event.y });
+            rawPoints.push(mapPoint);
+            currentPath.push([mapPoint.x, mapPoint.y]);
+            
+            updateStatus("Drawing curve... drag to continue, release to finish.");
+            
+            // Set up pointer tracking
+            mapView.container.style.cursor = "crosshair";
+            
+            // Add pointer move handler
+            pointerMoveHandler = mapView.on("pointer-move", function(event) {
+                if (isDrawing) {
+                    const mapPoint = mapView.toMap({ x: event.x, y: event.y });
+                    
+                    // Only add point if it's far enough from the last point
+                    const lastPoint = rawPoints[rawPoints.length - 1];
+                    const distance = calculateDistance(mapPoint, lastPoint);
+                    const minDistance = mapView.resolution * 5; // Minimum distance between points
+                    
+                    if (distance > minDistance) {
+                        rawPoints.push(mapPoint);
+                        currentPath.push([mapPoint.x, mapPoint.y]);
+                        
+                        // Update preview in real-time (optional - might be too intensive)
+                        if (rawPoints.length > 3) {
+                            updatePreview();
+                        }
+                    }
+                }
             });
             
-            const csv = csvRows.map(r => r.join(",")).join("\n");
-            const dateRange = $("#startDate").disabled ? "all_time" : `${$("#startDate").value}_${$("#endDate").value}`;
-            const file = `layer_metrics_${dateRange}.csv`;
-            
-            const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = file;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        };
-        
-        // Clear map filters
-        $("#clearBtn").onclick = async () => {
-            try {
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                allFL.forEach(layer => {
-                    if (layer.definitionExpression) {
-                        layer.definitionExpression = "";
-                    }
-                });
-                updateStatus("Map filters cleared.");
-                $("#clearBtn").style.display = "none";
-            } catch (error) {
-                console.error("Error clearing filters:", error);
-                updateStatus("Error clearing filters.");
-            }
-        };
-        
-        // Global function for filtering map by category
-        window.filterMapByCategory = async function(categoryName, categoryData) {
-            try {
-                updateStatus(`Applying ${categoryName} filters to map...`);
-                
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                
-                for (const layer of allFL) {
-                    const targetLayer = targetLayers.find(tl => tl.id === layer.layerId);
-                    if (!targetLayer) continue;
-                    
-                    await layer.load();
-                    
-                    const filterClause = buildFilterClause();
-                    let statusClause;
-                    
-                    if (categoryData.includeStatuses) {
-                        statusClause = categoryData.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
-                    } else if (categoryData.excludeStatuses) {
-                        statusClause = categoryData.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
-                    }
-                    
-                    if (categoryData.requireStage) {
-                        const stageClause = `workflow_stage = '${categoryData.requireStage}'`;
-                        statusClause = statusClause ? `(${statusClause}) AND ${stageClause}` : stageClause;
-                    }
-                    
-                    let additionalFilter = "";
-                    if (targetLayer.additionalFilter) {
-                        additionalFilter = ` AND ${targetLayer.additionalFilter}`;
-                    }
-                    
-                    const start = $("#startDate").value;
-                    const end = $("#endDate").value;
-                    const allTimeMode = $("#startDate").disabled;
-                    let baseDateClause = "";
-                    
-                    if (!allTimeMode) {
-                        const startLit = `TIMESTAMP '${start} 00:00:00'`;
-                        const endLit = `TIMESTAMP '${end} 23:59:59'`;
-                        baseDateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
-                    }
-                    
-                    const fullFilter = `(${filterClause}) AND (${statusClause})${additionalFilter}${baseDateClause}`;
-                    layer.definitionExpression = fullFilter;
+            // Add pointer up handler
+            pointerUpHandler = mapView.on("pointer-up", function(event) {
+                if (isDrawing) {
+                    finishDrawing();
                 }
-                
-                updateStatus(`Map filtered to show ${categoryName} features. Click "Clear Filters" to reset.`);
-                $("#clearBtn").style.display = "inline-block";
-                
-            } catch (error) {
-                console.error("Error filtering map:", error);
-                updateStatus("Error applying map filters.");
-            }
-        };
-        
-        // Main report function
-        $("#runBtn").onclick = async () => {
-            try {
-                const start = $("#startDate").value;
-                const end = $("#endDate").value;
-                const allTimeMode = $("#startDate").disabled;
-                
-                if (selectedWorkorders.length === 0 && selectedPurchaseOrders.length === 0) {
-                    return alert("Please select at least one work order or purchase order.");
-                }
-                
-                if (!allTimeMode && (!start || !end)) {
-                    return alert("Please select both dates or use All Time.");
-                }
-                
-                let s = start, e = end;
-                if (!allTimeMode && e < s) [s, e] = [e, s];
-                
-                const filterClause = buildFilterClause();
-                let baseDateClause = "";
-                
-                if (!allTimeMode) {
-                    const startLit = `TIMESTAMP '${s} 00:00:00'`;
-                    const endLit = `TIMESTAMP '${e} 23:59:59'`;
-                    baseDateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
-                }
-                
-                const categories = [
-                    {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
-                    {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
-                    {name: "Left to Build", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
-                    {name: "Missing Billing", includeStatuses: ['RDYFDLY']}
-                ];
-                
-                const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
-                let selectionText = "";
-                
-                if (selectedPurchaseOrders.length > 0 && selectedWorkorders.length > 0) {
-                    selectionText = `${selectedPurchaseOrders.length} PO(s) and ${selectedWorkorders.length} WO(s)`;
-                } else if (selectedPurchaseOrders.length > 0) {
-                    selectionText = selectedPurchaseOrders.length === 1 ? selectedPurchaseOrders[0] : `${selectedPurchaseOrders.length} purchase orders`;
-                } else {
-                    selectionText = selectedWorkorders.length === 1 ? selectedWorkorders[0] : `${selectedWorkorders.length} work orders`;
-                }
-                
-                updateStatus(`Querying layers for ${selectionText} (${dateRangeText})...`);
-                $("#resultsTable").innerHTML = "";
-                currentTableData = [];
-                
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                if (!allFL.length) return alert("No feature layers found.");
-                
-                const results = [];
-                
-                for (const category of categories) {
-                    const categoryResults = {
-                        name: category.name,
-                        layers: [],
-                        categoryData: category
-                    };
-                    
-                    for (const targetLayer of targetLayers) {
-                        try {
-                            const layer = allFL.find(l => l.layerId === targetLayer.id);
-                            if (!layer) {
-                                categoryResults.layers.push({
-                                    name: targetLayer.name,
-                                    value: "Layer not found",
-                                    error: true
-                                });
-                                continue;
-                            }
-                            
-                            await layer.load();
-                            
-                            let statusClause;
-                            if (category.includeStatuses) {
-                                statusClause = category.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
-                            } else if (category.excludeStatuses) {
-                                statusClause = category.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
-                            }
-                            
-                            if (category.requireStage) {
-                                const stageClause = `workflow_stage = '${category.requireStage}'`;
-                                statusClause = statusClause ? `(${statusClause}) AND ${stageClause}` : stageClause;
-                            }
-                            
-                            let additionalFilter = "";
-                            if (targetLayer.additionalFilter) {
-                                additionalFilter = ` AND ${targetLayer.additionalFilter}`;
-                            }
-                            
-                            const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${baseDateClause}`;
-                            
-                            const oidField = layer.objectIdField;
-                            const outFields = [oidField, targetLayer.field];
-                            
-                            const queryResult = await layer.queryFeatures({
-                                where: whereClause,
-                                outFields: outFields,
-                                returnGeometry: false
-                            });
-                            
-                            let value;
-                            if (targetLayer.metric === "count") {
-                                value = queryResult.features.length;
-                            } else if (targetLayer.metric === "sum") {
-                                value = queryResult.features.reduce((sum, feature) => {
-                                    const fieldValue = feature.attributes[targetLayer.field];
-                                    return sum + (Number(fieldValue) || 0);
-                                }, 0);
-                                value = Math.round(value * 100) / 100;
-                            }
-                            
-                            categoryResults.layers.push({
-                                name: targetLayer.name,
-                                value: value,
-                                metric: targetLayer.metric,
-                                error: false
-                            });
-                            
-                        } catch (err) {
-                            console.error(`Error querying layer ${targetLayer.name} for ${category.name}:`, err);
-                            categoryResults.layers.push({
-                                name: targetLayer.name,
-                                value: "Error: " + (err.message || "Unknown error"),
-                                error: true
-                            });
-                        }
-                    }
-                    
-                    results.push(categoryResults);
-                }
-                
-                // Build results table
-                let tableHTML = `<div style="overflow-x:auto;margin-top:8px;"><table style="min-width:100%;border-collapse:collapse;white-space:nowrap;"><thead><tr style="background:#f5f5f5;"><th style="border:1px solid #ddd;padding:8px;text-align:left;font-weight:bold;">Category</th>`;
-                
-                targetLayers.forEach(layer => {
-                    let headerText = layer.name;
-                    if (layer.additionalFilter) {
-                        if (layer.name === "Fiber Cable") headerText += " (Excl. DROP)";
-                        else if (layer.name === "Aerial Span") headerText += " (Excl. EXISTINGINFRA)";
-                    }
-                    tableHTML += `<th style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;">${headerText}</th>`;
-                });
-                
-                tableHTML += `</tr></thead><tbody>`;
-                
-                results.forEach(categoryResult => {
-                    const rowValues = [];
-                    tableHTML += `<tr><td style="border:1px solid #ddd;padding:8px;font-weight:bold;cursor:pointer;background:#f8f9fa;transition:background 0.2s;" onclick="filterMapByCategory('${categoryResult.name}',${JSON.stringify(categoryResult.categoryData).replace(/"/g, '&quot;')})" title="Click to filter map to show only ${categoryResult.name} features">${categoryResult.name}</td>`;
-                    
-                    categoryResult.layers.forEach(layerResult => {
-                        const valueDisplay = layerResult.error ? layerResult.value : 
-                            (layerResult.metric === "sum" ? layerResult.value.toLocaleString() : layerResult.value.toLocaleString());
-                        rowValues.push(valueDisplay);
-                        
-                        const cellStyle = layerResult.error ? "color:#d32f2f;" : "";
-                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${valueDisplay}</td>`;
-                    });
-                    
-                    currentTableData.push({category: categoryResult.name, values: rowValues});
-                    tableHTML += `</tr>`;
-                });
-                
-                tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map to show only those features</div>`;
-                
-                $("#resultsTable").innerHTML = tableHTML;
-                $("#exportBtn").style.display = "inline-block";
-                updateStatus("Report completed.");
-                
-            } catch (err) {
-                console.error(err);
-                updateStatus("Error: " + (err.message || err));
-            }
-        };
-        
-        // Document click handler for dropdown closing
-        document.addEventListener('click', (e) => {
-            if (!toolBox.contains(e.target)) {
-                $("#purchaseOptions").style.display = 'none';
-                $("#workorderOptions").style.display = 'none';
-            }
-        });
-        
-        // Tool cleanup function
-        function cleanup() {
-            // Clear map filters
-            try {
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                allFL.forEach(layer => {
-                    if (layer.definitionExpression) {
-                        layer.definitionExpression = "";
-                    }
-                });
-            } catch (error) {
-                console.warn("Error clearing filters during cleanup:", error);
-            }
-            
-            // Clean up global function
-            if (window.filterMapByCategory) {
-                delete window.filterMapByCategory;
-            }
-            
-            toolBox.remove();
-            console.log('Metrics By WOID Tool cleaned up');
+            });
         }
         
-        // Initialize data loading
-        loadPurchaseOrders();
-        loadWorkorders();
+        function finishDrawing() {
+            if (!isDrawing) return;
+            
+            isDrawing = false;
+            mapView.container.style.cursor = "default";
+            
+            // Clean up event handlers
+            if (pointerMoveHandler) {
+                pointerMoveHandler.remove();
+                pointerMoveHandler = null;
+            }
+            if (pointerUpHandler) {
+                pointerUpHandler.remove();
+                pointerUpHandler = null;
+            }
+            
+            if (rawPoints.length < 2) {
+                updateStatus("❌ Need at least 2 points to create a curve. Try again.");
+                return;
+            }
+            
+            updateStatus(`Captured ${rawPoints.length} points. Processing curve...`);
+            
+            // Enable preview and accept buttons
+            if (previewBtn) previewBtn.disabled = false;
+            if (acceptBtn) acceptBtn.disabled = false;
+            if (cancelBtn) cancelBtn.disabled = false;
+            
+            // Auto-preview
+            setTimeout(() => updatePreview(), 100);
+        }
         
-        // Close button
-        $("#closeTool").onclick = () => {
-            window.gisToolHost.closeTool('metrics-by-woid');
-        };
+        function updatePreview() {
+            if (!rawPoints || rawPoints.length < 2) return;
+            
+            try {
+                // Clear existing preview
+                clearPreview();
+                
+                // Smooth the path
+                const smoothingLevel = parseInt(smoothingSlider.value);
+                smoothedPath = smoothPath([...rawPoints], smoothingLevel);
+                
+                if (smoothedPath.length < 2) {
+                    updateStatus("❌ Not enough points after smoothing.");
+                    return;
+                }
+                
+                // Create preview geometry
+                const pathCoords = smoothedPath.map(p => [p.x, p.y]);
+                const previewGeometry = {
+                    type: "polyline",
+                    paths: [pathCoords],
+                    spatialReference: mapView.spatialReference
+                };
+                
+                // Detect curve type
+                const curveType = detectCurveType(smoothedPath);
+                
+                // Create preview graphic
+                const previewSymbol = {
+                    type: "simple-line",
+                    color: [255, 0, 0, 0.8], // Red with transparency
+                    width: 3,
+                    style: "dash"
+                };
+                
+                previewGraphic = {
+                    geometry: previewGeometry,
+                    symbol: previewSymbol
+                };
+                
+                // Add to map view
+                if (mapView.graphics) {
+                    mapView.graphics.add(previewGraphic);
+                }
+                
+                const length = calculateGeodeticLength(previewGeometry);
+                updateStatus(`✅ Preview ready: ${curveType} with ${smoothedPath.length} vertices, ${length}ft long. Click Accept to create.`);
+            } catch (error) {
+                console.error("Error creating preview:", error);
+                updateStatus("❌ Error creating preview.");
+            }
+        }
         
-        // Register tool with host
-        window.gisToolHost.activeTools.set('metrics-by-woid', {
-            cleanup: cleanup,
-            toolBox: toolBox
-        });
+        function clearPreview() {
+            if (previewGraphic && mapView.graphics) {
+                mapView.graphics.remove(previewGraphic);
+                previewGraphic = null;
+            }
+        }
         
-        console.log('Metrics By WOID Tool loaded successfully');
+        async function acceptCurve() {
+            if (!smoothedPath || !selectedLayer) return;
+            
+            // Validate required attributes first
+            if (!validateAttributes()) {
+                return;
+            }
+            
+            updateStatus("Creating feature...");
+            
+            try {
+                const pathCoords = smoothedPath.map(p => [p.x, p.y]);
+                const geometry = {
+                    type: "polyline",
+                    paths: [pathCoords],
+                    spatialReference: mapView.spatialReference
+                };
+                
+                const length = calculateGeodeticLength(geometry);
+                
+                // Get attributes from form
+                const formAttributes = getFormAttributes();
+                
+                // Create new feature with all required attributes
+                const newFeature = {
+                    geometry: geometry,
+                    attributes: {
+                        calculated_length: length,
+                        ...formAttributes
+                    }
+                };
+                
+                console.log("Creating feature with attributes:", newFeature.attributes);
+                
+                // Add to layer
+                if (selectedLayer.applyEdits) {
+                    const result = await selectedLayer.applyEdits({ addFeatures: [newFeature] });
+                    
+                    if (result.addFeatureResults && result.addFeatureResults.length > 0) {
+                        const addResult = result.addFeatureResults[0];
+                        if (addResult.success) {
+                            updateStatus(`✅ Created curve feature with length ${length}ft! ObjectID: ${addResult.objectId}`);
+                        } else {
+                            console.error("Add feature failed:", addResult.error);
+                            updateStatus(`❌ Failed to create feature: ${addResult.error?.message || 'Unknown error'}`);
+                            return;
+                        }
+                    } else {
+                        updateStatus(`✅ Created curve feature with length ${length}ft!`);
+                    }
+                } else {
+                    updateStatus("❌ Layer doesn't support editing.");
+                    return;
+                }
+                
+                // Clean up
+                clearPreview();
+                resetDrawing();
+                
+                setTimeout(() => {
+                    updateStatus("Ready to draw next curve.");
+                }, 3000);
+                
+            } catch (error) {
+                console.error("Error creating feature:", error);
+                updateStatus("❌ Error creating feature: " + error.message);
+            }
+        }
+        
+        function cancelCurve() {
+            clearPreview();
+            resetDrawing();
+            updateStatus("Curve cancelled. Ready to draw next curve.");
+        }
+        
+        function resetDrawing() {
+            rawPoints = [];
+            currentPath = [];
+            smoothedPath = null;
+            isDrawing = false;
+            
+            if (previewBtn) previewBtn.disabled = true;
+            if (acceptBtn) acceptBtn.disabled = true;
+            if (cancelBtn) cancelBtn.disabled = true;
+            
+            if (pointerMoveHandler) {
+                pointerMoveHandler.remove();
+                pointerMoveHandler = null;
+            }
+            if (pointerUpHandler) {
+                pointerUpHandler.remove();
+                pointerUpHandler = null;
+            }
+        }
+        
+        function enableDrawing() {
+            const layerId = parseInt(layerSelect.value);
+            if (!layerId) {
+                updateStatus("❌ Please select a target layer first.");
+                return;
+            }
+            
+            // Check if minimum required attributes are filled
+            if (!validateAttributes()) {
+                return;
+            }
+            
+            selectedLayer = mapView.map.allLayers.find(l => l.layerId === layerId);
+            if (!selectedLayer) {
+                updateStatus("❌ Selected layer not found.");
+                return;
+            }
+            
+            drawingActive = true;
+            if (enableBtn) enableBtn.disabled = true;
+            if (disableBtn) disableBtn.disabled = false;
+            if (layerSelect) layerSelect.disabled = true;
+            
+            // Set up drawing handler
+            dragHandler = mapView.on("drag", ["Shift"], function(event) {
+                event.stopPropagation();
+                
+                switch (event.action) {
+                    case "start":
+                        startDrawing(event);
+                        break;
+                    case "update":
+                        // Handled by pointer-move
+                        break;
+                    case "end":
+                        finishDrawing();
+                        break;
+                }
+            });
+            
+            updateStatus("Drawing enabled! Hold Shift and drag to draw curves.");
+        }
+        
+        function disableDrawing() {
+            drawingActive = false;
+            
+            if (dragHandler) {
+                dragHandler.remove();
+                dragHandler = null;
+            }
+            
+            resetDrawing();
+            clearPreview();
+            
+            if (enableBtn) enableBtn.disabled = false;
+            if (disableBtn) disableBtn.disabled = true;
+            if (layerSelect) layerSelect.disabled = false;
+            
+            selectedLayer = null;
+            updateStatus("Drawing disabled.");
+        }
+        
+        // Event listeners
+        if (toggleAttributesBtn) {
+            toggleAttributesBtn.onclick = toggleAttributesForm;
+        }
+        
+        if (saveTemplateBtn) {
+            saveTemplateBtn.onclick = saveAttributeTemplate;
+        }
+        
+        if (loadTemplateBtn) {
+            loadTemplateBtn.onclick = loadAttributeTemplate;
+        }
+        
+        if (layerSelect) {
+            layerSelect.onchange = async function() {
+                const layerId = parseInt(this.value);
+                if (layerId) {
+                    const layer = mapView.map.allLayers.find(l => l.layerId === layerId);
+                    if (layer) {
+                        await loadFieldDomains(layer);
+                    }
+                } else {
+                    updateStatus("Select a layer to load field domains.");
+                }
+            };
+        }
+        
+        if (smoothingSlider) {
+            smoothingSlider.oninput = function() {
+                if (rawPoints.length > 0) {
+                    updatePreview(); // Update preview when smoothing changes
+                }
+            };
+        }
+        
+        if (enableBtn) enableBtn.onclick = enableDrawing;
+        if (disableBtn) disableBtn.onclick = disableDrawing;
+        if (previewBtn) previewBtn.onclick = updatePreview;
+        if (acceptBtn) acceptBtn.onclick = acceptCurve;
+        if (cancelBtn) cancelBtn.onclick = cancelCurve;
+        
+        if (closeBtn) {
+            closeBtn.onclick = function() {
+                disableDrawing();
+                clearPreview();
+                toolBox.remove();
+                // Safe removal from active tools
+                if (window.gisToolHost && window.gisToolHost.activeTools && window.gisToolHost.activeTools instanceof Set) {
+                    window.gisToolHost.activeTools.delete('curve-drawing-tool');
+                }
+            };
+        }
+        
+        // Initialize
+        populateLayerDropdown();
+        
+        // Register tool as active
+        window.gisToolHost.activeTools.add('curve-drawing-tool');
+        
+        updateStatus("Curve Drawing Tool loaded. Fill in required attributes, select layer, and enable drawing.");
         
     } catch (error) {
-        console.error('Error loading Metrics By WOID Tool:', error);
-        alert("Error creating Metrics By WOID Tool: " + (error.message || error));
+        console.error("Error creating curve drawing tool:", error);
+        alert("Error creating curve drawing tool: " + (error.message || error));
     }
 })();
