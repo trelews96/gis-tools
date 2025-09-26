@@ -68,7 +68,8 @@
                 <div style="margin-bottom:12px;color:#666;font-size:11px;">
                     <strong>Step 1:</strong> Draw a polygon to select features<br>
                     <strong>Step 2:</strong> Edit slackloop sequential fields<br>
-                    <strong>Step 3:</strong> View daily tracking for fiber cables
+                    <strong>Step 3:</strong> View daily tracking for fiber cables<br>
+                    <em style="color:#dc3545;">Note: DROP cables are excluded</em>
                 </div>
                 
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
@@ -618,12 +619,13 @@
                     layer: slackloopLayer
                 }));
                 
-                // Query fiber cable features
+                // Query fiber cable features - EXCLUDE cable_category = 'DROP'
                 const fiberCableQuery = await fiberCableLayer.queryFeatures({
                     geometry: polygon,
                     spatialRelationship: 'intersects',
                     returnGeometry: true,
-                    outFields: ['*']
+                    outFields: ['*'],
+                    where: "cable_category <> 'DROP' OR cable_category IS NULL"
                 });
                 
                 selectedFiberCables = fiberCableQuery.features.map(feature => ({
@@ -637,7 +639,8 @@
                     <div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
                         <strong>Selection Results:</strong><br>
                         Slack Loops: ${selectedSlackloops.length}<br>
-                        Fiber Cables: ${selectedFiberCables.length}
+                        Fiber Cables: ${selectedFiberCables.length}<br>
+                        <em style="color:#666;font-size:10px;">(DROP cables excluded)</em>
                     </div>
                 `;
                 
@@ -645,7 +648,7 @@
                 
                 if (selectedSlackloops.length > 0 || selectedFiberCables.length > 0) {
                     $("#startEditingBtn").style.display = "block";
-                    updateStatus(`Found ${selectedSlackloops.length} slack loops and ${selectedFiberCables.length} fiber cables.`);
+                    updateStatus(`Found ${selectedSlackloops.length} slack loops and ${selectedFiberCables.length} fiber cables (DROP excluded).`);
                 } else {
                     updateStatus("No features found in the selected area.");
                 }
@@ -718,8 +721,6 @@
             highlightFeature(current, [0, 255, 0, 0.8], true);
             
             updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} - Feature highlighted on map`);
-            
-            // Focus on first input for better UX
             setTimeout(() => {
                 $("#sequentialInInput").focus();
             }, 200);
@@ -992,3 +993,5 @@
         alert("Error creating Sequential Editor Tool: " + (error.message || error));
     }
 })();
+            
+            // Focus on first input for better UX
