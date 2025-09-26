@@ -627,6 +627,56 @@
                     outFields: ['*'],
                     where: "cable_category <> 'DROP' OR cable_category IS NULL"
                 });
+
+                function showCurrentSlackloop() {
+    if (currentSlackloopIndex >= selectedSlackloops.length) {
+        startFiberCablePhase();
+        return;
+    }
+    
+    const current = selectedSlackloops[currentSlackloopIndex];
+    const objectIdField = getObjectIdField(current);
+    const objectId = current.attributes[objectIdField];
+    const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
+    
+    // Get additional attributes
+    const cableCategory = current.attributes.cable_category || current.attributes.CABLE_CATEGORY || 'N/A';
+    const loopType = current.attributes.loop_type || current.attributes.LOOP_TYPE || 'N/A';
+    const fiberCount = current.attributes.fiber_count || current.attributes.FIBER_COUNT || 'N/A';
+    
+    // Update progress
+    $("#slackloopProgress").innerHTML = `
+        <strong>Progress:</strong> ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} slack loops
+    `;
+    
+    // Update info
+    $("#slackloopInfo").innerHTML = `
+        <strong>Current Slack Loop:</strong><br>
+        GIS ID: ${gisId}<br>
+        Object ID: ${objectId}<br>
+        Cable Category: ${cableCategory}<br>
+        Loop Type: ${loopType}<br>
+        Fiber Count: ${fiberCount}<br>
+        <span style="color:#28a745;font-weight:bold;">⚡ Currently highlighted on map</span>
+    `;
+    
+    // Pre-fill current values
+    $("#sequentialInInput").value = current.attributes.sequential_in || '';
+    $("#sequentialOutInput").value = current.attributes.sequential_out || '';
+    
+    // Update button states
+    $("#prevSlackloopBtn").disabled = currentSlackloopIndex === 0;
+    
+    // Highlight feature with popup
+    highlightFeature(current, [0, 255, 0, 0.8], true);
+    
+    updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} - Feature highlighted on map`);
+    
+    // Focus on first input for better UX
+    setTimeout(() => {
+        $("#sequentialInInput").focus();
+    }, 200);
+}
                 
                 selectedFiberCables = fiberCableQuery.features.map(feature => ({
                     attributes: feature.attributes,
@@ -701,7 +751,51 @@
             $("#slackloopProgress").innerHTML = `
                 <strong>Progress:</strong> ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} slack loops
             `;
-            
+            function showCurrentFiberCable() {
+    if (currentFiberCableIndex >= selectedFiberCables.length) {
+        setPhase('complete');
+        return;
+    }
+    
+    const current = selectedFiberCables[currentFiberCableIndex];
+    const objectIdField = getObjectIdField(current);
+    const objectId = current.attributes[objectIdField];
+    const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
+    const globalId = current.attributes.globalid || current.attributes.GlobalID || current.attributes.GLOBALID;
+    
+    // Get additional attributes
+    const cableCategory = current.attributes.cable_category || current.attributes.CABLE_CATEGORY || 'N/A';
+    const fiberCount = current.attributes.fiber_count || current.attributes.FIBER_COUNT || 'N/A';
+    
+    // Update progress
+    $("#fiberCableProgress").innerHTML = `
+        <strong>Progress:</strong> ${currentFiberCableIndex + 1} of ${selectedFiberCables.length} fiber cables
+    `;
+    
+    // Update info
+    $("#fiberCableInfo").innerHTML = `
+        <strong>Current Fiber Cable:</strong><br>
+        GIS ID: ${gisId}<br>
+        Object ID: ${objectId}<br>
+        Global ID: ${globalId}<br>
+        Cable Category: ${cableCategory}<br>
+        Fiber Count: ${fiberCount}<br>
+        <span style="color:#dc3545;font-weight:bold;">⚡ Currently highlighted on map with daily tracking popup</span>
+    `;
+    
+    // Update button states
+    $("#prevFiberCableBtn").disabled = currentFiberCableIndex === 0;
+    
+    // Highlight feature and show daily tracking popup
+    highlightFeature(current, [255, 0, 255, 0.8]);
+    
+    // Show daily tracking popup
+    setTimeout(() => {
+        showDailyTrackingPopup(current);
+    }, 500);
+    
+    updateStatus(`Viewing fiber cable ${currentFiberCableIndex + 1} of ${selectedFiberCables.length} - Daily tracking popup displayed`);
+}
             // Update info
             $("#slackloopInfo").innerHTML = `
                 <strong>Current Slack Loop:</strong><br>
