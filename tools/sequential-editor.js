@@ -113,6 +113,42 @@
                 
                 <button id="clearHighlightsBtn2" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
             </div>
+            <!-- Slackloop Editing Phase -->
+<div id="slackloopPhase" style="display:none;">
+    <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">Editing Slack Loops</div>
+    
+    <div id="slackloopProgress" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
+    
+    <div id="slackloopInfo" style="margin-bottom:12px;padding:8px;background:#e3f2fd;border:1px solid #bbdefb;border-radius:3px;"></div>
+    
+    <div style="margin-bottom:8px;">
+        <label style="display:block;margin-bottom:4px;font-weight:bold;">Sequential In:</label>
+        <input type="number" id="sequentialInInput" style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;" min="0" step="1">
+    </div>
+    
+    <div style="margin-bottom:8px;">
+        <label style="display:block;margin-bottom:4px;font-weight:bold;">Sequential Out:</label>
+        <input type="number" id="sequentialOutInput" style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;" min="0" step="1">
+    </div>
+    
+    <div style="margin-bottom:12px;">
+        <label style="display:block;margin-bottom:4px;font-weight:bold;">Workflow Status:</label>
+        <select id="workflowStatusInput" style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;">
+            <option value="">-- Select Status --</option>
+        </select>
+    </div>
+    
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <button id="submitSlackloopBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Submit & Next</button>
+        <button id="skipSlackloopBtn" style="flex:1;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Skip This One</button>
+    </div>
+    
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <button id="prevSlackloopBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">← Previous</button>
+    </div>
+    
+    <button id="clearHighlightsBtn2" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">Clear All Highlights</button>
+</div>
             
             <!-- Fiber Cable Phase -->
             <div id="fiberCablePhase" style="display:none;">
@@ -297,6 +333,45 @@
                 return geometry; // Fallback to original geometry
             }
         }
+
+        async function populateWorkflowStatusDomain(layer) {
+    try {
+        const workflowStatusSelect = $("#workflowStatusInput");
+        
+        // Clear existing options except the first one
+        workflowStatusSelect.innerHTML = '<option value="">-- Select Status --</option>';
+        
+        // Load the layer if not already loaded
+        await layer.load();
+        
+        // Find the workflow_status field
+        const workflowStatusField = layer.fields.find(f => 
+            f.name.toLowerCase() === 'workflow_status'
+        );
+        
+        if (workflowStatusField && workflowStatusField.domain) {
+            const domain = workflowStatusField.domain;
+            
+            if (domain.type === 'coded-value') {
+                // Add each coded value as an option
+                domain.codedValues.forEach(cv => {
+                    const option = document.createElement('option');
+                    option.value = cv.code;
+                    option.textContent = cv.name;
+                    workflowStatusSelect.appendChild(option);
+                });
+            }
+        } else {
+            // If no domain found, add a message
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No domain values found';
+            workflowStatusSelect.appendChild(option);
+        }
+    } catch (error) {
+        updateStatus('Error loading workflow status domain: ' + error.message);
+    }
+}
         
         function highlightFeature(feature, color = [255, 255, 0, 0.8], showPopup = false) {
             try {
@@ -736,21 +811,69 @@
             }, 200);
         }
         
-        function showCurrentSlackloop() {
-            if (currentSlackloopIndex >= selectedSlackloops.length) {
-                startFiberCablePhase();
-                return;
-            }
-            
-            const current = selectedSlackloops[currentSlackloopIndex];
-            const objectIdField = getObjectIdField(current);
-            const objectId = current.attributes[objectIdField];
-            const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
-            
-            // Update progress
-            $("#slackloopProgress").innerHTML = `
-                <strong>Progress:</strong> ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} slack loops
-            `;
+        async function showCurrentSlackloop() {
+    if (currentSlackloopIndex >= selectedSlackloops.length) {
+        startFiberCablePhase();
+        return;
+    }
+    
+    const current = selectedSlackloops[currentSlackloopIndex];
+    const objectIdField = getObjectIdField(current);
+    const objectId = current.attributes[objectIdField];
+    const gisId = current.attributes.gis_id || current.attributes.GIS_ID || objectId;
+    
+    // Get additional attributes
+    const cableCategory = current.attributes.cable_category || current.attributes.CABLE_CATEGORY || 'N/A';
+    const loopType = current.attributes.loop_type || current.attributes.LOOP_TYPE || 'N/A';
+    const fiberCount = current.attributes.fiber_count || current.attributes.FIBER_COUNT || 'N/A';
+    
+    // Update progress
+    $("#slackloopProgress").innerHTML = `
+        <strong>Progress:</strong> ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} slack loops
+    `;
+    
+    // Update info
+    $("#slackloopInfo").innerHTML = `
+        <strong>Current Slack Loop:</strong><br>
+        GIS ID: ${gisId}<br>
+        Object ID: ${objectId}<br>
+        Cable Category: ${cableCategory}<br>
+        Loop Type: ${loopType}<br>
+        Fiber Count: ${fiberCount}<br>
+        <span style="color:#28a745;font-weight:bold;">⚡ Currently highlighted on map</span>
+    `;
+    
+    // Populate workflow status domain if not already done
+    const workflowStatusSelect = $("#workflowStatusInput");
+    if (workflowStatusSelect.options.length <= 1) {
+        await populateWorkflowStatusDomain(current.layer);
+    }
+    
+    // Pre-fill current values
+    $("#sequentialInInput").value = current.attributes.sequential_in || '';
+    $("#sequentialOutInput").value = current.attributes.sequential_out || '';
+    
+    // Pre-fill workflow status
+    const currentWorkflowStatus = current.attributes.workflow_status || current.attributes.WORKFLOW_STATUS;
+    if (currentWorkflowStatus !== undefined && currentWorkflowStatus !== null) {
+        $("#workflowStatusInput").value = currentWorkflowStatus;
+    } else {
+        $("#workflowStatusInput").value = '';
+    }
+    
+    // Update button states
+    $("#prevSlackloopBtn").disabled = currentSlackloopIndex === 0;
+    
+    // Highlight feature with popup
+    highlightFeature(current, [0, 255, 0, 0.8], true);
+    
+    updateStatus(`Editing slack loop ${currentSlackloopIndex + 1} of ${selectedSlackloops.length} - Feature highlighted on map`);
+    
+    // Focus on first input for better UX
+    setTimeout(() => {
+        $("#sequentialInInput").focus();
+    }, 200);
+}
             function showCurrentFiberCable() {
     if (currentFiberCableIndex >= selectedFiberCables.length) {
         setPhase('complete');
@@ -820,76 +943,80 @@
             }, 200);
         }
         
-        async function submitSlackloop() {
-            try {
-                const current = selectedSlackloops[currentSlackloopIndex];
-                const sequentialIn = $("#sequentialInInput").value;
-                const sequentialOut = $("#sequentialOutInput").value;
-                
-                updateStatus("Updating slack loop...");
-                
-                const objectIdField = getObjectIdField(current);
-                const objectId = current.attributes[objectIdField];
-                
-                // Create a conservative update that preserves existing attributes
-                const updateAttributes = {
-                    [objectIdField]: objectId
-                };
-                
-                // Only add fields that have values or are being explicitly cleared
-                if (sequentialIn !== '') {
-                    updateAttributes.sequential_in = parseInt(sequentialIn);
-                }
-                if (sequentialOut !== '') {
-                    updateAttributes.sequential_out = parseInt(sequentialOut);
-                }
-                
-                const updateFeature = {
-                    attributes: updateAttributes
-                };
-                
-                // Apply the edit
-                const result = await current.layer.applyEdits({
-                    updateFeatures: [updateFeature]
-                });
-                
-                if (result.updateFeatureResults && result.updateFeatureResults.length > 0) {
-                    const updateResult = result.updateFeatureResults[0];
-                    
-                    // Check for success
-                    const isSuccess = updateResult.success === true || 
-                                    (updateResult.success === undefined && 
-                                     updateResult.error === null && 
-                                     (updateResult.objectId || updateResult.globalId));
-                    
-                    if (isSuccess) {
-                        updateStatus("Slack loop updated successfully!");
-                        
-                        // Move to next
-                        currentSlackloopIndex++;
-                        setTimeout(() => {
-                            showCurrentSlackloop();
-                        }, 500);
-                    } else {
-                        // Enhanced error details
-                        let errorMessage = "Unknown error";
-                        if (updateResult.error && updateResult.error.message) {
-                            errorMessage = updateResult.error.message;
-                        } else if (updateResult.error) {
-                            errorMessage = JSON.stringify(updateResult.error);
-                        }
-                        
-                        throw new Error(`Update failed: ${errorMessage}`);
-                    }
-                } else {
-                    throw new Error('No update results returned from server');
-                }
-                
-            } catch (error) {
-                updateStatus("Error updating slack loop: " + error.message);
-                alert("Error updating slack loop: " + error.message);
-            }
+       async function submitSlackloop() {
+    try {
+        const current = selectedSlackloops[currentSlackloopIndex];
+        const sequentialIn = $("#sequentialInInput").value;
+        const sequentialOut = $("#sequentialOutInput").value;
+        const workflowStatus = $("#workflowStatusInput").value;
+        
+        updateStatus("Updating slack loop...");
+        
+        const objectIdField = getObjectIdField(current);
+        const objectId = current.attributes[objectIdField];
+        
+        // Create a conservative update that preserves existing attributes
+        const updateAttributes = {
+            [objectIdField]: objectId
+        };
+        
+        // Only add fields that have values or are being explicitly cleared
+        if (sequentialIn !== '') {
+            updateAttributes.sequential_in = parseInt(sequentialIn);
         }
+        if (sequentialOut !== '') {
+            updateAttributes.sequential_out = parseInt(sequentialOut);
+        }
+        if (workflowStatus !== '') {
+            updateAttributes.workflow_status = workflowStatus;
+        }
+        
+        const updateFeature = {
+            attributes: updateAttributes
+        };
+        
+        // Apply the edit
+        const result = await current.layer.applyEdits({
+            updateFeatures: [updateFeature]
+        });
+        
+        if (result.updateFeatureResults && result.updateFeatureResults.length > 0) {
+            const updateResult = result.updateFeatureResults[0];
+            
+            // Check for success
+            const isSuccess = updateResult.success === true || 
+                            (updateResult.success === undefined && 
+                             updateResult.error === null && 
+                             (updateResult.objectId || updateResult.globalId));
+            
+            if (isSuccess) {
+                updateStatus("Slack loop updated successfully!");
+                
+                // Move to next
+                currentSlackloopIndex++;
+                setTimeout(() => {
+                    showCurrentSlackloop();
+                }, 500);
+            } else {
+                // Enhanced error details
+                let errorMessage = "Unknown error";
+                if (updateResult.error && updateResult.error.message) {
+                    errorMessage = updateResult.error.message;
+                } else if (updateResult.error) {
+                    errorMessage = JSON.stringify(updateResult.error);
+                }
+                
+                throw new Error(`Update failed: ${errorMessage}`);
+            }
+        } else {
+            throw new Error('No update results returned from server');
+        }
+        
+    } catch (error) {
+        updateStatus("Error updating slack loop: " + error.message);
+        alert("Error updating slack loop: " + error.message);
+    }
+}
         
         function skipSlackloop() {
             currentSlackloopIndex++;
