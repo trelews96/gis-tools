@@ -118,6 +118,94 @@ javascript:(function(){
             let packagePoints = [];
             let creatingPackage = false;
             let layerDomains = {}; // Store domain values from layers
+            
+            // Template management
+            const TEMPLATE_STORAGE_KEY = 'packageCreatorTemplates';
+            
+            function saveTemplate() {
+                const templateName = prompt('Enter a name for this template:');
+                if (!templateName) return;
+                
+                // Collect current field values
+                const fieldValues = {};
+                const fieldIds = [
+                    'workflow_stage', 'workflow_status', 'work_type', 'client_code',
+                    'project_id', 'job_number', 'purchase_order_id', 'workorder_id',
+                    'buffer_count', 'fiber_count', 'createFiber'
+                ];
+                
+                fieldIds.forEach(id => {
+                    const element = toolBox.querySelector(`#${id}`);
+                    if (element) {
+                        if (element.type === 'checkbox') {
+                            fieldValues[id] = element.checked;
+                        } else {
+                            fieldValues[id] = element.value;
+                        }
+                    }
+                });
+                
+                // Load existing templates
+                const templates = JSON.parse(localStorage.getItem(TEMPLATE_STORAGE_KEY) || '{}');
+                
+                // Save new template
+                templates[templateName] = {
+                    name: templateName,
+                    created: new Date().toISOString(),
+                    values: fieldValues
+                };
+                
+                localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+                
+                alert(`Template "${templateName}" saved successfully!`);
+                updateUI(); // Refresh to show new template
+            }
+            
+            function loadTemplate(templateName) {
+                const templates = JSON.parse(localStorage.getItem(TEMPLATE_STORAGE_KEY) || '{}');
+                const template = templates[templateName];
+                
+                if (!template) {
+                    alert('Template not found');
+                    return;
+                }
+                
+                // Apply template values to form fields
+                Object.keys(template.values).forEach(fieldId => {
+                    const element = toolBox.querySelector(`#${fieldId}`);
+                    if (element) {
+                        if (element.type === 'checkbox') {
+                            element.checked = template.values[fieldId];
+                        } else {
+                            element.value = template.values[fieldId];
+                        }
+                    }
+                });
+                
+                // Update fiber fields visibility if needed
+                updateFiberFieldsVisibility();
+                
+                const statusDiv = toolBox.querySelector('#validationStatus');
+                if (statusDiv) {
+                    statusDiv.textContent = `Template "${templateName}" loaded successfully!`;
+                    statusDiv.style.color = '#28a745';
+                }
+            }
+            
+            function deleteTemplate(templateName) {
+                if (!confirm(`Delete template "${templateName}"?`)) return;
+                
+                const templates = JSON.parse(localStorage.getItem(TEMPLATE_STORAGE_KEY) || '{}');
+                delete templates[templateName];
+                localStorage.setItem(TEMPLATE_STORAGE_KEY, JSON.stringify(templates));
+                
+                updateUI(); // Refresh to remove deleted template
+            }
+            
+            function getTemplatesList() {
+                const templates = JSON.parse(localStorage.getItem(TEMPLATE_STORAGE_KEY) || '{}');
+                return Object.values(templates);
+            }
 
             // Function to load layer domains
             async function loadLayerDomains() {
@@ -376,6 +464,7 @@ javascript:(function(){
                 if (currentStep === 'setup') {
                     const createFiberCheckbox = $('#createFiber');
                     const validateBtn = $('#validateAndProceed');
+                    const saveTemplateBtn = $('#saveTemplate');
                     const reloadBtn = $('#reloadDomains');
                     const closeBtn = $('#closeTool');
 
@@ -398,6 +487,8 @@ javascript:(function(){
                             statusDiv.style.color = '#d63031';
                         }
                     });
+
+                    saveTemplateBtn?.addEventListener('click', saveTemplate);
 
                     reloadBtn?.addEventListener('click', async () => {
                         layerDomains = {}; // Clear existing domains
@@ -741,6 +832,11 @@ javascript:(function(){
 
             // Initialize the tool
             document.body.appendChild(toolBox);
+            
+            // Expose template functions to global scope for onclick handlers
+            window.packageCreatorLoadTemplate = loadTemplate;
+            window.packageCreatorDeleteTemplate = deleteTemplate;
+            
             updateUI();
 
             console.log("Enhanced Package Creator Tool loaded!");
