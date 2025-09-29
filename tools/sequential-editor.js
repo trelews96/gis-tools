@@ -306,43 +306,48 @@
         }
 
         async function populateWorkflowStatusDomain(layer) {
-            try {
-                const workflowStatusSelect = $("#workflowStatusInput");
+    try {
+        const workflowStatusSelect = $("#workflowStatusInput");
+        
+        // Clear existing options except the first one
+        workflowStatusSelect.innerHTML = '<option value="">-- Select Status --</option>';
+        
+        // Load the layer if not already loaded
+        await layer.load();
+        
+        // Find the workflow_status field
+        const workflowStatusField = layer.fields.find(f => 
+            f.name.toLowerCase() === 'workflow_status'
+        );
+        
+        if (workflowStatusField && workflowStatusField.domain) {
+            const domain = workflowStatusField.domain;
+            
+            if (domain.type === 'coded-value') {
+                // Sort coded values alphabetically by name
+                const sortedValues = domain.codedValues.slice().sort((a, b) => {
+                    return a.name.localeCompare(b.name);
+                });
                 
-                // Clear existing options except the first one
-                workflowStatusSelect.innerHTML = '<option value="">-- Select Status --</option>';
-                
-                // Load the layer if not already loaded
-                await layer.load();
-                
-                // Find the workflow_status field
-                const workflowStatusField = layer.fields.find(f => 
-                    f.name.toLowerCase() === 'workflow_status'
-                );
-                
-                if (workflowStatusField && workflowStatusField.domain) {
-                    const domain = workflowStatusField.domain;
-                    
-                    if (domain.type === 'coded-value') {
-                        // Add each coded value as an option
-                        domain.codedValues.forEach(cv => {
-                            const option = document.createElement('option');
-                            option.value = cv.code;
-                            option.textContent = cv.name;
-                            workflowStatusSelect.appendChild(option);
-                        });
-                    }
-                } else {
-                    // If no domain found, add a message
+                // Add each coded value as an option
+                sortedValues.forEach(cv => {
                     const option = document.createElement('option');
-                    option.value = '';
-                    option.textContent = 'No domain values found';
+                    option.value = cv.code;
+                    option.textContent = cv.name;
                     workflowStatusSelect.appendChild(option);
-                }
-            } catch (error) {
-                updateStatus('Error loading workflow status domain: ' + error.message);
+                });
             }
+        } else {
+            // If no domain found, add a message
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No domain values found';
+            workflowStatusSelect.appendChild(option);
         }
+    } catch (error) {
+        updateStatus('Error loading workflow status domain: ' + error.message);
+    }
+}
         
         function highlightFeature(feature, color = [255, 255, 0, 0.8], showPopup = false) {
             try {
