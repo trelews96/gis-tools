@@ -526,6 +526,7 @@ async function executeCut() {
     }, 3000);
 }
         // Undo last cut operation
+// Undo last cut operation using soft delete
 async function undoLastCut() {
     if (undoStack.length === 0) {
         updateStatus("Nothing to undo");
@@ -540,17 +541,23 @@ async function undoLastCut() {
 
     for (const operation of undoInfo.operations) {
         try {
-            // Delete the added feature
-            const featureToDelete = { objectId: operation.addedFeatureId };
-            
-            // Restore the original feature geometry and attributes
+            // 1. Restore the original feature geometry and attributes
             const restoredFeature = operation.originalFeature.clone();
             
+            // 2. Mark the newly created feature as deleted
+            const deletedFeature = {
+                attributes: {
+                    objectid: operation.addedFeatureId,
+                    delete_feature: 'YES'
+                }
+            };
+            
             await operation.layer.applyEdits({
-                deleteFeatures: [featureToDelete],
-                updateFeatures: [restoredFeature]
+                updateFeatures: [restoredFeature, deletedFeature]
             });
 
+            console.log(`Restored original feature ${operation.updatedFeatureId} and soft-deleted feature ${operation.addedFeatureId}`);
+            
             successCount++;
         } catch (error) {
             console.error(`Error undoing cut in ${operation.layerName}:`, error);
@@ -562,7 +569,7 @@ async function undoLastCut() {
         undoBtn.disabled = true;
     }
 
-    updateStatus(`✅ Undo complete! ${successCount} operations reversed, ${errorCount} errors.`);
+    updateStatus(`Undo complete! ${successCount} operations reversed, ${errorCount} errors.`);
     setTimeout(() => {
         updateStatus("Tool ready. Click on a point feature to start.");
     }, 3000);
