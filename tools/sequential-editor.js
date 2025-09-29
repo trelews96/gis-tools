@@ -305,7 +305,7 @@
             }
         }
 
-        async function populateWorkflowStatusDomain(layer) {
+       async function populateWorkflowStatusDomain(layer) {
     try {
         const workflowStatusSelect = $("#workflowStatusInput");
         
@@ -324,8 +324,16 @@
             const domain = workflowStatusField.domain;
             
             if (domain.type === 'coded-value') {
-                // Sort coded values alphabetically by name
-                const sortedValues = domain.codedValues.slice().sort((a, b) => {
+                // Define allowed status codes
+                const allowedCodes = ['NA', 'ASSG', 'INPROG', 'DLYCMPLT', 'ONHOLD', 'CMPLT', 'QCINPROG', 'QCCMPLT', 'DEFRD', 'DNB', 'RDYFDLY'];
+                
+                // Filter to only allowed codes
+                const filteredValues = domain.codedValues.filter(cv => 
+                    allowedCodes.includes(cv.code)
+                );
+                
+                // Sort alphabetically by name
+                const sortedValues = filteredValues.sort((a, b) => {
                     return a.name.localeCompare(b.name);
                 });
                 
