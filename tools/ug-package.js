@@ -129,9 +129,21 @@ javascript:(function(){
                 // Collect current field values
                 const fieldValues = {};
                 const fieldIds = [
+                    // Required common fields
                     'workflow_stage', 'workflow_status', 'work_type', 'client_code',
                     'project_id', 'job_number', 'purchase_order_id', 'workorder_id',
-                    'buffer_count', 'fiber_count', 'createFiber'
+                    // Vault optional fields
+                    'vault_type', 'vault_size', 'vault_material', 'vault_tier_rating', 'physical_status',
+                    // Span optional fields
+                    'installation_method', 'placement_type', 'conduit_diameter', 'conduit_material',
+                    'inner_duct', 'conduit_count', 'minimum_depth',
+                    // Fiber required fields
+                    'buffer_count', 'fiber_count',
+                    // Fiber optional fields
+                    'cable_category', 'cable_type', 'sheath_type', 'core_type',
+                    'fiber_installation_method', 'fiber_placement_type',
+                    // Checkbox
+                    'createFiber'
                 ];
                 
                 fieldIds.forEach(id => {
@@ -453,6 +465,21 @@ javascript:(function(){
                     delete_feature: 'No',
                     construction_status: 'NA'
                 };
+
+                // Add optional fields if they have values
+                const optionalFields = [
+                    'vault_type', 'vault_size', 'vault_material', 'vault_tier_rating', 'physical_status',
+                    'installation_method', 'placement_type', 'conduit_diameter', 'conduit_material',
+                    'inner_duct', 'conduit_count', 'minimum_depth',
+                    'cable_category', 'cable_type', 'sheath_type', 'core_type',
+                    'fiber_installation_method', 'fiber_placement_type'
+                ];
+
+                optionalFields.forEach(field => {
+                    if (packageConfig[field] && packageConfig[field] !== '') {
+                        baseAttribs[field] = packageConfig[field];
+                    }
+                });
 
                 return { ...baseAttribs, ...customValues };
             }
