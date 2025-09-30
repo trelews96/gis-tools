@@ -278,7 +278,7 @@
         
         function findCoincidentFeatures(spanFeatures, fiberFeatures) {
             const coincidentPairs = [];
-            const tolerance = 0.1;
+            const tolerance = 2;
             
             for (const spanFeature of spanFeatures) {
                 if (!spanFeature || !spanFeature.geometry || !spanFeature.geometry.extent) continue;
