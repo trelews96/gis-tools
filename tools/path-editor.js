@@ -1687,99 +1687,140 @@
         }
         
         function loadConfiguration() {
-            const select = $("#savedConfigSelect");
-            const configId = select.value;
+    const select = $("#savedConfigSelect");
+    const configId = select.value;
+    
+    if (!configId) {
+        alert('Please select a configuration to load.');
+        return;
+    }
+    
+    const savedConfigs = getSavedConfigurations();
+    const config = savedConfigs[configId];
+    
+    if (!config) {
+        alert('Configuration not found.');
+        return;
+    }
+    
+    // Get all sections and validate they exist
+    const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+    
+    if (!sections || sections.length === 0) {
+        alert('No layer configuration sections found. Please select features first.');
+        return;
+    }
+    
+    let appliedCount = 0;
+    let skippedCount = 0;
+    const skippedLayers = [];
+    
+    // Apply configuration to each section
+    sections.forEach(section => {
+        const layerId = parseInt(section.dataset.layerId);
+        
+        // Find matching config for this layer
+        const layerConfig = config.layers.find(lc => lc.layerId === layerId);
+        
+        if (layerConfig) {
+            // Try to find the checkbox with multiple fallback strategies
+            let checkbox = section.querySelector(`#layer_${layerId}_enabled`);
             
-            if (!configId) {
-                alert('Please select a configuration to load.');
-                return;
+            // Fallback: try finding by input type and checking dataset
+            if (!checkbox) {
+                const inputs = section.querySelectorAll('input[type="checkbox"]');
+                checkbox = Array.from(inputs).find(input => 
+                    input.id === `layer_${layerId}_enabled`
+                );
             }
             
-            const savedConfigs = getSavedConfigurations();
-            const config = savedConfigs[configId];
-            
-            if (!config) {
-                alert('Configuration not found.');
-                return;
+            if (!checkbox) {
+                console.warn(`Checkbox not found for layer ${layerId} (${layerConfig.layerTitle})`);
+                skippedCount++;
+                skippedLayers.push(layerConfig.layerTitle);
+                return; // Skip this layer
             }
             
-            // Apply configuration to UI
-            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+            // Enable this layer
+            checkbox.checked = true;
             
-            sections.forEach(section => {
-                const layerId = parseInt(section.dataset.layerId);
-                const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
+            // Expand the section - find body with more robust query
+            const body = section.querySelector('div[style*="padding"]') || 
+                         section.querySelector('div:nth-child(2)');
+            
+            if (body) {
+                body.style.display = 'block';
+                const expandIcon = section.querySelector('span[style*="font-size"]');
+                if (expandIcon) expandIcon.textContent = '▲';
+            }
+            
+            // Set mode
+            const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
+            if (modeRadio) {
+                modeRadio.checked = true;
                 
-                // Find matching config
-                const layerConfig = config.layers.find(lc => lc.layerId === layerId);
-                
-                if (layerConfig) {
-                    // Enable this layer
-                    checkbox.checked = true;
-                    
-                    // Expand the section
-                    const body = section.querySelector('div[style*="padding: 8px"]');
-                    if (body) {
-                        body.style.display = 'block';
-                        const expandIcon = section.querySelector('span');
-                        if (expandIcon) expandIcon.textContent = '▲';
-                    }
-                    
-                    // Set mode
-                    const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
-                    if (modeRadio) {
-                        modeRadio.checked = true;
-                        
-                        // Trigger mode change event to show/hide fields
-                        const fieldsDiv = section.querySelector(`#fields_${layerId}`);
-                        if (fieldsDiv) {
-                            fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
-                        }
-                    }
-                    
-                    // Set order
-                    section.dataset.order = layerConfig.order;
-                    const orderInput = section.querySelector('.orderInput');
-                    if (orderInput) orderInput.value = layerConfig.order;
-                    
-                    // Set options
-                    const popupCheck = section.querySelector(`#popup_${layerId}`);
-                    if (popupCheck) popupCheck.checked = layerConfig.showPopup;
-                    
-                    const skipCheck = section.querySelector(`#allowskip_${layerId}`);
-                    if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
-                    
-                    // Set filter settings
-                    const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
-                    if (filterEnabledCheck && layerConfig.filterEnabled) {
-                        filterEnabledCheck.checked = true;
-                        
-                        const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
-                        if (filterInputs) {
-                            filterInputs.style.display = 'block';
-                        }
-                        
-                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
-                        if (filterWhere && layerConfig.filterWhere) {
-                            filterWhere.value = layerConfig.filterWhere;
-                        }
-                    }
-                    
-                    // Set fields
-                    if (layerConfig.mode === 'edit' && layerConfig.fields.length > 0) {
-                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
-                        fieldChecks.forEach(check => {
-                            check.checked = layerConfig.fields.includes(check.dataset.fieldName);
-                        });
-                    }
-                } else {
-                    // Disable this layer
-                    checkbox.checked = false;
+                // Toggle fields visibility
+                const fieldsDiv = section.querySelector(`#fields_${layerId}`);
+                if (fieldsDiv) {
+                    fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
                 }
-            });
+            }
             
-            updateStatus(`Configuration "${config.name}" loaded successfully!`);
+            // Set order
+            section.dataset.order = layerConfig.order;
+            const orderInput = section.querySelector('.orderInput');
+            if (orderInput) orderInput.value = layerConfig.order;
+            
+            // Set options
+            const popupCheck = section.querySelector(`#popup_${layerId}`);
+            if (popupCheck) popupCheck.checked = layerConfig.showPopup;
+            
+            const skipCheck = section.querySelector(`#allowskip_${layerId}`);
+            if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
+            
+            // Set filter settings
+            if (layerConfig.filterEnabled) {
+                const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
+                if (filterEnabledCheck) {
+                    filterEnabledCheck.checked = true;
+                    
+                    const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
+                    if (filterInputs) {
+                        filterInputs.style.display = 'block';
+                    }
+                    
+                    const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
+                    if (filterWhere && layerConfig.filterWhere) {
+                        filterWhere.value = layerConfig.filterWhere;
+                    }
+                }
+            }
+            
+            // Set fields
+            if (layerConfig.mode === 'edit' && layerConfig.fields && layerConfig.fields.length > 0) {
+                const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
+                fieldChecks.forEach(check => {
+                    if (check.dataset.fieldName && layerConfig.fields.includes(check.dataset.fieldName)) {
+                        check.checked = true;
+                    }
+                });
+            }
+            
+            appliedCount++;
+        } else {
+            // This layer is in the selection but not in the saved config - that's fine, just skip it
         }
+    });
+    
+    // Provide feedback
+    if (appliedCount === 0) {
+        alert(`Configuration "${config.name}" could not be applied. None of the saved layers are in your current selection.`);
+    } else if (skippedCount > 0) {
+        updateStatus(`Configuration "${config.name}" partially loaded (${appliedCount} applied, ${skippedCount} skipped: ${skippedLayers.join(', ')})`);
+    } else {
+        updateStatus(`Configuration "${config.name}" loaded successfully! Applied to ${appliedCount} layer(s).`);
+    }
+}
         
         function deleteConfiguration() {
             const select = $("#savedConfigSelect");
