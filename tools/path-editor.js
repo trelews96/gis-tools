@@ -29,6 +29,8 @@
         let currentIndex = 0;
         let currentPhase = 'selection';
         let highlightGraphics = [];
+        let editLog = [];
+        let sessionStartTime = null;
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -159,11 +161,15 @@
             </div>
             
             <!-- Phase 5: Complete -->
-            <div id="completePhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
-                <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
-                <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
-            </div>
+<div id="completePhase" style="display:none;">
+    <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
+    <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
+    
+    <div id="editSummary" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
+    
+    <button id="exportReportBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">📄 Export Summary Report</button>
+    <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
+</div>
             
             <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:8px;">
                 <button id="closeTool" style="width:100%;padding:6px;background:#d32f2f;color:white;border:none;border-radius:3px;cursor:pointer;">Close Tool</button>
@@ -795,6 +801,9 @@
         function startEditing() {
             // Check if bulk edit mode is enabled
             const bulkEditEnabled = $("#bulkEditMode").checked;
+            // Initialize session tracking
+    sessionStartTime = new Date();
+    editLog = [];
             
             if (bulkEditEnabled) {
                 startBulkEdit();
@@ -958,20 +967,53 @@
                     });
                     
                     if (result.updateFeatureResults) {
-                        result.updateFeatureResults.forEach((res, idx) => {
-                            const isSuccess = res.success === true || 
-                                            (res.success === undefined && 
-                                             res.error === null && 
-                                             (res.objectId || res.globalId));
-                            
-                            if (isSuccess) {
-                                successCount++;
-                            } else {
-                                errorCount++;
-                                errors.push(`Feature ${batch[idx].attributes[getObjectIdField(config.features[0])]}: ${res.error?.message || 'Unknown error'}`);
-                            }
-                        });
-                    }
+    result.updateFeatureResults.forEach((res, idx) => {
+        const isSuccess = res.success === true || 
+                        (res.success === undefined && 
+                         res.error === null && 
+                         (res.objectId || res.globalId));
+        
+        const featureOID = batch[idx].attributes[getObjectIdField(config.features[0])];
+        
+        if (isSuccess) {
+            successCount++;
+            
+            // Log successful bulk edit
+            const logEntry = {
+                timestamp: new Date(),
+                action: 'bulk_update',
+                layerName: config.layer.title,
+                featureOID: featureOID,
+                changes: {},
+                success: true
+            };
+            
+            // Record changes
+            Object.keys(bulkValues).forEach(fieldName => {
+                const field = config.fields.find(f => f.name === fieldName);
+                logEntry.changes[fieldName] = {
+                    fieldAlias: field ? (field.alias || field.name) : fieldName,
+                    newValue: bulkValues[fieldName]
+                };
+            });
+            
+            editLog.push(logEntry);
+        } else {
+            errorCount++;
+            errors.push(`Feature ${featureOID}: ${res.error?.message || 'Unknown error'}`);
+            
+            // Log failed edit
+            editLog.push({
+                timestamp: new Date(),
+                action: 'bulk_update',
+                layerName: config.layer.title,
+                featureOID: featureOID,
+                success: false,
+                error: res.error?.message || 'Unknown error'
+            });
+        }
+    });
+}
                     
                     // Update progress
                     updateStatus(`Processed ${Math.min(i + batchSize, updateFeatures.length)} of ${updateFeatures.length}...`);
@@ -1025,11 +1067,15 @@
         }
         function showCurrentFeature() {
             if (currentIndex >= currentEditingQueue.length) {
-                setPhase('complete');
-                clearHighlights();
-                updateStatus("All features processed!");
-                return;
-            }
+    setPhase('complete');
+    clearHighlights();
+    
+    // Display summary
+    displayEditSummary();
+    
+    updateStatus("All features processed!");
+    return;
+}
             
             const item = currentEditingQueue[currentIndex];
             
@@ -1452,11 +1498,35 @@
                                      updateResult.error === null && 
                                      (updateResult.objectId || updateResult.globalId));
                     
-                    if (isSuccess) {
-                        updateStatus("Feature updated successfully!");
-                        currentIndex++;
-                        setTimeout(() => showCurrentFeature(), 500);
-                    } else {
+                   if (isSuccess) {
+    // Log the successful edit
+    const logEntry = {
+        timestamp: new Date(),
+        action: 'update',
+        layerName: item.layer.title,
+        featureOID: oid,
+        changes: {},
+        success: true
+    };
+    
+    // Record what fields were changed
+    Object.keys(updateAttributes).forEach(key => {
+        if (key !== oidField) {
+            const field = item.fields.find(f => f.name === key);
+            logEntry.changes[key] = {
+                fieldAlias: field ? (field.alias || field.name) : key,
+                oldValue: item.feature.attributes[key],
+                newValue: updateAttributes[key]
+            };
+        }
+    });
+    
+    editLog.push(logEntry);
+    
+    updateStatus("Feature updated successfully!");
+    currentIndex++;
+    setTimeout(() => showCurrentFeature(), 500);
+} else {
                         let errorMessage = "Unknown error";
                         if (updateResult.error && updateResult.error.message) {
                             errorMessage = updateResult.error.message;
@@ -1474,9 +1544,22 @@
         }
         
         function skipFeature() {
-            currentIndex++;
-            showCurrentFeature();
-        }
+    const item = currentEditingQueue[currentIndex];
+    const oidField = getObjectIdField(item.feature);
+    const oid = item.feature.attributes[oidField];
+    
+    // Log the skip
+    editLog.push({
+        timestamp: new Date(),
+        action: 'skip',
+        layerName: item.layer.title,
+        featureOID: oid,
+        success: true
+    });
+    
+    currentIndex++;
+    showCurrentFeature();
+}
         
         function prevFeature() {
             if (currentIndex > 0) {
@@ -1490,6 +1573,8 @@
             currentBulkLayerIndex = 0;
             layerConfigs = [];
             currentEditingQueue = [];
+            editLog = [];
+            sessionStartTime = null;
             
             // Clear all graphics including highlights and polygon
             clearHighlights();
@@ -1727,7 +1812,142 @@
                 alert('Error deleting configuration: ' + e.message);
             }
         }
+        function displayEditSummary() {
+    const summary = $("#editSummary");
+    
+    const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
+    const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
+    const skipped = editLog.filter(e => e.action === 'skip').length;
+    const failed = editLog.filter(e => !e.success).length;
+    
+    const duration = sessionStartTime ? Math.round((new Date() - sessionStartTime) / 1000) : 0;
+    const minutes = Math.floor(duration / 60);
+    const seconds = duration % 60;
+    
+    summary.innerHTML = `
+        <strong>Session Summary:</strong><br>
+        Total Edits: ${totalEdits}<br>
+        Successful: ${successfulEdits}<br>
+        ${skipped > 0 ? `Skipped: ${skipped}<br>` : ''}
+        ${failed > 0 ? `Failed: ${failed}<br>` : ''}
+        Duration: ${minutes}m ${seconds}s
+    `;
+}
+
+function exportSummaryReport() {
+    if (editLog.length === 0) {
+        alert('No edits to export. The edit log is empty.');
+        return;
+    }
+    
+    const sessionEnd = new Date();
+    const duration = sessionStartTime ? Math.round((sessionEnd - sessionStartTime) / 1000) : 0;
+    
+    // Build report
+    let report = '='.repeat(80) + '\n';
+    report += 'SEQUENTIAL FEATURE EDITOR - EDIT SUMMARY REPORT\n';
+    report += '='.repeat(80) + '\n\n';
+    
+    report += 'SESSION INFORMATION\n';
+    report += '-'.repeat(80) + '\n';
+    report += `Start Time: ${sessionStartTime ? sessionStartTime.toLocaleString() : 'Unknown'}\n`;
+    report += `End Time: ${sessionEnd.toLocaleString()}\n`;
+    report += `Duration: ${Math.floor(duration / 60)}m ${duration % 60}s\n\n`;
+    
+    // Summary statistics
+    const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
+    const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
+    const skipped = editLog.filter(e => e.action === 'skip').length;
+    const failed = editLog.filter(e => !e.success).length;
+    
+    report += 'SUMMARY STATISTICS\n';
+    report += '-'.repeat(80) + '\n';
+    report += `Total Edits Attempted: ${totalEdits}\n`;
+    report += `Successful Edits: ${successfulEdits}\n`;
+    report += `Skipped Features: ${skipped}\n`;
+    report += `Failed Edits: ${failed}\n`;
+    report += `Success Rate: ${totalEdits > 0 ? Math.round((successfulEdits / totalEdits) * 100) : 0}%\n\n`;
+    
+    // By layer breakdown
+    const layerStats = {};
+    editLog.forEach(entry => {
+        if (!layerStats[entry.layerName]) {
+            layerStats[entry.layerName] = {
+                updates: 0,
+                skips: 0,
+                failures: 0
+            };
+        }
         
+        if (entry.action === 'update' || entry.action === 'bulk_update') {
+            if (entry.success) {
+                layerStats[entry.layerName].updates++;
+            } else {
+                layerStats[entry.layerName].failures++;
+            }
+        } else if (entry.action === 'skip') {
+            layerStats[entry.layerName].skips++;
+        }
+    });
+    
+    report += 'BY LAYER\n';
+    report += '-'.repeat(80) + '\n';
+    Object.keys(layerStats).forEach(layerName => {
+        const stats = layerStats[layerName];
+        report += `${layerName}:\n`;
+        report += `  Updated: ${stats.updates}\n`;
+        if (stats.skips > 0) report += `  Skipped: ${stats.skips}\n`;
+        if (stats.failures > 0) report += `  Failed: ${stats.failures}\n`;
+    });
+    report += '\n';
+    
+    // Detailed log
+    report += 'DETAILED EDIT LOG\n';
+    report += '='.repeat(80) + '\n\n';
+    
+    editLog.forEach((entry, idx) => {
+        report += `[${idx + 1}] ${entry.timestamp.toLocaleTimeString()}\n`;
+        report += `Layer: ${entry.layerName}\n`;
+        report += `Feature OID: ${entry.featureOID}\n`;
+        report += `Action: ${entry.action.toUpperCase()}\n`;
+        report += `Status: ${entry.success ? 'SUCCESS' : 'FAILED'}\n`;
+        
+        if (entry.changes && Object.keys(entry.changes).length > 0) {
+            report += 'Changes:\n';
+            Object.keys(entry.changes).forEach(fieldName => {
+                const change = entry.changes[fieldName];
+                if (change.oldValue !== undefined) {
+                    report += `  ${change.fieldAlias}: ${change.oldValue} → ${change.newValue}\n`;
+                } else {
+                    report += `  ${change.fieldAlias}: ${change.newValue}\n`;
+                }
+            });
+        }
+        
+        if (entry.error) {
+            report += `Error: ${entry.error}\n`;
+        }
+        
+        report += '\n';
+    });
+    
+    report += '='.repeat(80) + '\n';
+    report += 'END OF REPORT\n';
+    report += '='.repeat(80) + '\n';
+    
+    // Create download
+    const blob = new Blob([report], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `edit-summary-${sessionEnd.toISOString().split('T')[0]}-${sessionEnd.getHours()}${sessionEnd.getMinutes()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    updateStatus('Summary report exported successfully!');
+}
         function cleanup() {
             if (sketchViewModel) {
                 sketchViewModel.destroy();
@@ -1761,7 +1981,7 @@
         
         $("#applyBulkEditBtn").onclick = applyBulkEdit;
         $("#backToSummaryBtn").onclick = () => setPhase('summary');
-        
+        $("#exportReportBtn").onclick = exportSummaryReport;
         $("#startOverBtn").onclick = startOver;
         
         $("#closeTool").onclick = () => {
