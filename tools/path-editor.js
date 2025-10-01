@@ -691,12 +691,20 @@
                         // Clean up any escaped quotes
                         const cleanWhere = config.filterWhere.replace(/\\"/g, '"').replace(/\\'/g, "'");
                         
-                        // Query with filter
-                        const filteredResult = await config.layer.queryFeatures({
+                        // Query with BOTH polygon geometry AND where clause
+                        const queryParams = {
                             where: cleanWhere,
                             returnGeometry: true,
                             outFields: ['*']
-                        });
+                        };
+                        
+                        // Add polygon geometry to constrain to selection area
+                        if (polygonGraphic && polygonGraphic.geometry) {
+                            queryParams.geometry = polygonGraphic.geometry;
+                            queryParams.spatialRelationship = 'intersects';
+                        }
+                        
+                        const filteredResult = await config.layer.queryFeatures(queryParams);
                         
                         // Replace features with filtered set
                         config.features = filteredResult.features;
