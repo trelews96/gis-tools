@@ -1008,38 +1008,8 @@
                 } else {
                     updateStatus('All bulk edits complete!');
                     setTimeout(() => {
-                        setPhase('complete');
-                    }, 2000);
-                }
-                
-            } catch (error) {
-                $("#bulkEditResults").innerHTML = `
-                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
-                        <strong>Error:</strong> ${error.message}
-                    </div>
-                `;
-                updateStatus('Error applying bulk edit: ' + error.message);
-            } finally {
-                $("#applyBulkEditBtn").disabled = false;
-            }
-        } => {
-                        setPhase('complete');
-                    }, 2000);
-                }
-                
-            } catch (error) {
-                $("#bulkEditResults").innerHTML = `
-                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
-                        <strong>Error:</strong> ${error.message}
-                    </div>
-                `;
-                updateStatus('Error applying bulk edit: ' + error.message);
-            } finally {
-                $("#applyBulkEditBtn").disabled = false;
-            }
-        } => {
-                        setPhase('complete');
-                    }, 2000);
+    setPhase('complete');
+}, 2000);
                 }
                 
             } catch (error) {
