@@ -1684,7 +1684,6 @@ updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentI
 }
 
 function startOver() {
-        function startOver() {
             currentIndex = 0;
             currentBulkLayerIndex = 0;
             layerConfigs = [];
