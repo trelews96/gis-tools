@@ -470,6 +470,66 @@
                 </label>
             `;
             
+            // Filter section
+            const filterDiv = document.createElement('div');
+            filterDiv.style.cssText = 'margin-top:8px;padding:8px;background:#e8f4f8;border:1px solid #b3d9e6;border-radius:3px;';
+            filterDiv.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Filter Features (Optional):</div>
+                <label style="display:block;margin-bottom:4px;">
+                    <input type="checkbox" id="enableFilter_${layer.layerId}">
+                    <span style="font-size:11px;">Enable WHERE clause filter</span>
+                </label>
+                <div id="filterInputs_${layer.layerId}" style="display:none;">
+                    <textarea id="filterWhere_${layer.layerId}" 
+                        placeholder="Example: workflow_status = 'ASSG' AND fiber_count > 12"
+                        style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;font-size:11px;font-family:monospace;min-height:50px;margin-bottom:4px;"></textarea>
+                    <div style="font-size:10px;color:#666;">
+                        Enter a SQL WHERE clause to filter features. Leave empty to include all features.
+                    </div>
+                    <button class="testFilterBtn" data-layer-id="${layer.layerId}" 
+                        style="margin-top:4px;padding:3px 8px;background:#17a2b8;color:white;border:none;border-radius:2px;cursor:pointer;font-size:10px;">
+                        Test Filter
+                    </button>
+                    <span class="filterTestResult" style="margin-left:8px;font-size:10px;"></span>
+                </div>
+            `;
+            
+            // Toggle filter inputs
+            const filterCheckbox = filterDiv.querySelector(`#enableFilter_${layer.layerId}`);
+            const filterInputs = filterDiv.querySelector(`#filterInputs_${layer.layerId}`);
+            filterCheckbox.onchange = () => {
+                filterInputs.style.display = filterCheckbox.checked ? 'block' : 'none';
+            };
+            
+            // Test filter button
+            const testBtn = filterDiv.querySelector('.testFilterBtn');
+            const testResult = filterDiv.querySelector('.filterTestResult');
+            testBtn.onclick = async () => {
+                const whereClause = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim();
+                if (!whereClause) {
+                    testResult.textContent = 'Please enter a WHERE clause';
+                    testResult.style.color = '#dc3545';
+                    return;
+                }
+                
+                testResult.textContent = 'Testing...';
+                testResult.style.color = '#666';
+                
+                try {
+                    const testQuery = await layer.queryFeatures({
+                        where: whereClause,
+                        returnGeometry: false,
+                        returnCountOnly: true
+                    });
+                    
+                    testResult.textContent = `✓ Valid - ${testQuery.count} features match`;
+                    testResult.style.color = '#28a745';
+                } catch (error) {
+                    testResult.textContent = `✗ Error: ${error.message}`;
+                    testResult.style.color = '#dc3545';
+                }
+            };
+            
             // Order controls
             const orderDiv = document.createElement('div');
             orderDiv.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #dee2e6;';
@@ -485,6 +545,7 @@
             body.appendChild(modeDiv);
             body.appendChild(fieldsDiv);
             body.appendChild(optionsDiv);
+            body.appendChild(filterDiv);
             body.appendChild(orderDiv);
             
             section.appendChild(header);
@@ -558,8 +619,20 @@
                         order: parseInt(section.dataset.order),
                         showPopup: section.querySelector(`#popup_${layerId}`).checked,
                         allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-                        fields: []
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
                     };
+                    
+                    // Check for filter
+                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabled && filterEnabled.checked) {
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
+                        if (filterWhere) {
+                            config.filterEnabled = true;
+                            config.filterWhere = filterWhere;
+                        }
+                    }
                     
                     if (mode === 'edit') {
                         const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
@@ -579,6 +652,39 @@
             // Sort by order
             layerConfigs.sort((a, b) => a.order - b.order);
             
+            // Apply filters and rebuild feature lists
+            applyFiltersToConfigs().then(() => {
+                displaySummary();
+            });
+        }
+        
+        async function applyFiltersToConfigs() {
+            for (let config of layerConfigs) {
+                if (config.filterEnabled && config.filterWhere) {
+                    try {
+                        // Query with filter
+                        const filteredResult = await config.layer.queryFeatures({
+                            where: config.filterWhere,
+                            returnGeometry: true,
+                            outFields: ['*']
+                        });
+                        
+                        // Replace features with filtered set
+                        config.features = filteredResult.features;
+                        config.filterApplied = true;
+                        
+                    } catch (error) {
+                        // If filter fails, keep original features but note the error
+                        config.filterError = error.message;
+                        config.filterApplied = false;
+                    }
+                } else {
+                    config.filterApplied = false;
+                }
+            }
+        }
+        
+        function displaySummary() {
             // Display summary
             let html = '';
             if (layerConfigs.length === 0) {
@@ -593,12 +699,24 @@
                     
                     html += `<div style="margin-bottom:8px;padding:6px;background:#fff;border:1px solid #dee2e6;border-radius:2px;">`;
                     html += `<strong>${idx + 1}. ${config.mode === 'edit' ? 'Edit' : 'View'} ${config.layer.title}</strong><br>`;
-                    html += `<span style="font-size:11px;color:#666;">${config.features.length} features</span><br>`;
+                    html += `<span style="font-size:11px;color:#666;">${config.features.length} features</span>`;
+                    
+                    if (config.filterEnabled && config.filterApplied) {
+                        html += ` <span style="font-size:10px;color:#17a2b8;">✓ Filtered</span>`;
+                    } else if (config.filterEnabled && config.filterError) {
+                        html += ` <span style="font-size:10px;color:#dc3545;">✗ Filter error: ${config.filterError}</span>`;
+                    }
+                    
+                    html += '<br>';
                     
                     if (config.mode === 'edit' && config.fields.length > 0) {
                         html += `<span style="font-size:11px;">Fields: ${config.fields.map(f => f.alias || f.name).join(', ')}</span>`;
                     } else if (config.mode === 'view') {
                         html += `<span style="font-size:11px;">View only</span>`;
+                    }
+                    
+                    if (config.filterEnabled && config.filterWhere) {
+                        html += `<div style="font-size:10px;color:#666;margin-top:2px;font-family:monospace;background:#f8f9fa;padding:2px 4px;border-radius:2px;">WHERE: ${config.filterWhere}</div>`;
                     }
                     
                     html += `</div>`;
@@ -1205,8 +1323,18 @@
                         order: parseInt(section.dataset.order),
                         showPopup: section.querySelector(`#popup_${layerId}`).checked,
                         allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-                        fields: []
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
                     };
+                    
+                    // Save filter settings
+                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabled && filterEnabled.checked) {
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
+                        layerConfig.filterEnabled = true;
+                        layerConfig.filterWhere = filterWhere;
+                    }
                     
                     if (mode === 'edit') {
                         const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
@@ -1335,6 +1463,22 @@
                     
                     const skipCheck = section.querySelector(`#allowskip_${layerId}`);
                     if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
+                    
+                    // Set filter settings
+                    const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabledCheck && layerConfig.filterEnabled) {
+                        filterEnabledCheck.checked = true;
+                        
+                        const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
+                        if (filterInputs) {
+                            filterInputs.style.display = 'block';
+                        }
+                        
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
+                        if (filterWhere && layerConfig.filterWhere) {
+                            filterWhere.value = layerConfig.filterWhere;
+                        }
+                    }
                     
                     // Set fields
                     if (layerConfig.mode === 'edit' && layerConfig.fields.length > 0) {
