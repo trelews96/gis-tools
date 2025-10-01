@@ -23,16 +23,12 @@
         // Tool state
         let sketchViewModel = null;
         let polygonGraphic = null;
-        let selectedFeaturesByLayer = new Map();
-        let layerConfigs = [];
-        let currentEditingQueue = [];
+        let selectedFeaturesByLayer = new Map(); // layerId -> features[]
+        let layerConfigs = []; // User's configuration per layer
+        let currentEditingQueue = []; // Flattened queue of {layer, feature, fields, options}
         let currentIndex = 0;
         let currentPhase = 'selection';
         let highlightGraphics = [];
-        
-        // Edit tracking for report
-        let editLog = [];
-        let sessionStartTime = null;
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -166,10 +162,6 @@
             <div id="completePhase" style="display:none;">
                 <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
                 <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
-                
-                <div id="editSummary" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
-                
-                <button id="exportReportBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">📄 Export Summary Report</button>
                 <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
             </div>
             
@@ -228,10 +220,12 @@
             });
             highlightGraphics = [];
             
+            // Also do aggressive cleanup of any lingering graphics that might match highlight patterns
             const graphicsToRemove = [];
             mapView.graphics.forEach(graphic => {
                 if (graphic.symbol) {
                     const symbol = graphic.symbol;
+                    // Match our highlight patterns
                     if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
                         (symbol.type === "simple-line" && symbol.width >= 8) ||
                         (symbol.type === "simple-fill" && (symbol.color[3] >= 0.3 || (symbol.outline && symbol.outline.width >= 4)))) {
@@ -244,9 +238,1547 @@
                 try { mapView.graphics.remove(graphic); } catch(e) {}
             });
             
+            // Close popup if open
             if (mapView.popup) {
                 mapView.popup.close();
             }
         }
         
-        // (Continue with remaining functions from document...)
+        function enablePolygonDrawing() {
+            clearPolygonSelection();
+            
+            if (!sketchViewModel) {
+                if (window.require) {
+                    window.require(['esri/widgets/Sketch/SketchViewModel'], (SketchViewModel) => {
+                        sketchViewModel = new SketchViewModel({
+                            view: mapView,
+                            layer: mapView.graphics,
+                            polygonSymbol: {
+                                type: 'simple-fill',
+                                color: [255, 255, 0, 0.3],
+                                outline: {
+                                    color: [255, 0, 0, 1],
+                                    width: 2
+                                }
+                            }
+                        });
+                        
+                        sketchViewModel.on('create', (event) => {
+                            if (event.state === 'complete') {
+                                polygonGraphic = event.graphic;
+                                selectFeaturesInPolygon(polygonGraphic.geometry);
+                                $("#clearPolygonBtn").disabled = false;
+                                $("#drawPolygonBtn").disabled = false;
+                            }
+                        });
+                        
+                        startPolygonDrawing();
+                    });
+                } else {
+                    updateStatus('Unable to load polygon drawing tools.');
+                }
+            } else {
+                startPolygonDrawing();
+            }
+            
+            function startPolygonDrawing() {
+                if (sketchViewModel) {
+                    $("#drawPolygonBtn").disabled = true;
+                    sketchViewModel.create('polygon');
+                    updateStatus("Draw a polygon on the map. Double-click to finish.");
+                }
+            }
+        }
+        
+        async function selectFeaturesInPolygon(polygon) {
+            try {
+                updateStatus("Selecting features within polygon...");
+                selectedFeaturesByLayer.clear();
+                
+                const allFL = mapView.map.allLayers.filter(l => 
+                    l.type === "feature" && l.visible
+                );
+                
+                const queries = allFL.map(async (layer) => {
+                    try {
+                        await layer.load();
+                        
+                        const result = await layer.queryFeatures({
+                            geometry: polygon,
+                            spatialRelationship: 'intersects',
+                            returnGeometry: true,
+                            outFields: ['*']
+                        });
+                        
+                        if (result.features.length > 0) {
+                            selectedFeaturesByLayer.set(layer.layerId, {
+                                layer: layer,
+                                features: result.features
+                            });
+                        }
+                    } catch (e) {
+                        // Skip layers that fail
+                    }
+                });
+                
+                await Promise.all(queries);
+                
+                displaySelectionResults();
+                
+            } catch (error) {
+                updateStatus("Error selecting features: " + error.message);
+            }
+        }
+        
+        function displaySelectionResults() {
+            let html = '<div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">';
+            html += '<strong>Features Found:</strong><br>';
+            
+            if (selectedFeaturesByLayer.size === 0) {
+                html += '<em>No features found in selection</em>';
+                $("#configureLayersBtn").style.display = "none";
+            } else {
+                selectedFeaturesByLayer.forEach((data, layerId) => {
+                    html += `${data.layer.title}: ${data.features.length}<br>`;
+                });
+                $("#configureLayersBtn").style.display = "block";
+            }
+            
+            html += '</div>';
+            $("#selectionResults").innerHTML = html;
+            updateStatus(`Found features in ${selectedFeaturesByLayer.size} layers.`);
+        }
+        
+        function clearPolygonSelection() {
+            if (polygonGraphic) {
+                mapView.graphics.remove(polygonGraphic);
+                polygonGraphic = null;
+            }
+            clearHighlights();
+            $("#clearPolygonBtn").disabled = true;
+            selectedFeaturesByLayer.clear();
+            $("#selectionResults").innerHTML = "";
+            $("#configureLayersBtn").style.display = "none";
+            updateStatus("Polygon selection cleared.");
+        }
+        
+        async function showLayerConfiguration() {
+            const container = $("#layerConfigContainer");
+            container.innerHTML = '';
+            
+            let order = 1;
+            for (const [layerId, data] of selectedFeaturesByLayer) {
+                const section = await createLayerConfigSection(data.layer, data.features, order);
+                container.appendChild(section);
+                order++;
+            }
+            
+            setPhase('configuration');
+            updateStatus("Configure which layers and fields to edit.");
+        }
+        
+        async function createLayerConfigSection(layer, features, order) {
+            const section = document.createElement('div');
+            section.style.cssText = `
+                margin-bottom: 12px;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                overflow: hidden;
+            `;
+            section.dataset.layerId = layer.layerId;
+            section.dataset.order = order;
+            
+            // Header
+            const header = document.createElement('div');
+            header.style.cssText = `
+                padding: 8px;
+                background: #e9ecef;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            `;
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `layer_${layer.layerId}_enabled`;
+            checkbox.checked = false;
+            
+            const label = document.createElement('label');
+            label.style.cssText = 'flex: 1; cursor: pointer; font-weight: bold;';
+            label.textContent = `${layer.title} (${features.length} features)`;
+            label.htmlFor = checkbox.id;
+            
+            const expandIcon = document.createElement('span');
+            expandIcon.textContent = '▼';
+            expandIcon.style.fontSize = '10px';
+            
+            header.appendChild(checkbox);
+            header.appendChild(label);
+            header.appendChild(expandIcon);
+            
+            // Config body (collapsed by default)
+            const body = document.createElement('div');
+            body.style.cssText = `
+                padding: 8px;
+                display: none;
+                background: #fff;
+            `;
+            
+            // Mode selection
+            const modeDiv = document.createElement('div');
+            modeDiv.style.marginBottom = '8px';
+            modeDiv.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:4px;">Mode:</div>
+                <label style="margin-right:12px;">
+                    <input type="radio" name="mode_${layer.layerId}" value="edit" checked>
+                    Edit Fields
+                </label>
+                <label>
+                    <input type="radio" name="mode_${layer.layerId}" value="view">
+                    View Only
+                </label>
+            `;
+            
+            // Field selection container
+            const fieldsDiv = document.createElement('div');
+            fieldsDiv.id = `fields_${layer.layerId}`;
+            fieldsDiv.style.marginTop = '8px';
+            
+            // Load fields
+            await layer.load();
+            const editableFields = layer.fields.filter(f => f.editable && f.type !== 'oid' && f.type !== 'global-id');
+            
+            if (editableFields.length > 0) {
+                fieldsDiv.innerHTML = '<div style="font-weight:bold;margin-bottom:4px;">Fields to Edit:</div>';
+                
+                const fieldList = document.createElement('div');
+                fieldList.style.cssText = 'max-height:150px;overflow-y:auto;border:1px solid #dee2e6;padding:4px;border-radius:2px;background:#f8f9fa;';
+                
+                editableFields.forEach(field => {
+                    const fieldItem = document.createElement('label');
+                    fieldItem.style.cssText = 'display:block;padding:2px 4px;cursor:pointer;';
+                    
+                    const fieldCheck = document.createElement('input');
+                    fieldCheck.type = 'checkbox';
+                    fieldCheck.dataset.fieldName = field.name;
+                    fieldCheck.style.marginRight = '4px';
+                    
+                    const fieldLabel = document.createElement('span');
+                    const typeLabel = getFieldTypeLabel(field);
+                    fieldLabel.textContent = `${field.alias || field.name} (${typeLabel})`;
+                    
+                    fieldItem.appendChild(fieldCheck);
+                    fieldItem.appendChild(fieldLabel);
+                    fieldList.appendChild(fieldItem);
+                });
+                
+                fieldsDiv.appendChild(fieldList);
+            } else {
+                fieldsDiv.innerHTML = '<div style="color:#999;font-size:11px;">No editable fields available</div>';
+            }
+            
+            // Options
+            const optionsDiv = document.createElement('div');
+            optionsDiv.style.marginTop = '8px';
+            optionsDiv.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:4px;">Options:</div>
+                <label style="display:block;">
+                    <input type="checkbox" id="popup_${layer.layerId}" checked>
+                    Show popup for each feature
+                </label>
+                <label style="display:block;">
+                    <input type="checkbox" id="allowskip_${layer.layerId}" checked>
+                    Allow skip
+                </label>
+            `;
+            
+            // Filter section
+            const filterDiv = document.createElement('div');
+            filterDiv.style.cssText = 'margin-top:8px;padding:8px;background:#e8f4f8;border:1px solid #b3d9e6;border-radius:3px;';
+            filterDiv.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Filter Features (Optional):</div>
+                <label style="display:block;margin-bottom:4px;">
+                    <input type="checkbox" id="enableFilter_${layer.layerId}">
+                    <span style="font-size:11px;">Enable WHERE clause filter</span>
+                </label>
+                <div id="filterInputs_${layer.layerId}" style="display:none;">
+                    <textarea id="filterWhere_${layer.layerId}" 
+                        placeholder="Example: workflow_status = 'ASSG' AND fiber_count > 12"
+                        style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;font-size:11px;font-family:monospace;min-height:50px;margin-bottom:4px;"></textarea>
+                    <div style="font-size:10px;color:#666;">
+                        Enter a SQL WHERE clause to filter features. Leave empty to include all features.
+                    </div>
+                    <button class="testFilterBtn" data-layer-id="${layer.layerId}" 
+                        style="margin-top:4px;padding:3px 8px;background:#17a2b8;color:white;border:none;border-radius:2px;cursor:pointer;font-size:10px;">
+                        Test Filter
+                    </button>
+                    <span class="filterTestResult" style="margin-left:8px;font-size:10px;"></span>
+                </div>
+            `;
+            
+            // Toggle filter inputs
+            const filterCheckbox = filterDiv.querySelector(`#enableFilter_${layer.layerId}`);
+            const filterInputs = filterDiv.querySelector(`#filterInputs_${layer.layerId}`);
+            filterCheckbox.onchange = () => {
+                filterInputs.style.display = filterCheckbox.checked ? 'block' : 'none';
+            };
+            
+            // Test filter button
+            const testBtn = filterDiv.querySelector('.testFilterBtn');
+            const testResult = filterDiv.querySelector('.filterTestResult');
+            testBtn.onclick = async () => {
+                let whereClause = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim();
+                if (!whereClause) {
+                    testResult.textContent = 'Please enter a WHERE clause';
+                    testResult.style.color = '#dc3545';
+                    return;
+                }
+                
+                // Clean up any escaped quotes that might have been introduced
+                whereClause = whereClause.replace(/\\"/g, '"').replace(/\\'/g, "'");
+                
+                testResult.textContent = 'Testing...';
+                testResult.style.color = '#666';
+                
+                try {
+                    // Ensure layer is loaded
+                    await layer.load();
+                    
+                    // Get the data for this layer
+                    const data = selectedFeaturesByLayer.get(layer.layerId);
+                    
+                    if (!data || !data.features) {
+                        testResult.textContent = '✗ No features selected yet';
+                        testResult.style.color = '#dc3545';
+                        return;
+                    }
+                    
+                    // Test query with both geometry and where clause
+                    let queryParams = {
+                        where: whereClause,
+                        returnGeometry: false,
+                        returnCountOnly: true
+                    };
+                    
+                    // Add polygon geometry if available
+                    if (polygonGraphic && polygonGraphic.geometry) {
+                        queryParams.geometry = polygonGraphic.geometry;
+                        queryParams.spatialRelationship = 'intersects';
+                    }
+                    
+                    const testQuery = await layer.queryFeatures(queryParams);
+                    
+                    const totalInSelection = data.features.length;
+                    testResult.textContent = `✓ Valid - ${testQuery.count} of ${totalInSelection} features match`;
+                    testResult.style.color = '#28a745';
+                } catch (error) {
+                    testResult.textContent = `✗ ${error.message}`;
+                    testResult.style.color = '#dc3545';
+                    console.error('Filter test error details:', error);
+                }
+            };
+            
+            // Order controls
+            const orderDiv = document.createElement('div');
+            orderDiv.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #dee2e6;';
+            orderDiv.innerHTML = `
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-weight:bold;">Processing Order:</span>
+                    <input type="number" min="1" value="${order}" style="width:50px;padding:2px;" class="orderInput">
+                    <button class="moveUp" style="padding:2px 6px;">↑</button>
+                    <button class="moveDown" style="padding:2px 6px;">↓</button>
+                </div>
+            `;
+            
+            body.appendChild(modeDiv);
+            body.appendChild(fieldsDiv);
+            body.appendChild(optionsDiv);
+            body.appendChild(filterDiv);
+            body.appendChild(orderDiv);
+            
+            section.appendChild(header);
+            section.appendChild(body);
+            
+            // Toggle expand/collapse
+            header.onclick = (e) => {
+                if (e.target !== checkbox) {
+                    const isExpanded = body.style.display === 'block';
+                    body.style.display = isExpanded ? 'none' : 'block';
+                    expandIcon.textContent = isExpanded ? '▼' : '▲';
+                }
+            };
+            
+            // Auto-expand when checked
+            checkbox.onchange = () => {
+                if (checkbox.checked) {
+                    body.style.display = 'block';
+                    expandIcon.textContent = '▲';
+                }
+            };
+            
+            // Toggle fields visibility based on mode
+            const modeRadios = modeDiv.querySelectorAll('input[type="radio"]');
+            modeRadios.forEach(radio => {
+                radio.onchange = () => {
+                    fieldsDiv.style.display = radio.value === 'edit' ? 'block' : 'none';
+                };
+            });
+            
+            return section;
+        }
+        
+        function getFieldTypeLabel(field) {
+            if (field.domain && field.domain.type === 'coded-value') {
+                return 'Dropdown';
+            }
+            switch(field.type) {
+                case 'integer':
+                case 'small-integer':
+                    return 'Number';
+                case 'double':
+                case 'single':
+                    return 'Decimal';
+                case 'date':
+                    return 'Date';
+                case 'string':
+                    return 'Text';
+                default:
+                    return field.type;
+            }
+        }
+        
+        function buildSummary() {
+            layerConfigs = [];
+            
+            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+            sections.forEach(section => {
+                const layerId = parseInt(section.dataset.layerId);
+                const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
+                
+                if (checkbox && checkbox.checked) {
+                    const data = selectedFeaturesByLayer.get(layerId);
+                    const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
+                    
+                    const config = {
+                        layerId: layerId,
+                        layer: data.layer,
+                        features: data.features,
+                        mode: mode,
+                        order: parseInt(section.dataset.order),
+                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
+                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
+                    };
+                    
+                    // Check for filter
+                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabled && filterEnabled.checked) {
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
+                        if (filterWhere) {
+                            config.filterEnabled = true;
+                            config.filterWhere = filterWhere;
+                        }
+                    }
+                    
+                    if (mode === 'edit') {
+                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
+                        fieldChecks.forEach(check => {
+                            const fieldName = check.dataset.fieldName;
+                            const field = data.layer.fields.find(f => f.name === fieldName);
+                            if (field) {
+                                config.fields.push(field);
+                            }
+                        });
+                    }
+                    
+                    layerConfigs.push(config);
+                }
+            });
+            
+            // Sort by order
+            layerConfigs.sort((a, b) => a.order - b.order);
+            
+            // Apply filters and rebuild feature lists
+            applyFiltersToConfigs().then(() => {
+                displaySummary();
+            });
+        }
+        
+        async function applyFiltersToConfigs() {
+            for (let config of layerConfigs) {
+                if (config.filterEnabled && config.filterWhere) {
+                    try {
+                        // Clean up any escaped quotes
+                        const cleanWhere = config.filterWhere.replace(/\\"/g, '"').replace(/\\'/g, "'");
+                        
+                        // Query with BOTH polygon geometry AND where clause
+                        const queryParams = {
+                            where: cleanWhere,
+                            returnGeometry: true,
+                            outFields: ['*']
+                        };
+                        
+                        // Add polygon geometry to constrain to selection area
+                        if (polygonGraphic && polygonGraphic.geometry) {
+                            queryParams.geometry = polygonGraphic.geometry;
+                            queryParams.spatialRelationship = 'intersects';
+                        }
+                        
+                        const filteredResult = await config.layer.queryFeatures(queryParams);
+                        
+                        // Replace features with filtered set
+                        config.features = filteredResult.features;
+                        config.filterApplied = true;
+                        
+                    } catch (error) {
+                        // If filter fails, keep original features but note the error
+                        config.filterError = error.message;
+                        config.filterApplied = false;
+                    }
+                } else {
+                    config.filterApplied = false;
+                }
+            }
+        }
+        
+        function displaySummary() {
+            // Display summary
+            let html = '';
+            if (layerConfigs.length === 0) {
+                html = '<em style="color:#dc3545;">No layers selected. Please select at least one layer to process.</em>';
+                $("#startEditingBtn").disabled = true;
+            } else {
+                $("#startEditingBtn").disabled = false;
+                
+                let totalFeatures = 0;
+                layerConfigs.forEach((config, idx) => {
+                    totalFeatures += config.features.length;
+                    
+                    html += `<div style="margin-bottom:8px;padding:6px;background:#fff;border:1px solid #dee2e6;border-radius:2px;">`;
+                    html += `<strong>${idx + 1}. ${config.mode === 'edit' ? 'Edit' : 'View'} ${config.layer.title}</strong><br>`;
+                    html += `<span style="font-size:11px;color:#666;">${config.features.length} features</span>`;
+                    
+                    if (config.filterEnabled && config.filterApplied) {
+                        html += ` <span style="font-size:10px;color:#17a2b8;">✓ Filtered</span>`;
+                    } else if (config.filterEnabled && config.filterError) {
+                        html += ` <span style="font-size:10px;color:#dc3545;">✗ Filter error: ${config.filterError}</span>`;
+                    }
+                    
+                    html += '<br>';
+                    
+                    if (config.mode === 'edit' && config.fields.length > 0) {
+                        html += `<span style="font-size:11px;">Fields: ${config.fields.map(f => f.alias || f.name).join(', ')}</span>`;
+                    } else if (config.mode === 'view') {
+                        html += `<span style="font-size:11px;">View only</span>`;
+                    }
+                    
+                    if (config.filterEnabled && config.filterWhere) {
+                        html += `<div style="font-size:10px;color:#666;margin-top:2px;font-family:monospace;background:#f8f9fa;padding:2px 4px;border-radius:2px;">WHERE: ${config.filterWhere}</div>`;
+                    }
+                    
+                    html += `</div>`;
+                });
+                
+                html = `<div style="margin-bottom:12px;padding:6px;background:#d4edda;border:1px solid #c3e6cb;border-radius:2px;font-weight:bold;">
+                    Total: ${totalFeatures} features to process
+                </div>` + html;
+            }
+            
+            $("#summaryContent").innerHTML = html;
+            setPhase('summary');
+            updateStatus("Review your configuration before starting.");
+        }
+        
+        function startEditing() {
+            // Check if bulk edit mode is enabled
+            const bulkEditEnabled = $("#bulkEditMode").checked;
+            
+            if (bulkEditEnabled) {
+                startBulkEdit();
+                return;
+            }
+            
+            // Build flat queue for sequential editing
+            currentEditingQueue = [];
+            
+            layerConfigs.forEach(config => {
+                config.features.forEach(feature => {
+                    currentEditingQueue.push({
+                        layer: config.layer,
+                        feature: feature,
+                        fields: config.fields,
+                        mode: config.mode,
+                        showPopup: config.showPopup,
+                        allowSkip: config.allowSkip
+                    });
+                });
+            });
+            
+            currentIndex = 0;
+            setPhase('editing');
+            showCurrentFeature();
+        }
+        
+        // Bulk Edit Functions
+        let currentBulkLayerIndex = 0;
+        
+        function startBulkEdit() {
+            currentBulkLayerIndex = 0;
+            setPhase('bulkEdit');
+            showBulkEditForm();
+        }
+        
+        function showBulkEditForm() {
+            // Filter to only layers with edit mode
+            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
+            
+            if (editLayers.length === 0) {
+                alert('No layers configured for editing. Please configure at least one layer with fields to edit.');
+                setPhase('summary');
+                return;
+            }
+            
+            if (currentBulkLayerIndex >= editLayers.length) {
+                // All bulk edits complete
+                setPhase('complete');
+                updateStatus('All bulk edits applied successfully!');
+                return;
+            }
+            
+            const config = editLayers[currentBulkLayerIndex];
+            
+            // Show layer selector
+            const selectorHTML = `
+                <div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
+                    <strong>Layer ${currentBulkLayerIndex + 1} of ${editLayers.length}:</strong> ${config.layer.title}<br>
+                    <span style="font-size:11px;color:#666;">Features to update: ${config.features.length}</span>
+                </div>
+            `;
+            $("#bulkEditLayerSelector").innerHTML = selectorHTML;
+            
+            // Build form for this layer's fields
+            const formContainer = $("#bulkEditFormContainer");
+            formContainer.innerHTML = '<div style="font-weight:bold;margin-bottom:8px;">Set values to apply to all features:</div>';
+            
+            config.fields.forEach(field => {
+                const input = createFieldInput(field, null);
+                formContainer.appendChild(input);
+            });
+            
+            // Update preview button text
+            $("#applyBulkEditBtn").textContent = `Apply to ${config.features.length} Features`;
+            $("#bulkEditResults").innerHTML = '';
+            $("#bulkEditPreview").style.display = 'none';
+            
+            updateStatus(`Bulk editing ${config.layer.title} - Set values for ${config.features.length} features`);
+        }
+        
+        async function applyBulkEdit() {
+            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
+            const config = editLayers[currentBulkLayerIndex];
+            
+            // Collect values from form
+            const bulkValues = {};
+            let hasValues = false;
+            
+            const formContainer = $("#bulkEditFormContainer");
+            
+            // Handle both regular inputs and searchable dropdowns
+            formContainer.querySelectorAll('[data-field-name]').forEach(element => {
+                const fieldName = element.dataset.fieldName;
+                const fieldType = element.dataset.fieldType;
+                
+                // Check if this is a searchable dropdown container or regular input
+                let value;
+                if (element.dataset.selectedCode !== undefined) {
+                    // Searchable dropdown - use the selected code
+                    value = element.dataset.selectedCode;
+                } else {
+                    // Regular input
+                    value = element.value;
+                }
+                
+                if (value !== '') {
+                    hasValues = true;
+                    
+                    if (fieldType === 'integer' || fieldType === 'small-integer') {
+                        bulkValues[fieldName] = parseInt(value);
+                    } else if (fieldType === 'double' || fieldType === 'single') {
+                        bulkValues[fieldName] = parseFloat(value);
+                    } else if (fieldType === 'date') {
+                        bulkValues[fieldName] = new Date(value).getTime();
+                    } else {
+                        bulkValues[fieldName] = value;
+                    }
+                }
+            });
+            
+            if (!hasValues) {
+                alert('Please enter at least one value to apply.');
+                return;
+            }
+            
+            // Confirm
+            const fieldNames = Object.keys(bulkValues).join(', ');
+            if (!confirm(`Apply these values to ${config.features.length} features?\n\nFields: ${fieldNames}`)) {
+                return;
+            }
+            
+            updateStatus('Applying bulk edit...');
+            $("#applyBulkEditBtn").disabled = true;
+            
+            try {
+                // Build update features array
+                const updateFeatures = config.features.map(feature => {
+                    const oidField = getObjectIdField(feature);
+                    const oid = feature.attributes[oidField];
+                    
+                    return {
+                        attributes: {
+                            [oidField]: oid,
+                            ...bulkValues
+                        }
+                    };
+                });
+                
+                // Apply edits in batches
+                const batchSize = 100;
+                let successCount = 0;
+                let errorCount = 0;
+                const errors = [];
+                
+                for (let i = 0; i < updateFeatures.length; i += batchSize) {
+                    const batch = updateFeatures.slice(i, i + batchSize);
+                    
+                    const result = await config.layer.applyEdits({
+                        updateFeatures: batch
+                    });
+                    
+                    if (result.updateFeatureResults) {
+                        result.updateFeatureResults.forEach((res, idx) => {
+                            const isSuccess = res.success === true || 
+                                            (res.success === undefined && 
+                                             res.error === null && 
+                                             (res.objectId || res.globalId));
+                            
+                            if (isSuccess) {
+                                successCount++;
+                            } else {
+                                errorCount++;
+                                errors.push(`Feature ${batch[idx].attributes[getObjectIdField(config.features[0])]}: ${res.error?.message || 'Unknown error'}`);
+                            }
+                        });
+                    }
+                    
+                    // Update progress
+                    updateStatus(`Processed ${Math.min(i + batchSize, updateFeatures.length)} of ${updateFeatures.length}...`);
+                }
+                
+                // Show results
+                let resultsHTML = `
+                    <div style="padding:8px;background:#d4edda;border:1px solid #c3e6cb;border-radius:3px;margin-bottom:8px;">
+                        <strong>✓ Bulk Edit Complete</strong><br>
+                        Successfully updated: ${successCount}<br>
+                        ${errorCount > 0 ? `Failed: ${errorCount}<br>` : ''}
+                    </div>
+                `;
+                
+                if (errors.length > 0) {
+                    resultsHTML += `
+                        <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;max-height:150px;overflow-y:auto;">
+                            <strong>Errors:</strong><br>
+                            <div style="font-size:10px;">${errors.slice(0, 10).join('<br>')}</div>
+                            ${errors.length > 10 ? `<div style="font-size:10px;color:#666;">...and ${errors.length - 10} more</div>` : ''}
+                        </div>
+                    `;
+                }
+                
+                $("#bulkEditResults").innerHTML = resultsHTML;
+                
+                // Move to next layer after a delay
+                if (currentBulkLayerIndex < editLayers.length - 1) {
+                    updateStatus('Bulk edit applied. Moving to next layer...');
+                    setTimeout(() => {
+                        currentBulkLayerIndex++;
+                        showBulkEditForm();
+                    }, 2000);
+                } else {
+                    updateStatus('All bulk edits complete!');
+                    setTimeout(() => {
+                        setPhase('complete');
+                    }, 2000);
+                }
+                
+            } catch (error) {
+                $("#bulkEditResults").innerHTML = `
+                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                `;
+                updateStatus('Error applying bulk edit: ' + error.message);
+            } finally {
+                $("#applyBulkEditBtn").disabled = false;
+            }
+        
+        function showCurrentFeature() {
+            if (currentIndex >= currentEditingQueue.length) {
+                setPhase('complete');
+                clearHighlights();
+                updateStatus("All features processed!");
+                return;
+            }
+            
+            const item = currentEditingQueue[currentIndex];
+            
+            // Update progress
+            $("#editingProgress").innerHTML = `
+                <strong>Progress:</strong> ${currentIndex + 1} of ${currentEditingQueue.length}<br>
+                <strong>Layer:</strong> ${item.layer.title}
+            `;
+            
+            // Update feature info
+            const oidField = getObjectIdField(item.feature);
+            const oid = item.feature.attributes[oidField];
+            
+            $("#featureInfo").innerHTML = `
+                <strong>Current Feature:</strong><br>
+                Object ID: ${oid}<br>
+                Mode: ${item.mode === 'edit' ? 'Editing' : 'View Only'}
+            `;
+            
+            // Build form
+            const formContainer = $("#editFormContainer");
+            formContainer.innerHTML = '';
+            
+            if (item.mode === 'edit' && item.fields.length > 0) {
+                item.fields.forEach(field => {
+                    const input = createFieldInput(field, item.feature.attributes[field.name]);
+                    formContainer.appendChild(input);
+                });
+            } else {
+                formContainer.innerHTML = '<div style="color:#666;font-style:italic;">View only - no fields to edit</div>';
+            }
+            
+            // Update buttons
+            $("#prevBtn").disabled = currentIndex === 0;
+            $("#skipBtn").style.display = item.allowSkip ? 'block' : 'none';
+            
+            // Highlight feature
+            highlightFeature(item.feature, item.showPopup);
+            
+            updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentIndex + 1} of ${currentEditingQueue.length}`);
+        }
+        
+        function getObjectIdField(feature) {
+            if (feature.attributes.objectid !== undefined) return 'objectid';
+            if (feature.attributes.OBJECTID !== undefined) return 'OBJECTID';
+            if (feature.layer && feature.layer.objectIdField) return feature.layer.objectIdField;
+            
+            const attrs = Object.keys(feature.attributes);
+            const oidKey = attrs.find(k => k.toUpperCase() === 'OBJECTID');
+            return oidKey || 'objectid';
+        }
+        
+        function createFieldInput(field, currentValue) {
+            const container = document.createElement('div');
+            container.style.marginBottom = '8px';
+            
+            const label = document.createElement('label');
+            label.textContent = field.alias || field.name;
+            label.style.display = 'block';
+            label.style.fontWeight = 'bold';
+            label.style.marginBottom = '4px';
+            
+            let input;
+            
+            if (field.domain && field.domain.type === 'coded-value') {
+                // Create searchable dropdown for coded values
+                const dropdownContainer = document.createElement('div');
+                dropdownContainer.style.position = 'relative';
+                
+                // Search input
+                const searchInput = document.createElement('input');
+                searchInput.type = 'text';
+                searchInput.placeholder = 'Search or select...';
+                searchInput.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                searchInput.dataset.fieldName = field.name;
+                searchInput.dataset.fieldType = field.type;
+                
+                // Dropdown list
+                const dropdownList = document.createElement('div');
+                dropdownList.style.cssText = `
+                    position:absolute;
+                    top:100%;
+                    left:0;
+                    right:0;
+                    max-height:200px;
+                    overflow-y:auto;
+                    background:#fff;
+                    border:1px solid #ccc;
+                    border-top:none;
+                    display:none;
+                    z-index:1000;
+                    box-shadow:0 2px 4px rgba(0,0,0,0.2);
+                `;
+                
+                // Store all options
+                const options = field.domain.codedValues.map(cv => ({
+                    code: cv.code,
+                    name: cv.name
+                }));
+                
+                // Add empty option
+                options.unshift({ code: '', name: '-- Select --' });
+                
+                // Function to render filtered options
+                function renderOptions(filterText = '') {
+                    dropdownList.innerHTML = '';
+                    const filter = filterText.toLowerCase();
+                    
+                    const filtered = options.filter(opt => 
+                        opt.name.toLowerCase().includes(filter) || 
+                        String(opt.code).toLowerCase().includes(filter)
+                    );
+                    
+                    if (filtered.length === 0) {
+                        const noResults = document.createElement('div');
+                        noResults.style.padding = '8px';
+                        noResults.style.color = '#999';
+                        noResults.textContent = 'No matches found';
+                        dropdownList.appendChild(noResults);
+                    } else {
+                        filtered.forEach(opt => {
+                            const optDiv = document.createElement('div');
+                            optDiv.style.cssText = 'padding:6px 8px;cursor:pointer;';
+                            optDiv.textContent = opt.name;
+                            optDiv.dataset.code = opt.code;
+                            
+                            // Hover effect
+                            optDiv.onmouseenter = () => {
+                                optDiv.style.background = '#e3f2fd';
+                            };
+                            optDiv.onmouseleave = () => {
+                                optDiv.style.background = '#fff';
+                            };
+                            
+                            // Click handler
+                            optDiv.onclick = () => {
+                                searchInput.value = opt.name;
+                                searchInput.dataset.selectedCode = opt.code;
+                                dropdownList.style.display = 'none';
+                            };
+                            
+                            dropdownList.appendChild(optDiv);
+                        });
+                    }
+                }
+                
+                // Show dropdown on focus
+                searchInput.onfocus = () => {
+                    renderOptions(searchInput.value);
+                    dropdownList.style.display = 'block';
+                };
+                
+                // Filter as user types
+                searchInput.oninput = () => {
+                    renderOptions(searchInput.value);
+                    dropdownList.style.display = 'block';
+                    searchInput.dataset.selectedCode = ''; // Clear selection when typing
+                };
+                
+                // Hide dropdown when clicking outside
+                searchInput.onblur = () => {
+                    // Delay to allow option click to register
+                    setTimeout(() => {
+                        dropdownList.style.display = 'none';
+                    }, 200);
+                };
+                
+                // Set current value if exists
+                if (currentValue !== null && currentValue !== undefined) {
+                    const matchingOption = options.find(opt => opt.code === currentValue);
+                    if (matchingOption) {
+                        searchInput.value = matchingOption.name;
+                        searchInput.dataset.selectedCode = matchingOption.code;
+                    }
+                }
+                
+                // Override getValue to return the selected code
+                searchInput.getValue = () => searchInput.dataset.selectedCode || '';
+                
+                dropdownContainer.appendChild(searchInput);
+                dropdownContainer.appendChild(dropdownList);
+                input = dropdownContainer;
+                
+            } else if (field.type === 'date') {
+                input = document.createElement('input');
+                input.type = 'date';
+                if (currentValue) {
+                    input.value = new Date(currentValue).toISOString().split('T')[0];
+                }
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
+                
+            } else if (field.type === 'integer' || field.type === 'small-integer') {
+                input = document.createElement('input');
+                input.type = 'number';
+                input.step = '1';
+                input.value = currentValue ?? '';
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
+                
+            } else if (field.type === 'double' || field.type === 'single') {
+                input = document.createElement('input');
+                input.type = 'number';
+                input.step = 'any';
+                input.value = currentValue ?? '';
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
+                
+            } else {
+                input = document.createElement('input');
+                input.type = 'text';
+                input.value = currentValue ?? '';
+                if (field.length) input.maxLength = field.length;
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
+            }
+            
+            if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
+                const hint = document.createElement('div');
+                hint.style.fontSize = '10px';
+                hint.style.color = '#666';
+                hint.style.marginBottom = '2px';
+                hint.textContent = `Current: ${currentValue}`;
+                container.appendChild(hint);
+            }
+            
+            container.appendChild(label);
+            container.appendChild(input);
+            
+            return container;
+        }
+        
+        function highlightFeature(feature, showPopup) {
+            clearHighlights();
+            
+            let symbol;
+            if (feature.geometry.type === "point") {
+                symbol = {
+                    type: "simple-marker",
+                    color: [255, 255, 0, 0.8],
+                    size: 20,
+                    outline: { color: [255, 255, 255, 1], width: 4 }
+                };
+            } else if (feature.geometry.type === "polyline") {
+                symbol = {
+                    type: "simple-line",
+                    color: [255, 255, 0, 0.8],
+                    width: 8,
+                    style: "solid"
+                };
+            } else if (feature.geometry.type === "polygon") {
+                symbol = {
+                    type: "simple-fill",
+                    color: [255, 255, 0, 0.5],
+                    outline: { color: [255, 255, 255, 1], width: 4 }
+                };
+            }
+            
+            const graphic = {
+                geometry: feature.geometry,
+                symbol: symbol
+            };
+            
+            mapView.graphics.add(graphic);
+            highlightGraphics.push(graphic);
+            
+            mapView.goTo({
+                target: feature.geometry,
+                scale: Math.min(mapView.scale, 2000)
+            }, {duration: 800}).then(() => {
+                if (showPopup && mapView.popup) {
+                    showFeaturePopup(feature);
+                }
+            }).catch(() => {
+                if (showPopup && mapView.popup) {
+                    showFeaturePopup(feature);
+                }
+            });
+        }
+        
+        async function showFeaturePopup(feature) {
+            try {
+                const oidField = getObjectIdField(feature);
+                const oid = feature.attributes[oidField];
+                
+                const queryResult = await feature.layer.queryFeatures({
+                    where: `${oidField} = ${oid}`,
+                    outFields: ['*'],
+                    returnGeometry: true
+                });
+                
+                if (queryResult.features.length > 0) {
+                    mapView.popup.open({
+                        features: queryResult.features,
+                        location: getPopupLocation(feature.geometry)
+                    });
+                }
+            } catch (error) {
+                mapView.popup.open({
+                    features: [{
+                        geometry: feature.geometry,
+                        attributes: feature.attributes
+                    }],
+                    location: getPopupLocation(feature.geometry)
+                });
+            }
+        }
+        
+        function getPopupLocation(geometry) {
+            try {
+                if (geometry.type === "point") {
+                    return geometry;
+                } else if (geometry.type === "polyline") {
+                    if (geometry.paths && geometry.paths[0] && geometry.paths[0].length > 0) {
+                        const path = geometry.paths[0];
+                        const midIndex = Math.floor(path.length / 2);
+                        return {
+                            type: "point",
+                            x: path[midIndex][0],
+                            y: path[midIndex][1],
+                            spatialReference: geometry.spatialReference
+                        };
+                    }
+                } else if (geometry.type === "polygon") {
+                    if (geometry.centroid) {
+                        return geometry.centroid;
+                    } else if (geometry.rings && geometry.rings[0] && geometry.rings[0].length > 0) {
+                        const ring = geometry.rings[0];
+                        let sumX = 0, sumY = 0;
+                        for (let i = 0; i < ring.length - 1; i++) {
+                            sumX += ring[i][0];
+                            sumY += ring[i][1];
+                        }
+                        return {
+                            type: "point",
+                            x: sumX / (ring.length - 1),
+                            y: sumY / (ring.length - 1),
+                            spatialReference: geometry.spatialReference
+                        };
+                    }
+                }
+                
+                if (geometry.extent && geometry.extent.center) {
+                    return geometry.extent.center;
+                }
+                
+                return geometry;
+            } catch (error) {
+                return geometry;
+            }
+        }
+        
+        async function submitFeature() {
+            const item = currentEditingQueue[currentIndex];
+            
+            if (item.mode === 'view') {
+                currentIndex++;
+                showCurrentFeature();
+                return;
+            }
+            
+            try {
+                updateStatus("Updating feature...");
+                
+                const oidField = getObjectIdField(item.feature);
+                const oid = item.feature.attributes[oidField];
+                
+                const updateAttributes = {
+                    [oidField]: oid
+                };
+                
+                // Collect values from form
+                const formContainer = $("#editFormContainer");
+                
+                // Handle both regular inputs and searchable dropdowns
+                formContainer.querySelectorAll('[data-field-name]').forEach(element => {
+                    const fieldName = element.dataset.fieldName;
+                    const fieldType = element.dataset.fieldType;
+                    
+                    // Check if this is a searchable dropdown container or regular input
+                    let value;
+                    if (element.dataset.selectedCode !== undefined) {
+                        // Searchable dropdown - use the selected code
+                        value = element.dataset.selectedCode;
+                    } else {
+                        // Regular input
+                        value = element.value;
+                    }
+                    
+                    if (value !== '') {
+                        if (fieldType === 'integer' || fieldType === 'small-integer') {
+                            updateAttributes[fieldName] = parseInt(value);
+                        } else if (fieldType === 'double' || fieldType === 'single') {
+                            updateAttributes[fieldName] = parseFloat(value);
+                        } else if (fieldType === 'date') {
+                            updateAttributes[fieldName] = new Date(value).getTime();
+                        } else {
+                            updateAttributes[fieldName] = value;
+                        }
+                    }
+                });
+                
+                const updateFeature = {
+                    attributes: updateAttributes
+                };
+                
+                const result = await item.layer.applyEdits({
+                    updateFeatures: [updateFeature]
+                });
+                
+                if (result.updateFeatureResults && result.updateFeatureResults.length > 0) {
+                    const updateResult = result.updateFeatureResults[0];
+                    
+                    const isSuccess = updateResult.success === true || 
+                                    (updateResult.success === undefined && 
+                                     updateResult.error === null && 
+                                     (updateResult.objectId || updateResult.globalId));
+                    
+                    if (isSuccess) {
+                        updateStatus("Feature updated successfully!");
+                        currentIndex++;
+                        setTimeout(() => showCurrentFeature(), 500);
+                    } else {
+                        let errorMessage = "Unknown error";
+                        if (updateResult.error && updateResult.error.message) {
+                            errorMessage = updateResult.error.message;
+                        }
+                        throw new Error(`Update failed: ${errorMessage}`);
+                    }
+                } else {
+                    throw new Error('No update results returned from server');
+                }
+                
+            } catch (error) {
+                updateStatus("Error updating feature: " + error.message);
+                alert("Error updating feature: " + error.message);
+            }
+        }
+        
+        function skipFeature() {
+            currentIndex++;
+            showCurrentFeature();
+        }
+        
+        function prevFeature() {
+            if (currentIndex > 0) {
+                currentIndex--;
+                showCurrentFeature();
+            }
+        }
+        
+        function startOver() {
+            currentIndex = 0;
+            currentBulkLayerIndex = 0;
+            layerConfigs = [];
+            currentEditingQueue = [];
+            
+            // Clear all graphics including highlights and polygon
+            clearHighlights();
+            clearPolygonSelection();
+            
+            // Reset to selection phase
+            setPhase('selection');
+            updateStatus("Ready to start over. Draw a polygon to select features.");
+        }
+        
+        // Configuration Save/Load Functions
+        function saveConfiguration() {
+            // Build config from current UI state
+            const config = {
+                layers: []
+            };
+            
+            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+            sections.forEach(section => {
+                const layerId = parseInt(section.dataset.layerId);
+                const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
+                
+                if (checkbox && checkbox.checked) {
+                    const data = selectedFeaturesByLayer.get(layerId);
+                    const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
+                    
+                    const layerConfig = {
+                        layerId: layerId,
+                        layerTitle: data.layer.title,
+                        mode: mode,
+                        order: parseInt(section.dataset.order),
+                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
+                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
+                    };
+                    
+                    // Save filter settings
+                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabled && filterEnabled.checked) {
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
+                        layerConfig.filterEnabled = true;
+                        layerConfig.filterWhere = filterWhere;
+                    }
+                    
+                    if (mode === 'edit') {
+                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
+                        fieldChecks.forEach(check => {
+                            layerConfig.fields.push(check.dataset.fieldName);
+                        });
+                    }
+                    
+                    config.layers.push(layerConfig);
+                }
+            });
+            
+            if (config.layers.length === 0) {
+                alert('No layers configured. Please configure at least one layer before saving.');
+                return;
+            }
+            
+            // Prompt for name
+            const configName = prompt('Enter a name for this configuration:', 'My Configuration');
+            if (!configName) return;
+            
+            config.name = configName;
+            config.savedAt = new Date().toISOString();
+            
+            // Save to localStorage
+            const savedConfigs = getSavedConfigurations();
+            const configId = 'config_' + Date.now();
+            savedConfigs[configId] = config;
+            
+            try {
+                localStorage.setItem('sequentialEditorConfigs', JSON.stringify(savedConfigs));
+                updateStatus(`Configuration "${configName}" saved successfully!`);
+                loadSavedConfigurationsList();
+            } catch (e) {
+                alert('Error saving configuration: ' + e.message);
+            }
+        }
+        
+        function getSavedConfigurations() {
+            try {
+                const saved = localStorage.getItem('sequentialEditorConfigs');
+                return saved ? JSON.parse(saved) : {};
+            } catch (e) {
+                return {};
+            }
+        }
+        
+        function loadSavedConfigurationsList() {
+            const select = $("#savedConfigSelect");
+            select.innerHTML = '<option value="">-- Select a saved configuration --</option>';
+            
+            const savedConfigs = getSavedConfigurations();
+            
+            Object.keys(savedConfigs).forEach(configId => {
+                const config = savedConfigs[configId];
+                const option = document.createElement('option');
+                option.value = configId;
+                
+                const date = new Date(config.savedAt);
+                const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                
+                option.textContent = `${config.name} (${dateStr})`;
+                select.appendChild(option);
+            });
+        }
+        
+        function loadConfiguration() {
+            const select = $("#savedConfigSelect");
+            const configId = select.value;
+            
+            if (!configId) {
+                alert('Please select a configuration to load.');
+                return;
+            }
+            
+            const savedConfigs = getSavedConfigurations();
+            const config = savedConfigs[configId];
+            
+            if (!config) {
+                alert('Configuration not found.');
+                return;
+            }
+            
+            // Apply configuration to UI
+            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+            
+            sections.forEach(section => {
+                const layerId = parseInt(section.dataset.layerId);
+                const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
+                
+                // Find matching config
+                const layerConfig = config.layers.find(lc => lc.layerId === layerId);
+                
+                if (layerConfig) {
+                    // Enable this layer
+                    checkbox.checked = true;
+                    
+                    // Expand the section
+                    const body = section.querySelector('div[style*="padding: 8px"]');
+                    if (body) {
+                        body.style.display = 'block';
+                        const expandIcon = section.querySelector('span');
+                        if (expandIcon) expandIcon.textContent = '▲';
+                    }
+                    
+                    // Set mode
+                    const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
+                    if (modeRadio) {
+                        modeRadio.checked = true;
+                        
+                        // Trigger mode change event to show/hide fields
+                        const fieldsDiv = section.querySelector(`#fields_${layerId}`);
+                        if (fieldsDiv) {
+                            fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
+                        }
+                    }
+                    
+                    // Set order
+                    section.dataset.order = layerConfig.order;
+                    const orderInput = section.querySelector('.orderInput');
+                    if (orderInput) orderInput.value = layerConfig.order;
+                    
+                    // Set options
+                    const popupCheck = section.querySelector(`#popup_${layerId}`);
+                    if (popupCheck) popupCheck.checked = layerConfig.showPopup;
+                    
+                    const skipCheck = section.querySelector(`#allowskip_${layerId}`);
+                    if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
+                    
+                    // Set filter settings
+                    const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
+                    if (filterEnabledCheck && layerConfig.filterEnabled) {
+                        filterEnabledCheck.checked = true;
+                        
+                        const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
+                        if (filterInputs) {
+                            filterInputs.style.display = 'block';
+                        }
+                        
+                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
+                        if (filterWhere && layerConfig.filterWhere) {
+                            filterWhere.value = layerConfig.filterWhere;
+                        }
+                    }
+                    
+                    // Set fields
+                    if (layerConfig.mode === 'edit' && layerConfig.fields.length > 0) {
+                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
+                        fieldChecks.forEach(check => {
+                            check.checked = layerConfig.fields.includes(check.dataset.fieldName);
+                        });
+                    }
+                } else {
+                    // Disable this layer
+                    checkbox.checked = false;
+                }
+            });
+            
+            updateStatus(`Configuration "${config.name}" loaded successfully!`);
+        }
+        
+        function deleteConfiguration() {
+            const select = $("#savedConfigSelect");
+            const configId = select.value;
+            
+            if (!configId) {
+                alert('Please select a configuration to delete.');
+                return;
+            }
+            
+            const savedConfigs = getSavedConfigurations();
+            const config = savedConfigs[configId];
+            
+            if (!config) {
+                alert('Configuration not found.');
+                return;
+            }
+            
+            if (!confirm(`Are you sure you want to delete the configuration "${config.name}"?`)) {
+                return;
+            }
+            
+            delete savedConfigs[configId];
+            
+            try {
+                localStorage.setItem('sequentialEditorConfigs', JSON.stringify(savedConfigs));
+                updateStatus(`Configuration "${config.name}" deleted.`);
+                loadSavedConfigurationsList();
+            } catch (e) {
+                alert('Error deleting configuration: ' + e.message);
+            }
+        }
+        
+        function cleanup() {
+            if (sketchViewModel) {
+                sketchViewModel.destroy();
+                sketchViewModel = null;
+            }
+            
+            clearHighlights();
+            
+            if (polygonGraphic) {
+                mapView.graphics.remove(polygonGraphic);
+            }
+            
+            toolBox.remove();
+        }
+        
+        // Event listeners
+        $("#drawPolygonBtn").onclick = enablePolygonDrawing;
+        $("#clearPolygonBtn").onclick = clearPolygonSelection;
+        $("#configureLayersBtn").onclick = showLayerConfiguration;
+        $("#saveConfigBtn").onclick = saveConfiguration;
+        $("#loadConfigBtn").onclick = loadConfiguration;
+        $("#deleteConfigBtn").onclick = deleteConfiguration;
+        $("#showSummaryBtn").onclick = buildSummary;
+        $("#backToConfigBtn").onclick = () => setPhase('configuration');
+        $("#startEditingBtn").onclick = startEditing;
+        
+        $("#submitBtn").onclick = submitFeature;
+        $("#skipBtn").onclick = skipFeature;
+        $("#prevBtn").onclick = prevFeature;
+        $("#clearHighlightsBtn").onclick = clearHighlights;
+        
+        $("#applyBulkEditBtn").onclick = applyBulkEdit;
+        $("#backToSummaryBtn").onclick = () => setPhase('summary');
+        
+        $("#startOverBtn").onclick = startOver;
+        
+        $("#closeTool").onclick = () => {
+            window.gisToolHost.closeTool('generic-sequential-editor');
+        };
+        
+        // Initialize
+        setPhase('selection');
+        updateStatus("Ready. Click 'Draw Selection Polygon' to start selecting features.");
+        
+        // Register tool with host
+        window.gisToolHost.activeTools.set('generic-sequential-editor', {
+            cleanup: cleanup,
+            toolBox: toolBox
+        });
+        
+    } catch (error) {
+        alert("Error creating Generic Sequential Editor Tool: " + (error.message || error));
+    }
+})();
