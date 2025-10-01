@@ -516,17 +516,26 @@
                 testResult.style.color = '#666';
                 
                 try {
+                    // Ensure layer is loaded
+                    await layer.load();
+                    
+                    // Try the query with the polygon geometry from selection
+                    const data = selectedFeaturesByLayer.get(layer.layerId);
+                    
                     const testQuery = await layer.queryFeatures({
+                        geometry: polygonGraphic.geometry,
+                        spatialRelationship: 'intersects',
                         where: whereClause,
                         returnGeometry: false,
                         returnCountOnly: true
                     });
                     
-                    testResult.textContent = `✓ Valid - ${testQuery.count} features match`;
+                    testResult.textContent = `✓ Valid - ${testQuery.count} of ${data.features.length} features match`;
                     testResult.style.color = '#28a745';
                 } catch (error) {
                     testResult.textContent = `✗ Error: ${error.message}`;
                     testResult.style.color = '#dc3545';
+                    console.error('Filter test error:', error);
                 }
             };
             
