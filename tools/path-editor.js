@@ -1022,7 +1022,7 @@
             } finally {
                 $("#applyBulkEditBtn").disabled = false;
             }
-        
+        }
         function showCurrentFeature() {
             if (currentIndex >= currentEditingQueue.length) {
                 setPhase('complete');
