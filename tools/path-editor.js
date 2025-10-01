@@ -101,6 +101,17 @@
                 
                 <div id="summaryContent" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
                 
+                <!-- Bulk Edit Option -->
+                <div style="margin-bottom:12px;padding:8px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:3px;">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="bulkEditMode">
+                        <div>
+                            <strong>Enable Bulk Edit Mode</strong>
+                            <div style="font-size:10px;color:#666;">Apply the same values to all features at once (skip individual editing)</div>
+                        </div>
+                    </label>
+                </div>
+                
                 <div style="display:flex;gap:8px;">
                     <button id="backToConfigBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">← Back</button>
                     <button id="startEditingBtn" style="flex:1;padding:8px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;font-weight:bold;">Start Editing →</button>
@@ -123,6 +134,28 @@
                 <button id="prevBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Previous</button>
                 
                 <button id="clearHighlightsBtn" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Clear Highlights</button>
+            </div>
+            
+            <!-- Phase 4b: Bulk Edit -->
+            <div id="bulkEditPhase" style="display:none;">
+                <div style="font-weight:bold;margin-bottom:8px;color:#e67e22;">⚡ Bulk Edit Mode</div>
+                <div style="margin-bottom:12px;color:#666;font-size:11px;">
+                    Set values once and apply them to all selected features at the same time.
+                </div>
+                
+                <div id="bulkEditLayerSelector" style="margin-bottom:12px;"></div>
+                
+                <div id="bulkEditFormContainer" style="margin-bottom:12px;"></div>
+                
+                <div id="bulkEditPreview" style="margin-bottom:12px;padding:8px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:3px;display:none;"></div>
+                
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <button id="applyBulkEditBtn" style="flex:1;padding:8px 12px;background:#e67e22;color:white;border:none;border-radius:3px;cursor:pointer;font-weight:bold;">Apply to All Features</button>
+                </div>
+                
+                <button id="backToSummaryBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Back to Summary</button>
+                
+                <div id="bulkEditResults" style="margin-top:12px;"></div>
             </div>
             
             <!-- Phase 5: Complete -->
@@ -155,6 +188,7 @@
             $("#configurationPhase").style.display = "none";
             $("#summaryPhase").style.display = "none";
             $("#editingPhase").style.display = "none";
+            $("#bulkEditPhase").style.display = "none";
             $("#completePhase").style.display = "none";
             
             switch(phase) {
@@ -170,6 +204,9 @@
                     break;
                 case 'editing':
                     $("#editingPhase").style.display = "block";
+                    break;
+                case 'bulkEdit':
+                    $("#bulkEditPhase").style.display = "block";
                     break;
                 case 'complete':
                     $("#completePhase").style.display = "block";
@@ -578,7 +615,15 @@
         }
         
         function startEditing() {
-            // Build flat queue
+            // Check if bulk edit mode is enabled
+            const bulkEditEnabled = $("#bulkEditMode").checked;
+            
+            if (bulkEditEnabled) {
+                startBulkEdit();
+                return;
+            }
+            
+            // Build flat queue for sequential editing
             currentEditingQueue = [];
             
             layerConfigs.forEach(config => {
@@ -597,6 +642,197 @@
             currentIndex = 0;
             setPhase('editing');
             showCurrentFeature();
+        }
+        
+        // Bulk Edit Functions
+        let currentBulkLayerIndex = 0;
+        
+        function startBulkEdit() {
+            currentBulkLayerIndex = 0;
+            setPhase('bulkEdit');
+            showBulkEditForm();
+        }
+        
+        function showBulkEditForm() {
+            // Filter to only layers with edit mode
+            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
+            
+            if (editLayers.length === 0) {
+                alert('No layers configured for editing. Please configure at least one layer with fields to edit.');
+                setPhase('summary');
+                return;
+            }
+            
+            if (currentBulkLayerIndex >= editLayers.length) {
+                // All bulk edits complete
+                setPhase('complete');
+                updateStatus('All bulk edits applied successfully!');
+                return;
+            }
+            
+            const config = editLayers[currentBulkLayerIndex];
+            
+            // Show layer selector
+            const selectorHTML = `
+                <div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
+                    <strong>Layer ${currentBulkLayerIndex + 1} of ${editLayers.length}:</strong> ${config.layer.title}<br>
+                    <span style="font-size:11px;color:#666;">Features to update: ${config.features.length}</span>
+                </div>
+            `;
+            $("#bulkEditLayerSelector").innerHTML = selectorHTML;
+            
+            // Build form for this layer's fields
+            const formContainer = $("#bulkEditFormContainer");
+            formContainer.innerHTML = '<div style="font-weight:bold;margin-bottom:8px;">Set values to apply to all features:</div>';
+            
+            config.fields.forEach(field => {
+                const input = createFieldInput(field, null);
+                formContainer.appendChild(input);
+            });
+            
+            // Update preview button text
+            $("#applyBulkEditBtn").textContent = `Apply to ${config.features.length} Features`;
+            $("#bulkEditResults").innerHTML = '';
+            $("#bulkEditPreview").style.display = 'none';
+            
+            updateStatus(`Bulk editing ${config.layer.title} - Set values for ${config.features.length} features`);
+        }
+        
+        async function applyBulkEdit() {
+            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
+            const config = editLayers[currentBulkLayerIndex];
+            
+            // Collect values from form
+            const bulkValues = {};
+            let hasValues = false;
+            
+            const inputs = $("#bulkEditFormContainer").querySelectorAll('input, select');
+            inputs.forEach(input => {
+                const fieldName = input.dataset.fieldName;
+                const fieldType = input.dataset.fieldType;
+                const value = input.value;
+                
+                if (value !== '') {
+                    hasValues = true;
+                    
+                    if (fieldType === 'integer' || fieldType === 'small-integer') {
+                        bulkValues[fieldName] = parseInt(value);
+                    } else if (fieldType === 'double' || fieldType === 'single') {
+                        bulkValues[fieldName] = parseFloat(value);
+                    } else if (fieldType === 'date') {
+                        bulkValues[fieldName] = new Date(value).getTime();
+                    } else {
+                        bulkValues[fieldName] = value;
+                    }
+                }
+            });
+            
+            if (!hasValues) {
+                alert('Please enter at least one value to apply.');
+                return;
+            }
+            
+            // Confirm
+            const fieldNames = Object.keys(bulkValues).join(', ');
+            if (!confirm(`Apply these values to ${config.features.length} features?\n\nFields: ${fieldNames}`)) {
+                return;
+            }
+            
+            updateStatus('Applying bulk edit...');
+            $("#applyBulkEditBtn").disabled = true;
+            
+            try {
+                // Build update features array
+                const updateFeatures = config.features.map(feature => {
+                    const oidField = getObjectIdField(feature);
+                    const oid = feature.attributes[oidField];
+                    
+                    return {
+                        attributes: {
+                            [oidField]: oid,
+                            ...bulkValues
+                        }
+                    };
+                });
+                
+                // Apply edits in batches
+                const batchSize = 100;
+                let successCount = 0;
+                let errorCount = 0;
+                const errors = [];
+                
+                for (let i = 0; i < updateFeatures.length; i += batchSize) {
+                    const batch = updateFeatures.slice(i, i + batchSize);
+                    
+                    const result = await config.layer.applyEdits({
+                        updateFeatures: batch
+                    });
+                    
+                    if (result.updateFeatureResults) {
+                        result.updateFeatureResults.forEach((res, idx) => {
+                            const isSuccess = res.success === true || 
+                                            (res.success === undefined && 
+                                             res.error === null && 
+                                             (res.objectId || res.globalId));
+                            
+                            if (isSuccess) {
+                                successCount++;
+                            } else {
+                                errorCount++;
+                                errors.push(`Feature ${batch[idx].attributes[getObjectIdField(config.features[0])]}: ${res.error?.message || 'Unknown error'}`);
+                            }
+                        });
+                    }
+                    
+                    // Update progress
+                    updateStatus(`Processed ${Math.min(i + batchSize, updateFeatures.length)} of ${updateFeatures.length}...`);
+                }
+                
+                // Show results
+                let resultsHTML = `
+                    <div style="padding:8px;background:#d4edda;border:1px solid #c3e6cb;border-radius:3px;margin-bottom:8px;">
+                        <strong>✓ Bulk Edit Complete</strong><br>
+                        Successfully updated: ${successCount}<br>
+                        ${errorCount > 0 ? `Failed: ${errorCount}<br>` : ''}
+                    </div>
+                `;
+                
+                if (errors.length > 0) {
+                    resultsHTML += `
+                        <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;max-height:150px;overflow-y:auto;">
+                            <strong>Errors:</strong><br>
+                            <div style="font-size:10px;">${errors.slice(0, 10).join('<br>')}</div>
+                            ${errors.length > 10 ? `<div style="font-size:10px;color:#666;">...and ${errors.length - 10} more</div>` : ''}
+                        </div>
+                    `;
+                }
+                
+                $("#bulkEditResults").innerHTML = resultsHTML;
+                
+                // Move to next layer after a delay
+                if (currentBulkLayerIndex < editLayers.length - 1) {
+                    updateStatus('Bulk edit applied. Moving to next layer...');
+                    setTimeout(() => {
+                        currentBulkLayerIndex++;
+                        showBulkEditForm();
+                    }, 2000);
+                } else {
+                    updateStatus('All bulk edits complete!');
+                    setTimeout(() => {
+                        setPhase('complete');
+                    }, 2000);
+                }
+                
+            } catch (error) {
+                $("#bulkEditResults").innerHTML = `
+                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                `;
+                updateStatus('Error applying bulk edit: ' + error.message);
+            } finally {
+                $("#applyBulkEditBtn").disabled = false;
+            }
         }
         
         function showCurrentFeature() {
@@ -1178,6 +1414,9 @@
         $("#skipBtn").onclick = skipFeature;
         $("#prevBtn").onclick = prevFeature;
         $("#clearHighlightsBtn").onclick = clearHighlights;
+        
+        $("#applyBulkEditBtn").onclick = applyBulkEdit;
+        $("#backToSummaryBtn").onclick = () => setPhase('summary');
         
         $("#startOverBtn").onclick = startOver;
         
