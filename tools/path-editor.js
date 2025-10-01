@@ -505,12 +505,15 @@
             const testBtn = filterDiv.querySelector('.testFilterBtn');
             const testResult = filterDiv.querySelector('.filterTestResult');
             testBtn.onclick = async () => {
-                const whereClause = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim();
+                let whereClause = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim();
                 if (!whereClause) {
                     testResult.textContent = 'Please enter a WHERE clause';
                     testResult.style.color = '#dc3545';
                     return;
                 }
+                
+                // Clean up any escaped quotes that might have been introduced
+                whereClause = whereClause.replace(/\\"/g, '"').replace(/\\'/g, "'");
                 
                 testResult.textContent = 'Testing...';
                 testResult.style.color = '#666';
@@ -519,23 +522,37 @@
                     // Ensure layer is loaded
                     await layer.load();
                     
-                    // Try the query with the polygon geometry from selection
+                    // Get the data for this layer
                     const data = selectedFeaturesByLayer.get(layer.layerId);
                     
-                    const testQuery = await layer.queryFeatures({
-                        geometry: polygonGraphic.geometry,
-                        spatialRelationship: 'intersects',
+                    if (!data || !data.features) {
+                        testResult.textContent = '✗ No features selected yet';
+                        testResult.style.color = '#dc3545';
+                        return;
+                    }
+                    
+                    // Test query with both geometry and where clause
+                    let queryParams = {
                         where: whereClause,
                         returnGeometry: false,
                         returnCountOnly: true
-                    });
+                    };
                     
-                    testResult.textContent = `✓ Valid - ${testQuery.count} of ${data.features.length} features match`;
+                    // Add polygon geometry if available
+                    if (polygonGraphic && polygonGraphic.geometry) {
+                        queryParams.geometry = polygonGraphic.geometry;
+                        queryParams.spatialRelationship = 'intersects';
+                    }
+                    
+                    const testQuery = await layer.queryFeatures(queryParams);
+                    
+                    const totalInSelection = data.features.length;
+                    testResult.textContent = `✓ Valid - ${testQuery.count} of ${totalInSelection} features match`;
                     testResult.style.color = '#28a745';
                 } catch (error) {
-                    testResult.textContent = `✗ Error: ${error.message}`;
+                    testResult.textContent = `✗ ${error.message}`;
                     testResult.style.color = '#dc3545';
-                    console.error('Filter test error:', error);
+                    console.error('Filter test error details:', error);
                 }
             };
             
@@ -671,9 +688,12 @@
             for (let config of layerConfigs) {
                 if (config.filterEnabled && config.filterWhere) {
                     try {
+                        // Clean up any escaped quotes
+                        const cleanWhere = config.filterWhere.replace(/\\"/g, '"').replace(/\\'/g, "'");
+                        
                         // Query with filter
                         const filteredResult = await config.layer.queryFeatures({
-                            where: config.filterWhere,
+                            where: cleanWhere,
                             returnGeometry: true,
                             outFields: ['*']
                         });
