@@ -219,6 +219,29 @@
                 try { mapView.graphics.remove(g); } catch(e) {}
             });
             highlightGraphics = [];
+            
+            // Also do aggressive cleanup of any lingering graphics that might match highlight patterns
+            const graphicsToRemove = [];
+            mapView.graphics.forEach(graphic => {
+                if (graphic.symbol) {
+                    const symbol = graphic.symbol;
+                    // Match our highlight patterns
+                    if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
+                        (symbol.type === "simple-line" && symbol.width >= 8) ||
+                        (symbol.type === "simple-fill" && (symbol.color[3] >= 0.3 || (symbol.outline && symbol.outline.width >= 4)))) {
+                        graphicsToRemove.push(graphic);
+                    }
+                }
+            });
+            
+            graphicsToRemove.forEach(graphic => {
+                try { mapView.graphics.remove(graphic); } catch(e) {}
+            });
+            
+            // Close popup if open
+            if (mapView.popup) {
+                mapView.popup.close();
+            }
         }
         
         function enablePolygonDrawing() {
@@ -861,11 +884,22 @@
             const bulkValues = {};
             let hasValues = false;
             
-            const inputs = $("#bulkEditFormContainer").querySelectorAll('input, select');
-            inputs.forEach(input => {
-                const fieldName = input.dataset.fieldName;
-                const fieldType = input.dataset.fieldType;
-                const value = input.value;
+            const formContainer = $("#bulkEditFormContainer");
+            
+            // Handle both regular inputs and searchable dropdowns
+            formContainer.querySelectorAll('[data-field-name]').forEach(element => {
+                const fieldName = element.dataset.fieldName;
+                const fieldType = element.dataset.fieldType;
+                
+                // Check if this is a searchable dropdown container or regular input
+                let value;
+                if (element.dataset.selectedCode !== undefined) {
+                    // Searchable dropdown - use the selected code
+                    value = element.dataset.selectedCode;
+                } else {
+                    // Regular input
+                    value = element.value;
+                }
                 
                 if (value !== '') {
                     hasValues = true;
@@ -988,6 +1022,36 @@
             } finally {
                 $("#applyBulkEditBtn").disabled = false;
             }
+        } => {
+                        setPhase('complete');
+                    }, 2000);
+                }
+                
+            } catch (error) {
+                $("#bulkEditResults").innerHTML = `
+                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                `;
+                updateStatus('Error applying bulk edit: ' + error.message);
+            } finally {
+                $("#applyBulkEditBtn").disabled = false;
+            }
+        } => {
+                        setPhase('complete');
+                    }, 2000);
+                }
+                
+            } catch (error) {
+                $("#bulkEditResults").innerHTML = `
+                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
+                        <strong>Error:</strong> ${error.message}
+                    </div>
+                `;
+                updateStatus('Error applying bulk edit: ' + error.message);
+            } finally {
+                $("#applyBulkEditBtn").disabled = false;
+            }
         }
         
         function showCurrentFeature() {
@@ -1062,15 +1126,123 @@
             let input;
             
             if (field.domain && field.domain.type === 'coded-value') {
-                input = document.createElement('select');
-                input.innerHTML = '<option value="">-- Select --</option>';
-                field.domain.codedValues.forEach(cv => {
-                    const opt = document.createElement('option');
-                    opt.value = cv.code;
-                    opt.textContent = cv.name;
-                    if (cv.code === currentValue) opt.selected = true;
-                    input.appendChild(opt);
-                });
+                // Create searchable dropdown for coded values
+                const dropdownContainer = document.createElement('div');
+                dropdownContainer.style.position = 'relative';
+                
+                // Search input
+                const searchInput = document.createElement('input');
+                searchInput.type = 'text';
+                searchInput.placeholder = 'Search or select...';
+                searchInput.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                searchInput.dataset.fieldName = field.name;
+                searchInput.dataset.fieldType = field.type;
+                
+                // Dropdown list
+                const dropdownList = document.createElement('div');
+                dropdownList.style.cssText = `
+                    position:absolute;
+                    top:100%;
+                    left:0;
+                    right:0;
+                    max-height:200px;
+                    overflow-y:auto;
+                    background:#fff;
+                    border:1px solid #ccc;
+                    border-top:none;
+                    display:none;
+                    z-index:1000;
+                    box-shadow:0 2px 4px rgba(0,0,0,0.2);
+                `;
+                
+                // Store all options
+                const options = field.domain.codedValues.map(cv => ({
+                    code: cv.code,
+                    name: cv.name
+                }));
+                
+                // Add empty option
+                options.unshift({ code: '', name: '-- Select --' });
+                
+                // Function to render filtered options
+                function renderOptions(filterText = '') {
+                    dropdownList.innerHTML = '';
+                    const filter = filterText.toLowerCase();
+                    
+                    const filtered = options.filter(opt => 
+                        opt.name.toLowerCase().includes(filter) || 
+                        String(opt.code).toLowerCase().includes(filter)
+                    );
+                    
+                    if (filtered.length === 0) {
+                        const noResults = document.createElement('div');
+                        noResults.style.padding = '8px';
+                        noResults.style.color = '#999';
+                        noResults.textContent = 'No matches found';
+                        dropdownList.appendChild(noResults);
+                    } else {
+                        filtered.forEach(opt => {
+                            const optDiv = document.createElement('div');
+                            optDiv.style.cssText = 'padding:6px 8px;cursor:pointer;';
+                            optDiv.textContent = opt.name;
+                            optDiv.dataset.code = opt.code;
+                            
+                            // Hover effect
+                            optDiv.onmouseenter = () => {
+                                optDiv.style.background = '#e3f2fd';
+                            };
+                            optDiv.onmouseleave = () => {
+                                optDiv.style.background = '#fff';
+                            };
+                            
+                            // Click handler
+                            optDiv.onclick = () => {
+                                searchInput.value = opt.name;
+                                searchInput.dataset.selectedCode = opt.code;
+                                dropdownList.style.display = 'none';
+                            };
+                            
+                            dropdownList.appendChild(optDiv);
+                        });
+                    }
+                }
+                
+                // Show dropdown on focus
+                searchInput.onfocus = () => {
+                    renderOptions(searchInput.value);
+                    dropdownList.style.display = 'block';
+                };
+                
+                // Filter as user types
+                searchInput.oninput = () => {
+                    renderOptions(searchInput.value);
+                    dropdownList.style.display = 'block';
+                    searchInput.dataset.selectedCode = ''; // Clear selection when typing
+                };
+                
+                // Hide dropdown when clicking outside
+                searchInput.onblur = () => {
+                    // Delay to allow option click to register
+                    setTimeout(() => {
+                        dropdownList.style.display = 'none';
+                    }, 200);
+                };
+                
+                // Set current value if exists
+                if (currentValue !== null && currentValue !== undefined) {
+                    const matchingOption = options.find(opt => opt.code === currentValue);
+                    if (matchingOption) {
+                        searchInput.value = matchingOption.name;
+                        searchInput.dataset.selectedCode = matchingOption.code;
+                    }
+                }
+                
+                // Override getValue to return the selected code
+                searchInput.getValue = () => searchInput.dataset.selectedCode || '';
+                
+                dropdownContainer.appendChild(searchInput);
+                dropdownContainer.appendChild(dropdownList);
+                input = dropdownContainer;
                 
             } else if (field.type === 'date') {
                 input = document.createElement('input');
@@ -1078,32 +1250,37 @@
                 if (currentValue) {
                     input.value = new Date(currentValue).toISOString().split('T')[0];
                 }
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
                 
             } else if (field.type === 'integer' || field.type === 'small-integer') {
                 input = document.createElement('input');
                 input.type = 'number';
                 input.step = '1';
                 input.value = currentValue ?? '';
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
                 
             } else if (field.type === 'double' || field.type === 'single') {
                 input = document.createElement('input');
                 input.type = 'number';
                 input.step = 'any';
                 input.value = currentValue ?? '';
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
                 
             } else {
                 input = document.createElement('input');
                 input.type = 'text';
                 input.value = currentValue ?? '';
                 if (field.length) input.maxLength = field.length;
+                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
+                input.dataset.fieldName = field.name;
+                input.dataset.fieldType = field.type;
             }
-            
-            input.style.width = '100%';
-            input.style.padding = '4px';
-            input.style.border = '1px solid #ccc';
-            input.style.borderRadius = '2px';
-            input.dataset.fieldName = field.name;
-            input.dataset.fieldType = field.type;
             
             if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
                 const hint = document.createElement('div');
@@ -1260,11 +1437,22 @@
                 };
                 
                 // Collect values from form
-                const inputs = $("#editFormContainer").querySelectorAll('input, select');
-                inputs.forEach(input => {
-                    const fieldName = input.dataset.fieldName;
-                    const fieldType = input.dataset.fieldType;
-                    const value = input.value;
+                const formContainer = $("#editFormContainer");
+                
+                // Handle both regular inputs and searchable dropdowns
+                formContainer.querySelectorAll('[data-field-name]').forEach(element => {
+                    const fieldName = element.dataset.fieldName;
+                    const fieldType = element.dataset.fieldType;
+                    
+                    // Check if this is a searchable dropdown container or regular input
+                    let value;
+                    if (element.dataset.selectedCode !== undefined) {
+                        // Searchable dropdown - use the selected code
+                        value = element.dataset.selectedCode;
+                    } else {
+                        // Regular input
+                        value = element.value;
+                    }
                     
                     if (value !== '') {
                         if (fieldType === 'integer' || fieldType === 'small-integer') {
@@ -1330,9 +1518,15 @@
         
         function startOver() {
             currentIndex = 0;
+            currentBulkLayerIndex = 0;
             layerConfigs = [];
             currentEditingQueue = [];
+            
+            // Clear all graphics including highlights and polygon
+            clearHighlights();
             clearPolygonSelection();
+            
+            // Reset to selection phase
             setPhase('selection');
             updateStatus("Ready to start over. Draw a polygon to select features.");
         }
