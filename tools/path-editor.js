@@ -31,24 +31,6 @@
         let highlightGraphics = [];
         let editLog = [];
         let sessionStartTime = null;
-        const DAILY_TRACKING_LAYERS = {
-            41050: 'rel_fiber_cable_guid',
-            42050: 'rel_underground_span_guid',
-            42100: 'rel_vault_guid',
-            43150: 'rel_pole_guid',
-            45000: 'rel_equipment_guid',
-            41150: 'rel_splice_closure_guid',
-            41250: 'rel_slackloop_guid',
-            43250: 'rel_anchor_guid',
-            43200: 'rel_riser_guid',
-            41200: 'rel_fiber_equipment_guid',
-            23100: 'rel_adder_line_guid',
-            23250: 'rel_pothole_guid',
-            23150: 'rel_restoration_polygon_guid'
-            
-            
-    // Add other layer IDs as you identify them
-};
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -619,25 +601,7 @@
             body.appendChild(fieldsDiv);
             body.appendChild(optionsDiv);
             body.appendChild(filterDiv);
-
-// Daily Tracking option (for supported layers)
-if (DAILY_TRACKING_LAYERS[layer.layerId]) {
-    const trackingDiv = document.createElement('div');
-    trackingDiv.style.cssText = 'margin-top:8px;padding:8px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:3px;';
-    trackingDiv.innerHTML = `
-        <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">📋 Daily Tracking:</div>
-        <label style="display:block;">
-            <input type="checkbox" id="dailyTracking_${layer.layerId}">
-            <span style="font-size:11px;">Show daily tracking popup for each feature</span>
-        </label>
-        <div style="font-size:10px;color:#666;margin-top:2px;">
-            Displays related daily tracking records when viewing/editing this feature
-        </div>
-    `;
-    body.appendChild(trackingDiv);
-}
-
-body.appendChild(orderDiv);
+            body.appendChild(orderDiv);
             
             section.appendChild(header);
             section.appendChild(body);
@@ -703,28 +667,17 @@ body.appendChild(orderDiv);
                     const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
                     
                     const config = {
-    layerId: layerId,
-    layer: data.layer,
-    features: data.features,
-    mode: mode,
-    order: parseInt(section.dataset.order),
-    showPopup: section.querySelector(`#popup_${layerId}`).checked,
-    allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-    fields: [],
-    filterEnabled: false,
-    filterWhere: '',
-    showDailyTracking: false,
-    dailyTrackingField: null
-};
-
-// Check for daily tracking
-if (DAILY_TRACKING_LAYERS[layerId]) {
-    const dailyTrackingCheck = section.querySelector(`#dailyTracking_${layerId}`);
-    if (dailyTrackingCheck && dailyTrackingCheck.checked) {
-        config.showDailyTracking = true;
-        config.dailyTrackingField = DAILY_TRACKING_LAYERS[layerId];
-    }
-}
+                        layerId: layerId,
+                        layer: data.layer,
+                        features: data.features,
+                        mode: mode,
+                        order: parseInt(section.dataset.order),
+                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
+                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
+                    };
                     
                     // Check for filter
                     const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
@@ -861,19 +814,17 @@ if (DAILY_TRACKING_LAYERS[layerId]) {
             currentEditingQueue = [];
             
             layerConfigs.forEach(config => {
-    config.features.forEach(feature => {
-        currentEditingQueue.push({
-            layer: config.layer,
-            feature: feature,
-            fields: config.fields,
-            mode: config.mode,
-            showPopup: config.showPopup,
-            allowSkip: config.allowSkip,
-            showDailyTracking: config.showDailyTracking,
-            dailyTrackingField: config.dailyTrackingField
-        });
-    });
-});
+                config.features.forEach(feature => {
+                    currentEditingQueue.push({
+                        layer: config.layer,
+                        feature: feature,
+                        fields: config.fields,
+                        mode: config.mode,
+                        showPopup: config.showPopup,
+                        allowSkip: config.allowSkip
+                    });
+                });
+            });
             
             currentIndex = 0;
             setPhase('editing');
@@ -1161,17 +1112,10 @@ if (DAILY_TRACKING_LAYERS[layerId]) {
             $("#prevBtn").disabled = currentIndex === 0;
             $("#skipBtn").style.display = item.allowSkip ? 'block' : 'none';
             
-            /// Highlight feature
-highlightFeature(item.feature, item.showPopup);
-
-// Show daily tracking if enabled
-if (item.showDailyTracking && item.dailyTrackingField) {
-    setTimeout(() => {
-        showDailyTrackingPopup(item.feature, item.dailyTrackingField);
-    }, 800);
-}
-
-updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentIndex + 1} of ${currentEditingQueue.length}`);
+            // Highlight feature
+            highlightFeature(item.feature, item.showPopup);
+            
+            updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentIndex + 1} of ${currentEditingQueue.length}`);
         }
         
         function getObjectIdField(feature) {
@@ -1623,67 +1567,8 @@ updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentI
                 showCurrentFeature();
             }
         }
-        async function showDailyTrackingPopup(feature, relationshipField) {
-    try {
-        const featureGlobalId = feature.attributes.globalid || 
-                               feature.attributes.GlobalID || 
-                               feature.attributes.GLOBALID;
         
-        if (!featureGlobalId) {
-            console.warn("No GlobalID found for feature");
-            return;
-        }
-        
-        let trackingTable = null;
-        
-        if (mapView.map.allTables) {
-            trackingTable = mapView.map.allTables.find(t => 
-                t.title && t.title.toLowerCase().includes('daily tracking')
-            );
-        }
-        
-        if (!trackingTable) {
-            const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-            trackingTable = allFL.find(l => l.layerId === 90100);
-        }
-        
-        if (!trackingTable) {
-            console.warn("Daily Tracking table not found");
-            return;
-        }
-        
-        await trackingTable.load();
-        
-        const cleanGlobalId = featureGlobalId.replace(/[{}]/g, '');
-        
-        let relatedQuery = await trackingTable.queryFeatures({
-            where: `${relationshipField} = '{${cleanGlobalId}}'`,
-            outFields: ['*'],
-            returnGeometry: false
-        });
-        
-        if (relatedQuery.features.length === 0) {
-            relatedQuery = await trackingTable.queryFeatures({
-                where: `${relationshipField} = '${cleanGlobalId}'`,
-                outFields: ['*'],
-                returnGeometry: false
-            });
-        }
-        
-        if (relatedQuery.features.length > 0) {
-            mapView.popup.open({
-                features: relatedQuery.features,
-                location: getPopupLocation(feature.geometry),
-                title: `Daily Tracking (${relatedQuery.features.length} record${relatedQuery.features.length > 1 ? 's' : ''})`
-            });
-        }
-        
-    } catch (error) {
-        console.error("Error loading daily tracking:", error);
-    }
-}
-
-function startOver() {
+        function startOver() {
             currentIndex = 0;
             currentBulkLayerIndex = 0;
             layerConfigs = [];
@@ -1717,17 +1602,16 @@ function startOver() {
                     const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
                     
                     const layerConfig = {
-    layerId: layerId,
-    layerTitle: data.layer.title,
-    mode: mode,
-    order: parseInt(section.dataset.order),
-    showPopup: section.querySelector(`#popup_${layerId}`).checked,
-    allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-    fields: [],
-    filterEnabled: false,
-    filterWhere: '',
-    showDailyTracking: false
-};
+                        layerId: layerId,
+                        layerTitle: data.layer.title,
+                        mode: mode,
+                        order: parseInt(section.dataset.order),
+                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
+                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
+                        fields: [],
+                        filterEnabled: false,
+                        filterWhere: ''
+                    };
                     
                     // Save filter settings
                     const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
@@ -1736,13 +1620,7 @@ function startOver() {
                         layerConfig.filterEnabled = true;
                         layerConfig.filterWhere = filterWhere;
                     }
-                    // Save daily tracking setting
-if (DAILY_TRACKING_LAYERS[layerId]) {
-    const dailyTrackingCheck = section.querySelector(`#dailyTracking_${layerId}`);
-    if (dailyTrackingCheck) {
-        layerConfig.showDailyTracking = dailyTrackingCheck.checked;
-    }
-}
+                    
                     if (mode === 'edit') {
                         const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
                         fieldChecks.forEach(check => {
@@ -1916,13 +1794,6 @@ if (DAILY_TRACKING_LAYERS[layerId]) {
                         filterWhere.value = layerConfig.filterWhere;
                     }
                 }
-                // Set daily tracking setting
-if (DAILY_TRACKING_LAYERS[layerId] && layerConfig.showDailyTracking) {
-    const dailyTrackingCheck = section.querySelector(`#dailyTracking_${layerId}`);
-    if (dailyTrackingCheck) {
-        dailyTrackingCheck.checked = true;
-    }
-}
             }
             
             // Set fields
