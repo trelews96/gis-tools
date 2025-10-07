@@ -274,38 +274,69 @@
                             
                             const labelClasses = [];
                             
-                            // Quantity label
-                            labelClasses.push({
-                                labelExpressionInfo: { expression: qtyExpression },
-                                symbol: {
-                                    type: 'text',
-                                    color: 'red',
-                                    haloSize: 1,
-                                    haloColor: 'white',
-                                    font: {
-                                        size: 16,
-                                        family: 'Arial',
-                                        weight: 'bold'
-                                    }
-                                },
-                                deconflictionStrategy: 'none'
-                            });
+                            // Check if layer has calculated_length field for combined label
+                            const hasLength = layer.fields.some(field => field.name.toLowerCase() === 'calculated_length');
                             
-                            // Length label if available
-                            if (layer.fields.some(field => field.name.toLowerCase() === 'calculated_length')) {
+                            if (hasLength) {
+                                // Quantity label (red) - positioned to the left
+                                const qtyLabelExpression = `"Qty: " + Decode($feature.globalid, ${args.join(',')}, "N/A")`;
+                                
                                 labelClasses.push({
-                                    labelExpressionInfo: { expression: '$feature.calculated_length' },
+                                    labelExpressionInfo: { expression: qtyLabelExpression },
+                                    symbol: {
+                                        type: 'text',
+                                        color: 'red',
+                                        haloSize: 2,
+                                        haloColor: 'white',
+                                        font: {
+                                            size: 12,
+                                            family: 'Arial',
+                                            weight: 'bold'
+                                        },
+                                        xoffset: -30
+                                    },
+                                    deconflictionStrategy: 'none',
+                                    labelPlacement: 'center-center',
+                                    repeatLabel: false
+                                });
+                                
+                                // Length label (blue) - positioned to the right
+                                labelClasses.push({
+                                    labelExpressionInfo: { expression: '"Len: " + $feature.calculated_length' },
                                     symbol: {
                                         type: 'text',
                                         color: 'blue',
+                                        haloSize: 2,
+                                        haloColor: 'white',
+                                        font: {
+                                            size: 12,
+                                            family: 'Arial',
+                                            weight: 'bold'
+                                        },
+                                        xoffset: 30
+                                    },
+                                    deconflictionStrategy: 'none',
+                                    labelPlacement: 'center-center',
+                                    repeatLabel: false
+                                });
+                            } else {
+                                // Quantity only label
+                                labelClasses.push({
+                                    labelExpressionInfo: { expression: qtyExpression },
+                                    symbol: {
+                                        type: 'text',
+                                        color: 'red',
                                         haloSize: 1,
                                         haloColor: 'white',
                                         font: {
-                                            size: 14,
-                                            family: 'Arial'
+                                            size: 12,
+                                            family: 'Arial',
+                                            weight: 'bold'
                                         }
                                     },
-                                    deconflictionStrategy: 'none'
+                                    deconflictionStrategy: 'none',
+                                    labelPlacement: 'center-center',
+                                    repeatLabel: false
                                 });
                             }
                             
