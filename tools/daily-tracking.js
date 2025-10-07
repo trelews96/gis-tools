@@ -33,6 +33,24 @@
             UI_Z_INDEX: 10000
         };
         
+        // Store original layer states
+        const originalLayerStates = new Map();
+        
+        // Capture original layer filters and label settings
+        function captureOriginalStates() {
+            mapView.map.allLayers.filter(l => l.type === 'feature').forEach(layer => {
+                originalLayerStates.set(layer.id, {
+                    definitionExpression: layer.definitionExpression,
+                    labelingInfo: layer.labelingInfo ? JSON.parse(JSON.stringify(layer.labelingInfo)) : null,
+                    labelsVisible: layer.labelsVisible
+                });
+            });
+            console.log(`Captured original states for ${originalLayerStates.size} layers`);
+        }
+        
+        // Capture states when tool opens
+        captureOriginalStates();
+        
         // Create tool UI
         const toolBox = document.createElement("div");
         toolBox.id = "dailyTrackingToolbox";
@@ -102,16 +120,19 @@
         
         function resetFilters() {
             try {
-                updateStatus("Resetting filters...");
+                updateStatus("Restoring original filters...");
                 
                 mapView.map.allLayers.filter(l => l.type === 'feature').forEach(layer => {
-                    layer.definitionExpression = null;
-                    layer.labelingInfo = null;
-                    layer.labelsVisible = false;
+                    const originalState = originalLayerStates.get(layer.id);
+                    if (originalState) {
+                        layer.definitionExpression = originalState.definitionExpression;
+                        layer.labelingInfo = originalState.labelingInfo;
+                        layer.labelsVisible = originalState.labelsVisible;
+                    }
                 });
                 
                 $("#laborSummary").innerHTML = "";
-                updateStatus("Filters reset successfully.");
+                updateStatus("Original filters restored successfully.");
                 
                 setTimeout(() => updateStatus(""), 2000);
             } catch (error) {
@@ -156,7 +177,7 @@
                 $("#runQueryBtn").disabled = true;
                 updateStatus("Loading...");
                 
-                // Reset existing filters
+                // Reset to original filters first
                 resetFilters();
                 
                 // Find Daily Tracking table
@@ -233,8 +254,14 @@
                         if (layerResult.features.length) {
                             const objectIds = layerResult.features.map(f => f.attributes.objectid);
                             
-                            // Apply definition expression
-                            layer.definitionExpression = `objectid IN (${objectIds.join(',')})`;
+                            // Get original definition expression
+                            const originalState = originalLayerStates.get(layer.id);
+                            const originalDef = originalState?.definitionExpression;
+                            
+                            // Combine with original filter if it exists
+                            const newDef = `objectid IN (${objectIds.join(',')})`;
+                            layer.definitionExpression = originalDef ? 
+                                `(${originalDef}) AND (${newDef})` : newDef;
                             
                             // Create quantity label expression
                             const args = [];
@@ -287,8 +314,11 @@
                             
                             return layer;
                         } else {
-                            // No features found, hide layer
-                            layer.definitionExpression = '1=0';
+                            // No features found, apply restrictive filter
+                            const originalState = originalLayerStates.get(layer.id);
+                            const originalDef = originalState?.definitionExpression;
+                            layer.definitionExpression = originalDef ? 
+                                `(${originalDef}) AND (1=0)` : '1=0';
                             return null;
                         }
                     } catch (error) {
@@ -330,15 +360,18 @@
         
         // Tool cleanup function
         function cleanup() {
-            // Reset filters when closing
+            // Restore original filters when closing
             try {
                 mapView.map.allLayers.filter(l => l.type === 'feature').forEach(layer => {
-                    layer.definitionExpression = null;
-                    layer.labelingInfo = null;
-                    layer.labelsVisible = false;
+                    const originalState = originalLayerStates.get(layer.id);
+                    if (originalState) {
+                        layer.definitionExpression = originalState.definitionExpression;
+                        layer.labelingInfo = originalState.labelingInfo;
+                        layer.labelsVisible = originalState.labelsVisible;
+                    }
                 });
             } catch (error) {
-                console.warn("Error resetting filters during cleanup:", error);
+                console.warn("Error restoring filters during cleanup:", error);
             }
             
             toolBox.remove();
