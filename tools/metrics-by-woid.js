@@ -1019,8 +1019,8 @@
             }
             
             // Alert: Low completion (only for longer periods)
-            const periodDays = velocityData ? velocityData.periodDays : 0;
-            const isLongPeriod = periodDays >= 30 || periodDays === 0; // 0 means couldn't determine, likely All Time
+            const calendarDays = velocityData ? velocityData.calendarDays : 0;
+            const isLongPeriod = calendarDays >= 30 || calendarDays === 0; // 0 means couldn't determine, likely All Time
             
             if (designedTotal > 0 && isLongPeriod) {
                 const completionPct = (constructedTotal / designedTotal) * 100;
@@ -1238,13 +1238,19 @@
                 // Velocity section
                 let velocityHTML = '';
                 if (velocityData) {
+                    // Calculate total production days across all layers
+                    const totalProductionDays = Math.max(...velocityData.layerVelocities.map(lv => lv.productionDays || 0));
+                    
                     // Build period info
                     let periodInfo = '';
-                    if (velocityData.periodDays > 0) {
+                    if (velocityData.calendarDays > 0) {
                         if (velocityData.periodStart && velocityData.periodEnd) {
-                            periodInfo = ` (${velocityData.periodStart} to ${velocityData.periodEnd}, ${velocityData.periodDays} days)`;
+                            periodInfo = ` (${velocityData.periodStart} to ${velocityData.periodEnd})`;
+                            if (totalProductionDays > 0) {
+                                periodInfo += `<br><span style="font-size:10px;font-weight:normal;color:#666;">${totalProductionDays} production days out of ${velocityData.calendarDays} calendar days</span>`;
+                            }
                         } else {
-                            periodInfo = ` (${velocityData.periodDays} days)`;
+                            periodInfo = ` (${velocityData.calendarDays} calendar days)`;
                         }
                     }
                     
@@ -1266,7 +1272,7 @@
                     
                     velocityTableHTML += `
                             </div>
-                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;padding-top:8px;border-top:1px solid #d0d5dd;font-size:11px;">
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px;padding-top:8px;border-top:1px solid #d0d5dd;font-size:11px;">
                                 <div>
                                     <strong>Last Activity:</strong><br>
                                     ${velocityData.daysSinceLastInstall} days ago (${velocityData.lastInstallDate})
@@ -1277,6 +1283,9 @@
                                     ${velocityData.estimatedCompletion}
                                 </div>
                                 ` : ''}
+                            </div>
+                            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #d0d5dd;font-size:10px;color:#666;font-style:italic;">
+                                ℹ️ Run rates show actual daily output (total / days worked), not diluted by weekends or non-production days
                             </div>
                         </div>
                     `;
@@ -1458,7 +1467,7 @@
         // Make sortTable global
         window.sortTable = sortTable;
         
-        // Calculate velocity metrics per layer
+        // Calculate velocity metrics per layer using actual production days
         async function calculateVelocity(startDate, endDate, allTimeMode) {
             try {
                 const filterClause = buildFilterClause();
@@ -1514,21 +1523,31 @@
                     }
                 }
                 
-                // Calculate days for velocity
-                let days = 1;
+                // Calculate calendar days for display
+                let calendarDays = 1;
                 let effectiveStartDate = startDate;
                 let effectiveEndDate = endDate;
                 
                 if (allTimeMode && earliestInstallDate) {
-                    // Use earliest install date to today for All Time mode
                     effectiveStartDate = formatDateForInput(earliestInstallDate);
                     effectiveEndDate = formatDateForInput(new Date());
-                    days = daysBetween(earliestInstallDate, new Date()) + 1;
+                    calendarDays = daysBetween(earliestInstallDate, new Date()) + 1;
                 } else if (!allTimeMode && startDate && endDate) {
-                    days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
+                    calendarDays = daysBetween(new Date(startDate), new Date(endDate)) + 1;
                 }
                 
-                // Calculate per-layer velocity and billing lag
+                // Build date clause for queries
+                let dateClause = "";
+                if (allTimeMode && earliestInstallDate) {
+                    const endLit = `TIMESTAMP '${effectiveEndDate} 23:59:59'`;
+                    dateClause = ` AND installation_date <= ${endLit}`;
+                } else if (!allTimeMode && startDate && endDate) {
+                    const startLit = `TIMESTAMP '${startDate} 00:00:00'`;
+                    const endLit = `TIMESTAMP '${endDate} 23:59:59'`;
+                    dateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+                }
+                
+                // Calculate per-layer velocity using actual production days
                 const layerVelocities = [];
                 const layerBillingLags = [];
                 
@@ -1538,24 +1557,77 @@
                 const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
                 
                 if (designedRow && constructedRow) {
-                    targetLayers.forEach((layer, idx) => {
+                    // Query each layer for production days
+                    for (let idx = 0; idx < targetLayers.length; idx++) {
+                        const targetLayer = targetLayers[idx];
+                        const layer = allFL.find(l => l.layerId === targetLayer.id);
+                        
                         const designed = designedRow.rawValues[idx] || 0;
                         const constructed = constructedRow.rawValues[idx] || 0;
                         const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
                         const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
                         
-                        // Construction velocity
                         let velocity = 0;
-                        if (days > 0 && constructed > 0) {
-                            velocity = (constructed / days).toFixed(2);
+                        let productionDays = 0;
+                        
+                        if (layer && constructed > 0 && dateClause) {
+                            try {
+                                await layer.load();
+                                
+                                // Build query for constructed features in period
+                                const constructedStatuses = ['CMPLT', 'QCINPROG', 'QCCMPLT', 'INVCMPLT', 'RDYFDLY'];
+                                const statusClause = constructedStatuses.map(s => `workflow_status = '${s}'`).join(' OR ');
+                                
+                                let additionalFilter = "";
+                                if (targetLayer.additionalFilter) {
+                                    additionalFilter = ` AND ${targetLayer.additionalFilter}`;
+                                }
+                                
+                                const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
+                                
+                                // Query all features with installation dates
+                                const featuresQuery = await layer.queryFeatures({
+                                    where: whereClause,
+                                    outFields: ["installation_date", targetLayer.field],
+                                    returnGeometry: false
+                                });
+                                
+                                if (featuresQuery.features.length > 0) {
+                                    // Get unique installation dates
+                                    const uniqueDates = new Set();
+                                    
+                                    featuresQuery.features.forEach(feature => {
+                                        const installDate = feature.attributes.installation_date;
+                                        if (installDate) {
+                                            // Normalize to date only (remove time)
+                                            const dateOnly = new Date(installDate).toDateString();
+                                            uniqueDates.add(dateOnly);
+                                        }
+                                    });
+                                    
+                                    productionDays = uniqueDates.size;
+                                    
+                                    if (productionDays > 0) {
+                                        velocity = (constructed / productionDays).toFixed(2);
+                                    }
+                                }
+                            } catch (err) {
+                                console.error(`Error querying production days for ${targetLayer.name}:`, err);
+                            }
                         }
                         
-                        const unit = layer.metric === "sum" ? "ft/day" : "units/day";
+                        const unit = targetLayer.metric === "sum" ? "ft/day" : "units/day";
+                        
+                        let velocityDisplay = "No activity in period";
+                        if (velocity > 0 && productionDays > 0) {
+                            velocityDisplay = `${velocity} ${unit} (${productionDays} production days)`;
+                        }
                         
                         layerVelocities.push({
-                            name: layer.name,
-                            velocity: velocity > 0 ? `${velocity} ${unit}` : "No activity in period",
-                            rawVelocity: parseFloat(velocity)
+                            name: targetLayer.name,
+                            velocity: velocityDisplay,
+                            rawVelocity: parseFloat(velocity),
+                            productionDays: productionDays
                         });
                         
                         // Billing lag calculation - compare against CONSTRUCTED (not each other)
@@ -1567,7 +1639,7 @@
                             const dailyCompletePct = dailyComplete > 0 ? ((dailyComplete / constructed) * 100).toFixed(1) : 0;
                             
                             if (dailyCompleteGap > 0) {
-                                const gapFormatted = layer.metric === "sum" ? 
+                                const gapFormatted = targetLayer.metric === "sum" ? 
                                     `${Math.round(dailyCompleteGap)} ft` : 
                                     `${Math.round(dailyCompleteGap)} units`;
                                 const gapPct = ((dailyCompleteGap / constructed) * 100).toFixed(1);
@@ -1581,7 +1653,7 @@
                             const invoicedPct = invoiced > 0 ? ((invoiced / constructed) * 100).toFixed(1) : 0;
                             
                             if (invoiceGap > 0) {
-                                const gapFormatted = layer.metric === "sum" ? 
+                                const gapFormatted = targetLayer.metric === "sum" ? 
                                     `${Math.round(invoiceGap)} ft` : 
                                     `${Math.round(invoiceGap)} units`;
                                 const gapPct = ((invoiceGap / constructed) * 100).toFixed(1);
@@ -1592,16 +1664,16 @@
                         }
                         
                         layerBillingLags.push({
-                            name: layer.name,
+                            name: targetLayer.name,
                             dailyCompleteLag: dailyCompleteLag,
                             invoiceLag: invoiceLag
                         });
-                    });
+                    }
                 }
                 
                 // Calculate weighted estimated completion
                 let estimatedCompletion = null;
-                if (designedRow && constructedRow && days > 0) {
+                if (designedRow && constructedRow) {
                     let weightedVelocity = 0;
                     let totalRemaining = 0;
                     let hasActiveVelocity = false;
@@ -1620,10 +1692,13 @@
                     });
                     
                     if (hasActiveVelocity && weightedVelocity > 0 && totalRemaining > 0) {
-                        const daysToComplete = Math.ceil(totalRemaining / weightedVelocity);
+                        const productionDaysNeeded = Math.ceil(totalRemaining / weightedVelocity);
+                        
+                        // Assume 5 production days per week (Mon-Fri)
+                        const calendarDaysNeeded = Math.ceil(productionDaysNeeded * 1.4); // 7/5 ratio
                         const completionDate = new Date();
-                        completionDate.setDate(completionDate.getDate() + daysToComplete);
-                        estimatedCompletion = `${daysToComplete} days (${completionDate.toLocaleDateString()})`;
+                        completionDate.setDate(completionDate.getDate() + calendarDaysNeeded);
+                        estimatedCompletion = `${productionDaysNeeded} production days (~${calendarDaysNeeded} calendar days, ${completionDate.toLocaleDateString()})`;
                     }
                 }
                 
@@ -1633,7 +1708,7 @@
                     daysSinceLastInstall,
                     lastInstallDate,
                     estimatedCompletion,
-                    periodDays: days,
+                    calendarDays: calendarDays,
                     periodStart: effectiveStartDate,
                     periodEnd: effectiveEndDate
                 };
