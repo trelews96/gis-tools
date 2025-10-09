@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Week 1 Improvements
+// tools/metrics-by-woid.js - Week 2 Core Metrics
 // Layer Metrics Report with Purchase Order and Work Order filtering
 
 (function() {
@@ -45,6 +45,7 @@
         let sortColumn = null;
         let sortDirection = 'asc';
         let isProcessing = false;
+        let showPercentages = false;
         
         // CSS Spinner keyframes
         const spinnerStyle = document.createElement('style');
@@ -80,6 +81,20 @@
             .sort-indicator {
                 font-size: 10px;
                 margin-left: 4px;
+            }
+            .completion-bar {
+                display: inline-block;
+                height: 12px;
+                background: #e0e0e0;
+                border-radius: 6px;
+                overflow: hidden;
+                width: 60px;
+                vertical-align: middle;
+                margin-left: 8px;
+            }
+            .completion-fill {
+                height: 100%;
+                transition: width 0.3s ease;
             }
         `;
         document.head.appendChild(spinnerStyle);
@@ -155,11 +170,18 @@
                 </div>
             </div>
             
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
                 <button id="runBtn">▶ Run Report</button>
                 <button id="exportBtn" style="display:none;">📥 Export CSV</button>
                 <button id="clearBtn" style="display:none;">🔄 Clear Filters</button>
                 <button id="closeTool">✖ Close</button>
+            </div>
+            
+            <div style="display:none;" id="viewOptions">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="showPercentToggle">
+                    <span>Show as % of Total Assigned</span>
+                </label>
             </div>
             
             <div id="toolStatus" style="margin-top:8px;padding:6px;border-radius:3px;"></div>
@@ -199,6 +221,12 @@
             const icon = icons[type] || icons.info;
             status.textContent = `${icon} ${message}`;
         }
+        
+        // Show percentage toggle handler
+        $("#showPercentToggle").onchange = (e) => {
+            showPercentages = e.target.checked;
+            renderTable();
+        };
         
         // Date preset handlers
         function setDateRange(startDate, endDate) {
@@ -563,10 +591,19 @@
         $("#exportBtn").onclick = () => {
             if (!currentTableData.length) return alert("No data to export");
             
-            const csvRows = [["Category", ...targetLayers.map(l => l.name)]];
+            const headers = ["Category", ...targetLayers.map(l => l.name)];
+            if (!showPercentages) {
+                headers.push("% Complete");
+            }
+            const csvRows = [headers];
+            
             currentTableData.forEach(row => {
-                if (row.category !== 'TOTALS') { // Skip totals row in export or include it based on preference
-                    csvRows.push([csvEsc(row.category), ...row.values.map(v => csvEsc(v))]);
+                if (row.category !== 'TOTALS') {
+                    const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
+                    if (!showPercentages && row.percentComplete !== undefined) {
+                        rowData.push(csvEsc(row.percentComplete));
+                    }
+                    csvRows.push(rowData);
                 }
             });
             
@@ -679,11 +716,18 @@
                     const comparison = a.category.localeCompare(b.category);
                     return sortDirection === 'asc' ? comparison : -comparison;
                 });
+            } else if (columnIndex === -2) {
+                // Sort by % Complete
+                dataRows.sort((a, b) => {
+                    const aVal = a.percentCompleteRaw || 0;
+                    const bVal = b.percentCompleteRaw || 0;
+                    return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+                });
             } else {
                 // Sort by numeric value
                 dataRows.sort((a, b) => {
-                    const aVal = parseFloat(a.values[columnIndex].replace(/,/g, '')) || 0;
-                    const bVal = parseFloat(b.values[columnIndex].replace(/,/g, '')) || 0;
+                    const aVal = parseFloat(a.values[columnIndex].replace(/[,%]/g, '')) || 0;
+                    const bVal = parseFloat(b.values[columnIndex].replace(/[,%]/g, '')) || 0;
                     return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
                 });
             }
@@ -696,6 +740,13 @@
             
             // Redraw table
             renderTable();
+        }
+        
+        // Get completion bar color
+        function getCompletionColor(percent) {
+            if (percent >= 80) return '#4caf50'; // Green
+            if (percent >= 50) return '#ff9800'; // Orange
+            return '#f44336'; // Red
         }
         
         // Render table function
@@ -725,6 +776,15 @@
                 tableHTML += `</th>`;
             });
             
+            // % Complete column (only when not showing percentages)
+            if (!showPercentages) {
+                tableHTML += `<th class="sortable-header" onclick="sortTable(-2)" style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;">% Complete`;
+                if (sortColumn === -2) {
+                    tableHTML += `<span class="sort-indicator">${sortDirection === 'asc' ? '▲' : '▼'}</span>`;
+                }
+                tableHTML += `</th>`;
+            }
+            
             tableHTML += `</tr></thead><tbody>`;
             
             // Data rows
@@ -745,6 +805,19 @@
                     const cellStyle = row.error ? "color:#d32f2f;" : "";
                     tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${value}</td>`;
                 });
+                
+                // Add % Complete column (only for non-TOTALS rows and when not in percentage mode)
+                if (!isTotals && !showPercentages && row.percentComplete !== undefined) {
+                    const color = getCompletionColor(row.percentCompleteRaw);
+                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;">
+                        ${row.percentComplete}
+                        <div class="completion-bar">
+                            <div class="completion-fill" style="width:${row.percentCompleteRaw}%;background:${color};"></div>
+                        </div>
+                    </td>`;
+                } else if (isTotals && !showPercentages) {
+                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;"></td>`;
+                }
                 
                 tableHTML += `</tr>`;
             });
@@ -805,10 +878,12 @@
                 }
                 
                 const categories = [
+                    {name: "Total Assigned", excludeStatuses: []}, // Gets everything
                     {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
                     {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
-                    {name: "Left to Build", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
-                    {name: "Missing Billing", includeStatuses: ['RDYFDLY']}
+                    {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
+                    {name: "On Hold", includeStatuses: ['ONHOLD']},
+                    {name: "Ready to Bill", includeStatuses: ['RDYFDLY']}
                 ];
                 
                 const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
@@ -865,10 +940,15 @@
                             await layer.load();
                             
                             let statusClause;
-                            if (category.includeStatuses) {
+                            if (category.name === "Total Assigned") {
+                                // Get everything for Total Assigned
+                                statusClause = "1=1";
+                            } else if (category.includeStatuses) {
                                 statusClause = category.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
-                            } else if (category.excludeStatuses) {
+                            } else if (category.excludeStatuses && category.excludeStatuses.length > 0) {
                                 statusClause = category.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
+                            } else {
+                                statusClause = "1=1";
                             }
                             
                             if (category.requireStage) {
@@ -923,37 +1003,89 @@
                     results.push(categoryResults);
                 }
                 
-                // Build results table data
+                // Build results table data with percentage calculations
                 currentTableData = [];
                 const totals = new Array(targetLayers.length).fill(0);
                 
+                // Get Total Assigned row for percentage calculations
+                const totalAssignedResult = results.find(r => r.name === "Total Assigned");
+                const designedResult = results.find(r => r.name === "Designed");
+                const constructedResult = results.find(r => r.name === "Constructed");
+                
                 results.forEach(categoryResult => {
                     const rowValues = [];
+                    const rawValues = [];
                     
                     categoryResult.layers.forEach((layerResult, idx) => {
-                        const valueDisplay = layerResult.error ? layerResult.value : 
-                            (layerResult.metric === "sum" ? layerResult.value.toLocaleString() : layerResult.value.toLocaleString());
-                        rowValues.push(valueDisplay);
+                        let valueDisplay;
+                        let rawValue = 0;
                         
-                        // Add to totals if not error
-                        if (!layerResult.error) {
-                            totals[idx] += layerResult.value;
+                        if (layerResult.error) {
+                            valueDisplay = layerResult.value;
+                        } else {
+                            rawValue = layerResult.value;
+                            
+                            if (showPercentages && totalAssignedResult) {
+                                // Show as percentage of Total Assigned
+                                const totalValue = totalAssignedResult.layers[idx].value;
+                                const percentage = totalValue > 0 ? (rawValue / totalValue * 100) : 0;
+                                valueDisplay = percentage.toFixed(1) + '%';
+                            } else {
+                                // Show actual values
+                                valueDisplay = layerResult.metric === "sum" ? 
+                                    layerResult.value.toLocaleString() : 
+                                    layerResult.value.toLocaleString();
+                            }
+                            
+                            // Add to totals if not error and not in percentage mode
+                            if (!showPercentages) {
+                                totals[idx] += layerResult.value;
+                            }
                         }
+                        
+                        rowValues.push(valueDisplay);
+                        rawValues.push(rawValue);
                     });
+                    
+                    // Calculate % Complete (Constructed / Designed)
+                    let percentComplete = "N/A";
+                    let percentCompleteRaw = 0;
+                    
+                    if (categoryResult.name === "Designed" || categoryResult.name === "Constructed") {
+                        // Calculate completion percentage
+                        const designedValues = designedResult.layers.map(l => l.value);
+                        const constructedValues = constructedResult.layers.map(l => l.value);
+                        
+                        const totalDesigned = designedValues.reduce((sum, val) => sum + val, 0);
+                        const totalConstructed = constructedValues.reduce((sum, val) => sum + val, 0);
+                        
+                        if (totalDesigned > 0) {
+                            percentCompleteRaw = (totalConstructed / totalDesigned) * 100;
+                            percentComplete = percentCompleteRaw.toFixed(1) + '%';
+                        }
+                    }
                     
                     currentTableData.push({
                         category: categoryResult.name, 
                         values: rowValues,
-                        categoryData: categoryResult.categoryData
+                        rawValues: rawValues,
+                        categoryData: categoryResult.categoryData,
+                        percentComplete: percentComplete,
+                        percentCompleteRaw: percentCompleteRaw
                     });
                 });
                 
-                // Add totals row
-                const totalsRow = {
-                    category: 'TOTALS',
-                    values: totals.map(total => total.toLocaleString())
-                };
-                currentTableData.push(totalsRow);
+                // Add totals row (only when not in percentage mode)
+                if (!showPercentages) {
+                    const totalsRow = {
+                        category: 'TOTALS',
+                        values: totals.map(total => total.toLocaleString())
+                    };
+                    currentTableData.push(totalsRow);
+                }
+                
+                // Show view options
+                $("#viewOptions").style.display = "block";
                 
                 // Render table
                 renderTable();
@@ -1034,7 +1166,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully (Week 1 Enhanced)');
+        console.log('Metrics By WOID Tool loaded successfully (Week 2 Core Metrics)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
