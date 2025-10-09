@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Week 3 Comparison Mode
+// tools/metrics-by-woid.js - Week 4 Analytics & Insights
 // Layer Metrics Report with Purchase Order and Work Order filtering
 
 (function() {
@@ -44,6 +44,7 @@
         let currentTableData = [];
         let period1Data = [];
         let period2Data = [];
+        let velocityData = null;
         let sortColumn = null;
         let sortDirection = 'asc';
         let isProcessing = false;
@@ -115,6 +116,40 @@
             }
             .variance-neutral {
                 color: #666;
+            }
+            .alert-box {
+                padding: 10px 12px;
+                border-radius: 4px;
+                margin-bottom: 8px;
+                display: flex;
+                align-items: start;
+                gap: 8px;
+            }
+            .alert-critical {
+                background: #ffebee;
+                border-left: 4px solid #c62828;
+            }
+            .alert-warning {
+                background: #fff3e0;
+                border-left: 4px solid #f57c00;
+            }
+            .alert-info {
+                background: #e3f2fd;
+                border-left: 4px solid #1976d2;
+            }
+            .alert-icon {
+                font-size: 18px;
+                line-height: 1;
+            }
+            .alert-content {
+                flex: 1;
+            }
+            .alert-title {
+                font-weight: bold;
+                margin-bottom: 2px;
+            }
+            .alert-message {
+                font-size: 11px;
             }
         `;
         document.head.appendChild(spinnerStyle);
@@ -247,6 +282,7 @@
             </div>
             
             <div id="toolStatus" style="margin-top:8px;padding:6px;border-radius:3px;"></div>
+            <div id="alertsSection" style="display:none;margin-top:12px;"></div>
             <div id="summarySection" style="display:none;margin-top:12px;padding:12px;background:#f5f7fa;border:1px solid #d0d5dd;border-radius:4px;"></div>
             <div id="resultsTable" style="margin-top:12px;"></div>
         `;
@@ -851,6 +887,150 @@
             return `<span class="${className}">${arrow} ${formatted}</span>`;
         }
         
+        // Calculate days between dates
+        function daysBetween(date1, date2) {
+            const oneDay = 24 * 60 * 60 * 1000;
+            return Math.round((date2 - date1) / oneDay);
+        }
+        
+        // Analyze data and generate alerts
+        function generateAlerts() {
+            const alerts = [];
+            
+            if (!currentTableData.length || comparisonMode) return alerts;
+            
+            const designedRow = currentTableData.find(r => r.category === "Designed");
+            const constructedRow = currentTableData.find(r => r.category === "Constructed");
+            const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
+            const onHoldRow = currentTableData.find(r => r.category === "On Hold");
+            const readyForDailyRow = currentTableData.find(r => r.category === "Ready for Daily");
+            const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+            
+            if (!designedRow || !constructedRow) return alerts;
+            
+            // Calculate totals
+            let designedTotal = 0, constructedTotal = 0, dailyCompleteTotal = 0, onHoldTotal = 0, readyForDailyTotal = 0, invoicedTotal = 0;
+            
+            designedRow.rawValues.forEach((val, idx) => { designedTotal += val; });
+            constructedRow.rawValues.forEach((val, idx) => { constructedTotal += val; });
+            if (dailyCompleteRow) dailyCompleteRow.rawValues.forEach((val, idx) => { dailyCompleteTotal += val; });
+            if (onHoldRow) onHoldRow.rawValues.forEach((val, idx) => { onHoldTotal += val; });
+            if (readyForDailyRow) readyForDailyRow.rawValues.forEach((val, idx) => { readyForDailyTotal += val; });
+            if (invoicedRow) invoicedRow.rawValues.forEach((val, idx) => { invoicedTotal += val; });
+            
+            // Alert: Data quality issue (Constructed > Designed)
+            if (constructedTotal > designedTotal) {
+                alerts.push({
+                    type: 'critical',
+                    icon: '🚨',
+                    title: 'Data Quality Issue',
+                    message: `Constructed (${constructedTotal.toLocaleString()}) exceeds Designed (${designedTotal.toLocaleString()}). Please verify data accuracy.`
+                });
+            }
+            
+            // Alert: High % on hold
+            if (designedTotal > 0) {
+                const onHoldPct = (onHoldTotal / designedTotal) * 100;
+                if (onHoldPct > 20) {
+                    alerts.push({
+                        type: 'warning',
+                        icon: '⚠️',
+                        title: 'High Volume On Hold',
+                        message: `${onHoldPct.toFixed(1)}% of designed work is on hold. Consider reviewing blocked items.`
+                    });
+                }
+            }
+            
+            // Alert: Large billing lag
+            if (constructedTotal > 0 && dailyCompleteTotal > 0) {
+                const billingGap = constructedTotal - dailyCompleteTotal;
+                const gapPct = (billingGap / constructedTotal) * 100;
+                if (gapPct > 25) {
+                    alerts.push({
+                        type: 'warning',
+                        icon: '📋',
+                        title: 'Billing Lag Detected',
+                        message: `${billingGap.toLocaleString()} units constructed but not marked Daily Complete (${gapPct.toFixed(1)}%). Consider submitting for billing.`
+                    });
+                }
+            }
+            
+            // Alert: Ready for Daily stuck
+            if (readyForDailyTotal > 0 && invoicedTotal > 0) {
+                const stuckPct = (readyForDailyTotal / (readyForDailyTotal + invoicedTotal)) * 100;
+                if (stuckPct > 40) {
+                    alerts.push({
+                        type: 'info',
+                        icon: '💰',
+                        title: 'Invoice Opportunity',
+                        message: `${readyForDailyTotal.toLocaleString()} units ready for daily submission. Consider processing invoices.`
+                    });
+                }
+            }
+            
+            // Alert: Low completion
+            if (designedTotal > 0) {
+                const completionPct = (constructedTotal / designedTotal) * 100;
+                if (completionPct < 10 && constructedTotal > 0) {
+                    alerts.push({
+                        type: 'info',
+                        icon: 'ℹ️',
+                        title: 'Project Early Stage',
+                        message: `Only ${completionPct.toFixed(1)}% constructed. Project is in early stages.`
+                    });
+                }
+            }
+            
+            // Alert: No activity (if velocity data available)
+            if (velocityData && velocityData.daysSinceLastInstall > 30) {
+                alerts.push({
+                    type: 'warning',
+                    icon: '⏸️',
+                    title: 'No Recent Activity',
+                    message: `No construction activity in ${velocityData.daysSinceLastInstall} days. Last install: ${velocityData.lastInstallDate}.`
+                });
+            } else if (velocityData && velocityData.daysSinceLastInstall > 14) {
+                alerts.push({
+                    type: 'info',
+                    icon: '📅',
+                    title: 'Low Activity',
+                    message: `${velocityData.daysSinceLastInstall} days since last installation. Last activity: ${velocityData.lastInstallDate}.`
+                });
+            }
+            
+            return alerts;
+        }
+        
+        // Render alerts section
+        function renderAlerts() {
+            const alertsSection = $("#alertsSection");
+            const alerts = generateAlerts();
+            
+            if (!alerts.length) {
+                alertsSection.style.display = "none";
+                return;
+            }
+            
+            const alertsHTML = alerts.map(alert => {
+                let alertClass = 'alert-info';
+                if (alert.type === 'critical') alertClass = 'alert-critical';
+                else if (alert.type === 'warning') alertClass = 'alert-warning';
+                
+                return `
+                    <div class="alert-box ${alertClass}">
+                        <div class="alert-icon">${alert.icon}</div>
+                        <div class="alert-content">
+                            <div class="alert-title">${alert.title}</div>
+                            <div class="alert-message">${alert.message}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            alertsSection.innerHTML = alertsHTML;
+            alertsSection.style.display = "block";
+        }
+        
         // Render summary section
         function renderSummary() {
             const summarySection = $("#summarySection");
@@ -948,7 +1128,7 @@
                 `;
                 
             } else {
-                // Single period summary
+                // Single period summary with velocity metrics
                 const designedRow = currentTableData.find(r => r.category === "Designed");
                 const constructedRow = currentTableData.find(r => r.category === "Constructed");
                 const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
@@ -985,6 +1165,36 @@
                 const billingColor = getCompletionColor(weightedBillingComplete);
                 const invoicedColor = getCompletionColor(weightedInvoiced);
                 
+                // Velocity section
+                let velocityHTML = '';
+                if (velocityData) {
+                    velocityHTML = `
+                        <div style="margin-top:12px;padding:8px;background:#f0f4ff;border-radius:4px;">
+                            <div style="font-weight:bold;margin-bottom:6px;">📈 Velocity Metrics</div>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:11px;">
+                                <div>
+                                    <strong>Construction Rate:</strong><br>
+                                    ${velocityData.constructionVelocity} units/day
+                                </div>
+                                <div>
+                                    <strong>Days Since Last Install:</strong><br>
+                                    ${velocityData.daysSinceLastInstall} days (${velocityData.lastInstallDate})
+                                </div>
+                                ${velocityData.estimatedCompletion ? `
+                                <div>
+                                    <strong>Est. Completion:</strong><br>
+                                    ${velocityData.estimatedCompletion}
+                                </div>
+                                ` : ''}
+                                <div>
+                                    <strong>Billing Lag:</strong><br>
+                                    ${velocityData.billingLagDays} days avg
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
                 summarySection.innerHTML = `
                     <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Project Summary</div>
                     <div style="display:flex;gap:16px;flex-wrap:wrap;">
@@ -1013,6 +1223,7 @@
                             <div style="font-size:10px;color:#666;margin-top:4px;">Invoiced to customer</div>
                         </div>
                     </div>
+                    ${velocityHTML}
                     <div style="margin-top:12px;font-size:11px;color:#666;">
                         <strong>Layer Weights:</strong> 
                         Foundation (25%): UG Span 10%, Aerial Span 10%, Vaults 5% | 
@@ -1120,6 +1331,97 @@
         
         // Make sortTable global
         window.sortTable = sortTable;
+        
+        // Calculate velocity metrics
+        async function calculateVelocity(startDate, endDate, allTimeMode) {
+            try {
+                const filterClause = buildFilterClause();
+                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                const fiberLayer = allFL.find(l => l.layerId === 41050); // Use fiber cable as reference
+                
+                if (!fiberLayer) return null;
+                
+                await fiberLayer.load();
+                
+                // Get most recent installation date
+                const recentQuery = await fiberLayer.queryFeatures({
+                    where: `(${filterClause}) AND installation_date IS NOT NULL`,
+                    outFields: ["installation_date"],
+                    orderByFields: ["installation_date DESC"],
+                    num: 1,
+                    returnGeometry: false
+                });
+                
+                let lastInstallDate = "N/A";
+                let daysSinceLastInstall = 0;
+                
+                if (recentQuery.features.length > 0) {
+                    const lastDate = new Date(recentQuery.features[0].attributes.installation_date);
+                    const today = new Date();
+                    daysSinceLastInstall = daysBetween(lastDate, today);
+                    lastInstallDate = lastDate.toLocaleDateString();
+                }
+                
+                // Calculate construction velocity (if date range provided)
+                let constructionVelocity = 0;
+                let estimatedCompletion = null;
+                
+                if (!allTimeMode && startDate && endDate) {
+                    const days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
+                    
+                    const designedRow = currentTableData.find(r => r.category === "Designed");
+                    const constructedRow = currentTableData.find(r => r.category === "Constructed");
+                    
+                    if (designedRow && constructedRow) {
+                        let totalDesigned = 0, totalConstructed = 0;
+                        designedRow.rawValues.forEach(v => totalDesigned += v);
+                        constructedRow.rawValues.forEach(v => totalConstructed += v);
+                        
+                        if (days > 0) {
+                            constructionVelocity = (totalConstructed / days).toFixed(1);
+                            
+                            // Estimate completion
+                            const remaining = totalDesigned - totalConstructed;
+                            if (constructionVelocity > 0) {
+                                const daysToComplete = Math.ceil(remaining / constructionVelocity);
+                                const completionDate = new Date();
+                                completionDate.setDate(completionDate.getDate() + daysToComplete);
+                                estimatedCompletion = `${daysToComplete} days (${completionDate.toLocaleDateString()})`;
+                            }
+                        }
+                    }
+                }
+                
+                // Calculate billing lag (average days from constructed to invoiced)
+                const constructedRow = currentTableData.find(r => r.category === "Constructed");
+                const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+                let billingLagDays = 0;
+                
+                if (constructedRow && invoicedRow) {
+                    let totalConstructed = 0, totalInvoiced = 0;
+                    constructedRow.rawValues.forEach(v => totalConstructed += v);
+                    invoicedRow.rawValues.forEach(v => totalInvoiced += v);
+                    
+                    if (totalConstructed > 0) {
+                        const invoicedPct = totalInvoiced / totalConstructed;
+                        // Rough estimate: if 50% invoiced, assume ~15 day lag
+                        billingLagDays = Math.round((1 - invoicedPct) * 30);
+                    }
+                }
+                
+                return {
+                    constructionVelocity,
+                    daysSinceLastInstall,
+                    lastInstallDate,
+                    estimatedCompletion,
+                    billingLagDays
+                };
+                
+            } catch (error) {
+                console.error("Error calculating velocity:", error);
+                return null;
+            }
+        }
         
         // Query function for a single period
         async function queryPeriod(startDate, endDate, allTimeMode, isComparison = false) {
@@ -1358,6 +1660,7 @@
                         });
                     });
                     
+                    velocityData = null; // No velocity in comparison mode
                     updateStatus(`Comparison completed: Period 1 vs Period 2`, "success");
                     
                 } else {
@@ -1383,6 +1686,9 @@
                     
                     currentTableData = await queryPeriod(s, e, allTimeMode, false);
                     
+                    // Calculate velocity metrics
+                    velocityData = await calculateVelocity(s, e, allTimeMode);
+                    
                     // Add totals row
                     const totals = new Array(targetLayers.length).fill(0);
                     currentTableData.forEach(row => {
@@ -1401,6 +1707,7 @@
                 
                 // Show view options and render
                 $("#viewOptions").style.display = "block";
+                renderAlerts();
                 renderSummary();
                 renderTable();
                 $("#exportBtn").style.display = "inline-block";
@@ -1478,7 +1785,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully (Week 3 Comparison Mode)');
+        console.log('Metrics By WOID Tool loaded successfully (Week 4 Analytics)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
