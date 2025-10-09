@@ -1585,6 +1585,8 @@
                                 
                                 const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
                                 
+                                console.log(`Querying ${targetLayer.name} for production days...`);
+                                
                                 // Query all features with installation dates
                                 const featuresQuery = await layer.queryFeatures({
                                     where: whereClause,
@@ -1592,20 +1594,41 @@
                                     returnGeometry: false
                                 });
                                 
+                                console.log(`${targetLayer.name}: Found ${featuresQuery.features.length} features`);
+                                
                                 if (featuresQuery.features.length > 0) {
                                     // Get unique installation dates
                                     const uniqueDates = new Set();
+                                    let totalForLayer = 0;
                                     
                                     featuresQuery.features.forEach(feature => {
                                         const installDate = feature.attributes.installation_date;
+                                        const fieldValue = feature.attributes[targetLayer.field];
+                                        
                                         if (installDate) {
-                                            // Normalize to date only (remove time)
-                                            const dateOnly = new Date(installDate).toDateString();
-                                            uniqueDates.add(dateOnly);
+                                            // Normalize to YYYY-MM-DD format to ensure proper grouping
+                                            const date = new Date(installDate);
+                                            const year = date.getFullYear();
+                                            const month = String(date.getMonth() + 1).padStart(2, '0');
+                                            const day = String(date.getDate()).padStart(2, '0');
+                                            const dateKey = `${year}-${month}-${day}`;
+                                            
+                                            uniqueDates.add(dateKey);
+                                        }
+                                        
+                                        // Sum up totals for verification
+                                        if (targetLayer.metric === "sum" && fieldValue) {
+                                            totalForLayer += Number(fieldValue) || 0;
+                                        } else if (targetLayer.metric === "count") {
+                                            totalForLayer += 1;
                                         }
                                     });
                                     
                                     productionDays = uniqueDates.size;
+                                    
+                                    console.log(`${targetLayer.name}: ${productionDays} unique production days`);
+                                    console.log(`${targetLayer.name}: Total from query: ${totalForLayer.toFixed(2)}, Constructed from table: ${constructed}`);
+                                    console.log(`${targetLayer.name}: Unique dates:`, Array.from(uniqueDates).sort());
                                     
                                     if (productionDays > 0) {
                                         velocity = (constructed / productionDays).toFixed(2);
