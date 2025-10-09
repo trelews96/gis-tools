@@ -1018,8 +1018,11 @@
                 }
             }
             
-            // Alert: Low completion
-            if (designedTotal > 0) {
+            // Alert: Low completion (only for longer periods)
+            const periodDays = velocityData ? velocityData.periodDays : 0;
+            const isLongPeriod = periodDays >= 30 || periodDays === 0; // 0 means couldn't determine, likely All Time
+            
+            if (designedTotal > 0 && isLongPeriod) {
                 const completionPct = (constructedTotal / designedTotal) * 100;
                 if (completionPct < 10 && constructedTotal > 0) {
                     alerts.push({
@@ -1235,10 +1238,20 @@
                 // Velocity section
                 let velocityHTML = '';
                 if (velocityData) {
+                    // Build period info
+                    let periodInfo = '';
+                    if (velocityData.periodDays > 0) {
+                        if (velocityData.periodStart && velocityData.periodEnd) {
+                            periodInfo = ` (${velocityData.periodStart} to ${velocityData.periodEnd}, ${velocityData.periodDays} days)`;
+                        } else {
+                            periodInfo = ` (${velocityData.periodDays} days)`;
+                        }
+                    }
+                    
                     // Build velocity table
                     let velocityTableHTML = `
                         <div style="margin-top:12px;padding:10px;background:#f0f4ff;border-radius:4px;">
-                            <div style="font-weight:bold;margin-bottom:8px;">📈 Velocity Metrics${velocityData.periodDays ? ` (${velocityData.periodDays} days)` : ''}</div>
+                            <div style="font-weight:bold;margin-bottom:8px;">📈 Velocity Metrics${periodInfo}</div>
                             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:10px;">
                     `;
                     
@@ -1278,7 +1291,7 @@
                                         <tr style="background:#f5f5f5;">
                                             <th style="border:1px solid #ddd;padding:6px;text-align:left;">Layer</th>
                                             <th style="border:1px solid #ddd;padding:6px;text-align:center;">Constructed → Daily Complete</th>
-                                            <th style="border:1px solid #ddd;padding:6px;text-align:center;">Daily Complete → Invoiced</th>
+                                            <th style="border:1px solid #ddd;padding:6px;text-align:center;">Constructed → Invoiced</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -1300,7 +1313,7 @@
                                 </table>
                             </div>
                             <div style="margin-top:6px;font-size:10px;color:#666;font-style:italic;">
-                                Shows amount and % of work waiting at each billing stage
+                                Shows gap between constructed work and billing stages. Both columns compare to "Constructed" baseline.
                             </div>
                         </div>
                     `;
@@ -1450,15 +1463,11 @@
             try {
                 const filterClause = buildFilterClause();
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                const fiberLayer = allFL.find(l => l.layerId === 41050); // Use fiber cable as reference
                 
-                if (!fiberLayer) return null;
-                
-                await fiberLayer.load();
-                
-                // Get most recent installation date across all layers
+                // Get most recent installation date and earliest date across all layers
                 let lastInstallDate = "N/A";
                 let daysSinceLastInstall = 0;
+                let earliestInstallDate = null;
                 
                 for (const targetLayer of targetLayers) {
                     const layer = allFL.find(l => l.layerId === targetLayer.id);
@@ -1466,6 +1475,7 @@
                     
                     await layer.load();
                     
+                    // Get most recent
                     const recentQuery = await layer.queryFeatures({
                         where: `(${filterClause}) AND installation_date IS NOT NULL`,
                         outFields: ["installation_date"],
@@ -1484,6 +1494,38 @@
                             lastInstallDate = lastDate.toLocaleDateString();
                         }
                     }
+                    
+                    // Get earliest (for All Time mode)
+                    if (allTimeMode) {
+                        const earliestQuery = await layer.queryFeatures({
+                            where: `(${filterClause}) AND installation_date IS NOT NULL`,
+                            outFields: ["installation_date"],
+                            orderByFields: ["installation_date ASC"],
+                            num: 1,
+                            returnGeometry: false
+                        });
+                        
+                        if (earliestQuery.features.length > 0) {
+                            const earlyDate = new Date(earliestQuery.features[0].attributes.installation_date);
+                            if (!earliestInstallDate || earlyDate < earliestInstallDate) {
+                                earliestInstallDate = earlyDate;
+                            }
+                        }
+                    }
+                }
+                
+                // Calculate days for velocity
+                let days = 1;
+                let effectiveStartDate = startDate;
+                let effectiveEndDate = endDate;
+                
+                if (allTimeMode && earliestInstallDate) {
+                    // Use earliest install date to today for All Time mode
+                    effectiveStartDate = formatDateForInput(earliestInstallDate);
+                    effectiveEndDate = formatDateForInput(new Date());
+                    days = daysBetween(earliestInstallDate, new Date()) + 1;
+                } else if (!allTimeMode && startDate && endDate) {
+                    days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
                 }
                 
                 // Calculate per-layer velocity and billing lag
@@ -1496,11 +1538,6 @@
                 const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
                 
                 if (designedRow && constructedRow) {
-                    let days = 1;
-                    if (!allTimeMode && startDate && endDate) {
-                        days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
-                    }
-                    
                     targetLayers.forEach((layer, idx) => {
                         const designed = designedRow.rawValues[idx] || 0;
                         const constructed = constructedRow.rawValues[idx] || 0;
@@ -1509,7 +1546,7 @@
                         
                         // Construction velocity
                         let velocity = 0;
-                        if (!allTimeMode && days > 0 && constructed > 0) {
+                        if (days > 0 && constructed > 0) {
                             velocity = (constructed / days).toFixed(2);
                         }
                         
@@ -1521,35 +1558,36 @@
                             rawVelocity: parseFloat(velocity)
                         });
                         
-                        // Billing lag calculation
+                        // Billing lag calculation - compare against CONSTRUCTED (not each other)
                         let dailyCompleteLag = "—";
                         let invoiceLag = "—";
                         
                         if (constructed > 0) {
                             const dailyCompleteGap = constructed - dailyComplete;
-                            const dailyCompletePct = ((dailyCompleteGap / constructed) * 100).toFixed(1);
+                            const dailyCompletePct = dailyComplete > 0 ? ((dailyComplete / constructed) * 100).toFixed(1) : 0;
                             
                             if (dailyCompleteGap > 0) {
                                 const gapFormatted = layer.metric === "sum" ? 
-                                    `${dailyCompleteGap.toFixed(0)} ft` : 
-                                    `${dailyCompleteGap.toFixed(0)} units`;
-                                dailyCompleteLag = `${gapFormatted} (${dailyCompletePct}%)`;
+                                    `${Math.round(dailyCompleteGap)} ft` : 
+                                    `${Math.round(dailyCompleteGap)} units`;
+                                const gapPct = ((dailyCompleteGap / constructed) * 100).toFixed(1);
+                                dailyCompleteLag = `${gapFormatted} lag (${dailyCompletePct}% complete)`;
                             } else {
-                                dailyCompleteLag = "✓ Current";
+                                dailyCompleteLag = `✓ 100% marked complete`;
                             }
-                        }
-                        
-                        if (dailyComplete > 0) {
-                            const invoiceGap = dailyComplete - invoiced;
-                            const invoicePct = ((invoiceGap / dailyComplete) * 100).toFixed(1);
+                            
+                            // Invoice lag compared to CONSTRUCTED (not daily complete)
+                            const invoiceGap = constructed - invoiced;
+                            const invoicedPct = invoiced > 0 ? ((invoiced / constructed) * 100).toFixed(1) : 0;
                             
                             if (invoiceGap > 0) {
                                 const gapFormatted = layer.metric === "sum" ? 
-                                    `${invoiceGap.toFixed(0)} ft` : 
-                                    `${invoiceGap.toFixed(0)} units`;
-                                invoiceLag = `${gapFormatted} (${invoicePct}%)`;
+                                    `${Math.round(invoiceGap)} ft` : 
+                                    `${Math.round(invoiceGap)} units`;
+                                const gapPct = ((invoiceGap / constructed) * 100).toFixed(1);
+                                invoiceLag = `${gapFormatted} lag (${invoicedPct}% invoiced)`;
                             } else {
-                                invoiceLag = "✓ Current";
+                                invoiceLag = `✓ 100% invoiced`;
                             }
                         }
                         
@@ -1563,9 +1601,10 @@
                 
                 // Calculate weighted estimated completion
                 let estimatedCompletion = null;
-                if (!allTimeMode && designedRow && constructedRow) {
+                if (designedRow && constructedRow && days > 0) {
                     let weightedVelocity = 0;
                     let totalRemaining = 0;
+                    let hasActiveVelocity = false;
                     
                     targetLayers.forEach((layer, idx) => {
                         const designed = designedRow.rawValues[idx] || 0;
@@ -1576,10 +1615,11 @@
                             // Weight by the layer's overall project weight
                             weightedVelocity += layerVelocities[idx].rawVelocity * layer.weight;
                             totalRemaining += remaining * layer.weight;
+                            hasActiveVelocity = true;
                         }
                     });
                     
-                    if (weightedVelocity > 0 && totalRemaining > 0) {
+                    if (hasActiveVelocity && weightedVelocity > 0 && totalRemaining > 0) {
                         const daysToComplete = Math.ceil(totalRemaining / weightedVelocity);
                         const completionDate = new Date();
                         completionDate.setDate(completionDate.getDate() + daysToComplete);
@@ -1593,8 +1633,9 @@
                     daysSinceLastInstall,
                     lastInstallDate,
                     estimatedCompletion,
-                    periodDays: !allTimeMode && startDate && endDate ? 
-                        daysBetween(new Date(startDate), new Date(endDate)) + 1 : null
+                    periodDays: days,
+                    periodStart: effectiveStartDate,
+                    periodEnd: effectiveEndDate
                 };
                 
             } catch (error) {
