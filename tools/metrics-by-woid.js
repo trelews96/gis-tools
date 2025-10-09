@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Week 2 Core Metrics (Fixed)
+// tools/metrics-by-woid.js - Week 3 Comparison Mode
 // Layer Metrics Report with Purchase Order and Work Order filtering
 
 (function() {
@@ -42,10 +42,13 @@
         let selectedPurchaseOrders = [];
         let allPurchaseOrders = [];
         let currentTableData = [];
+        let period1Data = [];
+        let period2Data = [];
         let sortColumn = null;
         let sortDirection = 'asc';
         let isProcessing = false;
         let showPercentages = false;
+        let comparisonMode = false;
         
         // CSS Spinner keyframes
         const spinnerStyle = document.createElement('style');
@@ -102,6 +105,17 @@
                 display: block;
                 margin-top: 2px;
             }
+            .variance-positive {
+                color: #2e7d32;
+                font-weight: bold;
+            }
+            .variance-negative {
+                color: #c62828;
+                font-weight: bold;
+            }
+            .variance-neutral {
+                color: #666;
+            }
         `;
         document.head.appendChild(spinnerStyle);
         
@@ -154,29 +168,68 @@
                 </div>
             </div>
             
-            <label>Quick Date Range:</label><br>
-            <div style="display:flex;gap:4px;margin:4px 0 8px 0;flex-wrap:wrap;">
-                <button class="date-preset" data-days="7" style="padding:4px 8px;font-size:11px;">Last 7 Days</button>
-                <button class="date-preset" data-days="30" style="padding:4px 8px;font-size:11px;">Last 30 Days</button>
-                <button class="date-preset" data-preset="this-month" style="padding:4px 8px;font-size:11px;">This Month</button>
-                <button class="date-preset" data-preset="last-month" style="padding:4px 8px;font-size:11px;">Last Month</button>
-                <button class="date-preset" data-preset="this-quarter" style="padding:4px 8px;font-size:11px;">This Quarter</button>
-                <button class="date-preset" data-preset="ytd" style="padding:4px 8px;font-size:11px;">YTD</button>
-                <button id="allTimeBtn" style="padding:4px 8px;font-size:11px;">All Time</button>
+            <div style="margin:4px 0 8px 0;">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="comparisonModeToggle">
+                    <span style="font-weight:bold;">📊 Compare Two Periods</span>
+                </label>
             </div>
             
-            <div style="display:flex;gap:8px;margin:4px 0 8px 0;">
-                <div style="flex:1;">
-                    <label>Start date</label><br>
-                    <input type="date" id="startDate" style="width:100%;">
+            <div id="singlePeriodSection">
+                <label>Quick Date Range:</label><br>
+                <div style="display:flex;gap:4px;margin:4px 0 8px 0;flex-wrap:wrap;">
+                    <button class="date-preset" data-days="7" style="padding:4px 8px;font-size:11px;">Last 7 Days</button>
+                    <button class="date-preset" data-days="30" style="padding:4px 8px;font-size:11px;">Last 30 Days</button>
+                    <button class="date-preset" data-preset="this-month" style="padding:4px 8px;font-size:11px;">This Month</button>
+                    <button class="date-preset" data-preset="last-month" style="padding:4px 8px;font-size:11px;">Last Month</button>
+                    <button class="date-preset" data-preset="this-quarter" style="padding:4px 8px;font-size:11px;">This Quarter</button>
+                    <button class="date-preset" data-preset="ytd" style="padding:4px 8px;font-size:11px;">YTD</button>
+                    <button id="allTimeBtn" style="padding:4px 8px;font-size:11px;">All Time</button>
                 </div>
-                <div style="flex:1;">
-                    <label>End date</label><br>
-                    <input type="date" id="endDate" style="width:100%;">
+                
+                <div style="display:flex;gap:8px;margin:4px 0 8px 0;">
+                    <div style="flex:1;">
+                        <label>Start date</label><br>
+                        <input type="date" id="startDate" style="width:100%;">
+                    </div>
+                    <div style="flex:1;">
+                        <label>End date</label><br>
+                        <input type="date" id="endDate" style="width:100%;">
+                    </div>
                 </div>
             </div>
             
-            <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <div id="comparisonPeriodSection" style="display:none;">
+                <div style="background:#f5f7fa;padding:8px;border-radius:4px;margin-bottom:8px;">
+                    <label style="font-weight:bold;">Period 1 (Baseline):</label><br>
+                    <div style="display:flex;gap:8px;margin:4px 0;">
+                        <div style="flex:1;">
+                            <label style="font-size:11px;">Start date</label><br>
+                            <input type="date" id="period1Start" style="width:100%;">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:11px;">End date</label><br>
+                            <input type="date" id="period1End" style="width:100%;">
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="background:#e8f5e9;padding:8px;border-radius:4px;">
+                    <label style="font-weight:bold;">Period 2 (Comparison):</label><br>
+                    <div style="display:flex;gap:8px;margin:4px 0;">
+                        <div style="flex:1;">
+                            <label style="font-size:11px;">Start date</label><br>
+                            <input type="date" id="period2Start" style="width:100%;">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:11px;">End date</label><br>
+                            <input type="date" id="period2End" style="width:100%;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:8px;">
                 <button id="runBtn">▶ Run Report</button>
                 <button id="exportBtn" style="display:none;">📥 Export CSV</button>
                 <button id="clearBtn" style="display:none;">🔄 Clear Filters</button>
@@ -228,6 +281,29 @@
             const icon = icons[type] || icons.info;
             status.textContent = `${icon} ${message}`;
         }
+        
+        // Comparison mode toggle
+        $("#comparisonModeToggle").onchange = (e) => {
+            comparisonMode = e.target.checked;
+            if (comparisonMode) {
+                $("#singlePeriodSection").style.display = "none";
+                $("#comparisonPeriodSection").style.display = "block";
+                
+                // Pre-fill with suggested periods (last month vs this month)
+                const today = new Date();
+                const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+                const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+                
+                $("#period1Start").value = formatDateForInput(lastMonthStart);
+                $("#period1End").value = formatDateForInput(lastMonthEnd);
+                $("#period2Start").value = formatDateForInput(thisMonthStart);
+                $("#period2End").value = formatDateForInput(today);
+            } else {
+                $("#singlePeriodSection").style.display = "block";
+                $("#comparisonPeriodSection").style.display = "none";
+            }
+        };
         
         // Show percentage toggle handler
         $("#showPercentToggle").onchange = (e) => {
@@ -600,18 +676,24 @@
             if (!currentTableData.length) return alert("No data to export");
             
             const headers = ["Category", ...targetLayers.map(l => l.name)];
+            if (comparisonMode) {
+                headers.push("Variance", "% Change");
+            }
             const csvRows = [headers];
             
             currentTableData.forEach(row => {
                 if (row.category !== 'TOTALS') {
                     const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
+                    if (comparisonMode && row.variance) {
+                        rowData.push(csvEsc(row.variance), csvEsc(row.percentChange));
+                    }
                     csvRows.push(rowData);
                 }
             });
             
             const csv = csvRows.map(r => r.join(",")).join("\n");
-            const dateRange = $("#startDate").disabled ? "all_time" : `${$("#startDate").value}_${$("#endDate").value}`;
-            const file = `layer_metrics_${dateRange}.csv`;
+            const timestamp = new Date().toISOString().slice(0,10);
+            const file = `layer_metrics_${timestamp}.csv`;
             
             const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
             const url = URL.createObjectURL(blob);
@@ -675,11 +757,19 @@
                         additionalFilter = ` AND ${targetLayer.additionalFilter}`;
                     }
                     
-                    const start = $("#startDate").value;
-                    const end = $("#endDate").value;
-                    const allTimeMode = $("#startDate").disabled;
-                    let baseDateClause = "";
+                    // Use Period 2 dates if in comparison mode, otherwise use single period
+                    let start, end, allTimeMode;
+                    if (comparisonMode) {
+                        start = $("#period2Start").value;
+                        end = $("#period2End").value;
+                        allTimeMode = false;
+                    } else {
+                        start = $("#startDate").value;
+                        end = $("#endDate").value;
+                        allTimeMode = $("#startDate").disabled;
+                    }
                     
+                    let baseDateClause = "";
                     if (!allTimeMode) {
                         const startLit = `TIMESTAMP '${start} 00:00:00'`;
                         const endLit = `TIMESTAMP '${end} 23:59:59'`;
@@ -744,82 +834,184 @@
             return '#f44336'; // Red
         }
         
+        // Get variance display
+        function getVarianceDisplay(variance, isPercentage = false) {
+            if (variance === 0) {
+                return `<span class="variance-neutral">—</span>`;
+            }
+            
+            const sign = variance > 0 ? '+' : '';
+            const arrow = variance > 0 ? '↑' : '↓';
+            const className = variance > 0 ? 'variance-positive' : 'variance-negative';
+            const formatted = isPercentage ? `${sign}${variance.toFixed(1)}%` : `${sign}${variance.toLocaleString()}`;
+            
+            return `<span class="${className}">${arrow} ${formatted}</span>`;
+        }
+        
         // Render summary section
         function renderSummary() {
             const summarySection = $("#summarySection");
             
-            // Find key rows
-            const designedRow = currentTableData.find(r => r.category === "Designed");
-            const constructedRow = currentTableData.find(r => r.category === "Constructed");
-            const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
-            const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
-            
-            if (!designedRow || !constructedRow) {
-                summarySection.style.display = "none";
-                return;
-            }
-            
-            // Calculate weighted percentages
-            let weightedConstruction = 0;
-            let weightedBillingComplete = 0;
-            let weightedInvoiced = 0;
-            
-            targetLayers.forEach((layer, idx) => {
-                const designed = designedRow.rawValues[idx] || 0;
-                const constructed = constructedRow.rawValues[idx] || 0;
-                const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
-                const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+            if (comparisonMode && period1Data.length && period2Data.length) {
+                // Comparison mode summary
+                const p1Designed = period1Data.find(r => r.category === "Designed");
+                const p1Constructed = period1Data.find(r => r.category === "Constructed");
+                const p1DailyComplete = period1Data.find(r => r.category === "Daily Complete");
+                const p1Invoiced = period1Data.find(r => r.category === "Invoiced");
                 
-                if (designed > 0) {
-                    const layerConstructionPct = (constructed / designed) * 100;
-                    const layerBillingCompletePct = (dailyComplete / designed) * 100;
-                    const layerInvoicedPct = (invoiced / designed) * 100;
-                    
-                    weightedConstruction += layerConstructionPct * layer.weight;
-                    weightedBillingComplete += layerBillingCompletePct * layer.weight;
-                    weightedInvoiced += layerInvoicedPct * layer.weight;
+                const p2Designed = period2Data.find(r => r.category === "Designed");
+                const p2Constructed = period2Data.find(r => r.category === "Constructed");
+                const p2DailyComplete = period2Data.find(r => r.category === "Daily Complete");
+                const p2Invoiced = period2Data.find(r => r.category === "Invoiced");
+                
+                if (!p1Designed || !p2Designed) {
+                    summarySection.style.display = "none";
+                    return;
                 }
-            });
-            
-            const constructionColor = getCompletionColor(weightedConstruction);
-            const billingColor = getCompletionColor(weightedBillingComplete);
-            const invoicedColor = getCompletionColor(weightedInvoiced);
-            
-            summarySection.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Project Summary</div>
-                <div style="display:flex;gap:16px;flex-wrap:wrap;">
-                    <div style="flex:1;min-width:180px;">
-                        <div style="font-weight:bold;margin-bottom:4px;">Construction Progress</div>
-                        <div style="font-size:24px;font-weight:bold;color:${constructionColor};">${weightedConstruction.toFixed(1)}%</div>
-                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
-                            <div class="completion-fill" style="width:${weightedConstruction}%;background:${constructionColor};"></div>
+                
+                // Calculate weighted percentages for both periods
+                let p1Construction = 0, p2Construction = 0;
+                let p1Billing = 0, p2Billing = 0;
+                let p1InvoicedPct = 0, p2InvoicedPct = 0;
+                
+                targetLayers.forEach((layer, idx) => {
+                    // Period 1
+                    const p1Des = p1Designed.rawValues[idx] || 0;
+                    const p1Con = p1Constructed ? (p1Constructed.rawValues[idx] || 0) : 0;
+                    const p1Bill = p1DailyComplete ? (p1DailyComplete.rawValues[idx] || 0) : 0;
+                    const p1Inv = p1Invoiced ? (p1Invoiced.rawValues[idx] || 0) : 0;
+                    
+                    if (p1Des > 0) {
+                        p1Construction += (p1Con / p1Des * 100) * layer.weight;
+                        p1Billing += (p1Bill / p1Des * 100) * layer.weight;
+                        p1InvoicedPct += (p1Inv / p1Des * 100) * layer.weight;
+                    }
+                    
+                    // Period 2
+                    const p2Des = p2Designed.rawValues[idx] || 0;
+                    const p2Con = p2Constructed ? (p2Constructed.rawValues[idx] || 0) : 0;
+                    const p2Bill = p2DailyComplete ? (p2DailyComplete.rawValues[idx] || 0) : 0;
+                    const p2Inv = p2Invoiced ? (p2Invoiced.rawValues[idx] || 0) : 0;
+                    
+                    if (p2Des > 0) {
+                        p2Construction += (p2Con / p2Des * 100) * layer.weight;
+                        p2Billing += (p2Bill / p2Des * 100) * layer.weight;
+                        p2InvoicedPct += (p2Inv / p2Des * 100) * layer.weight;
+                    }
+                });
+                
+                const constructionDelta = p2Construction - p1Construction;
+                const billingDelta = p2Billing - p1Billing;
+                const invoicedDelta = p2InvoicedPct - p1InvoicedPct;
+                
+                const p2ConstructionColor = getCompletionColor(p2Construction);
+                const p2BillingColor = getCompletionColor(p2Billing);
+                const p2InvoicedColor = getCompletionColor(p2InvoicedPct);
+                
+                summarySection.innerHTML = `
+                    <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Period Comparison Summary</div>
+                    <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Construction Progress</div>
+                            <div style="font-size:20px;font-weight:bold;color:${p2ConstructionColor};">
+                                ${p2Construction.toFixed(1)}%
+                                <span style="font-size:14px;margin-left:4px;">${getVarianceDisplay(constructionDelta, true)}</span>
+                            </div>
+                            <div style="font-size:11px;color:#666;margin-top:2px;">Period 1: ${p1Construction.toFixed(1)}% → Period 2: ${p2Construction.toFixed(1)}%</div>
                         </div>
-                        <div style="font-size:10px;color:#666;margin-top:4px;">Work physically constructed</div>
-                    </div>
-                    <div style="flex:1;min-width:180px;">
-                        <div style="font-weight:bold;margin-bottom:4px;">Billing Complete</div>
-                        <div style="font-size:24px;font-weight:bold;color:${billingColor};">${weightedBillingComplete.toFixed(1)}%</div>
-                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
-                            <div class="completion-fill" style="width:${weightedBillingComplete}%;background:${billingColor};"></div>
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Billing Complete</div>
+                            <div style="font-size:20px;font-weight:bold;color:${p2BillingColor};">
+                                ${p2Billing.toFixed(1)}%
+                                <span style="font-size:14px;margin-left:4px;">${getVarianceDisplay(billingDelta, true)}</span>
+                            </div>
+                            <div style="font-size:11px;color:#666;margin-top:2px;">Period 1: ${p1Billing.toFixed(1)}% → Period 2: ${p2Billing.toFixed(1)}%</div>
                         </div>
-                        <div style="font-size:10px;color:#666;margin-top:4px;">Marked daily complete by field</div>
-                    </div>
-                    <div style="flex:1;min-width:180px;">
-                        <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
-                        <div style="font-size:24px;font-weight:bold;color:${invoicedColor};">${weightedInvoiced.toFixed(1)}%</div>
-                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
-                            <div class="completion-fill" style="width:${weightedInvoiced}%;background:${invoicedColor};"></div>
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
+                            <div style="font-size:20px;font-weight:bold;color:${p2InvoicedColor};">
+                                ${p2InvoicedPct.toFixed(1)}%
+                                <span style="font-size:14px;margin-left:4px;">${getVarianceDisplay(invoicedDelta, true)}</span>
+                            </div>
+                            <div style="font-size:11px;color:#666;margin-top:2px;">Period 1: ${p1InvoicedPct.toFixed(1)}% → Period 2: ${p2InvoicedPct.toFixed(1)}%</div>
                         </div>
-                        <div style="font-size:10px;color:#666;margin-top:4px;">Invoiced to customer</div>
                     </div>
-                </div>
-                <div style="margin-top:12px;font-size:11px;color:#666;">
-                    <strong>Layer Weights:</strong> 
-                    Foundation (25%): UG Span 10%, Aerial Span 10%, Vaults 5% | 
-                    Main Infrastructure (50%): Fiber Cable 50% | 
-                    Finishing (25%): Splice Closures 15%, Equipment 10%
-                </div>
-            `;
+                `;
+                
+            } else {
+                // Single period summary
+                const designedRow = currentTableData.find(r => r.category === "Designed");
+                const constructedRow = currentTableData.find(r => r.category === "Constructed");
+                const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
+                const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+                
+                if (!designedRow || !constructedRow) {
+                    summarySection.style.display = "none";
+                    return;
+                }
+                
+                // Calculate weighted percentages
+                let weightedConstruction = 0;
+                let weightedBillingComplete = 0;
+                let weightedInvoiced = 0;
+                
+                targetLayers.forEach((layer, idx) => {
+                    const designed = designedRow.rawValues[idx] || 0;
+                    const constructed = constructedRow.rawValues[idx] || 0;
+                    const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+                    const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+                    
+                    if (designed > 0) {
+                        const layerConstructionPct = (constructed / designed) * 100;
+                        const layerBillingCompletePct = (dailyComplete / designed) * 100;
+                        const layerInvoicedPct = (invoiced / designed) * 100;
+                        
+                        weightedConstruction += layerConstructionPct * layer.weight;
+                        weightedBillingComplete += layerBillingCompletePct * layer.weight;
+                        weightedInvoiced += layerInvoicedPct * layer.weight;
+                    }
+                });
+                
+                const constructionColor = getCompletionColor(weightedConstruction);
+                const billingColor = getCompletionColor(weightedBillingComplete);
+                const invoicedColor = getCompletionColor(weightedInvoiced);
+                
+                summarySection.innerHTML = `
+                    <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Project Summary</div>
+                    <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Construction Progress</div>
+                            <div style="font-size:24px;font-weight:bold;color:${constructionColor};">${weightedConstruction.toFixed(1)}%</div>
+                            <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                                <div class="completion-fill" style="width:${weightedConstruction}%;background:${constructionColor};"></div>
+                            </div>
+                            <div style="font-size:10px;color:#666;margin-top:4px;">Work physically constructed</div>
+                        </div>
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Billing Complete</div>
+                            <div style="font-size:24px;font-weight:bold;color:${billingColor};">${weightedBillingComplete.toFixed(1)}%</div>
+                            <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                                <div class="completion-fill" style="width:${weightedBillingComplete}%;background:${billingColor};"></div>
+                            </div>
+                            <div style="font-size:10px;color:#666;margin-top:4px;">Marked daily complete by field</div>
+                        </div>
+                        <div style="flex:1;min-width:180px;">
+                            <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
+                            <div style="font-size:24px;font-weight:bold;color:${invoicedColor};">${weightedInvoiced.toFixed(1)}%</div>
+                            <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                                <div class="completion-fill" style="width:${weightedInvoiced}%;background:${invoicedColor};"></div>
+                            </div>
+                            <div style="font-size:10px;color:#666;margin-top:4px;">Invoiced to customer</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px;font-size:11px;color:#666;">
+                        <strong>Layer Weights:</strong> 
+                        Foundation (25%): UG Span 10%, Aerial Span 10%, Vaults 5% | 
+                        Main Infrastructure (50%): Fiber Cable 50% | 
+                        Finishing (25%): Splice Closures 15%, Equipment 10%
+                    </div>
+                `;
+            }
             
             summarySection.style.display = "block";
         }
@@ -830,14 +1022,14 @@
             
             let tableHTML = `<div style="overflow-x:auto;margin-top:8px;"><table style="min-width:100%;border-collapse:collapse;white-space:nowrap;"><thead><tr style="background:#f5f5f5;">`;
             
-            // Category header with sort
+            // Category header
             tableHTML += `<th class="sortable-header" onclick="sortTable(-1)" style="border:1px solid #ddd;padding:8px;text-align:left;font-weight:bold;">Category`;
             if (sortColumn === -1) {
                 tableHTML += `<span class="sort-indicator">${sortDirection === 'asc' ? '▲' : '▼'}</span>`;
             }
             tableHTML += `</th>`;
             
-            // Layer headers with sort
+            // Layer headers
             targetLayers.forEach((layer, idx) => {
                 let headerText = layer.name;
                 if (layer.additionalFilter) {
@@ -851,9 +1043,15 @@
                 tableHTML += `</th>`;
             });
             
+            // Add variance columns in comparison mode
+            if (comparisonMode) {
+                tableHTML += `<th style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;background:#fff9e6;">Δ Total</th>`;
+                tableHTML += `<th style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;background:#fff9e6;">% Change</th>`;
+            }
+            
             tableHTML += `</tr></thead><tbody>`;
             
-            // Get designed and constructed rows for per-layer percentages
+            // Get designed rows for per-layer percentages
             const designedRow = currentTableData.find(r => r.category === "Designed");
             const constructedRow = currentTableData.find(r => r.category === "Constructed");
             const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
@@ -877,8 +1075,8 @@
                     const cellStyle = row.error ? "color:#d32f2f;" : "";
                     let cellContent = value;
                     
-                    // Add per-layer percentages for Constructed, Daily Complete, and Invoiced rows
-                    if (!showPercentages && !isTotals && designedRow && row.rawValues) {
+                    // Add per-layer percentages for key rows
+                    if (!showPercentages && !isTotals && !comparisonMode && designedRow && row.rawValues) {
                         const designed = designedRow.rawValues[colIdx] || 0;
                         const current = row.rawValues[colIdx] || 0;
                         
@@ -892,16 +1090,166 @@
                     tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${cellContent}</td>`;
                 });
                 
+                // Add variance cells in comparison mode
+                if (comparisonMode && !isTotals) {
+                    if (row.varianceTotal !== undefined) {
+                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;background:#fffdf0;">${getVarianceDisplay(row.varianceTotal)}</td>`;
+                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;background:#fffdf0;">${getVarianceDisplay(row.percentChange, true)}</td>`;
+                    } else {
+                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;background:#fffdf0;">—</td>`;
+                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;background:#fffdf0;">—</td>`;
+                    }
+                }
+                
                 tableHTML += `</tr>`;
             });
             
-            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map | Click column headers to sort | Percentages show layer completion</div>`;
+            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click category names to filter map | Click headers to sort</div>`;
             
             $("#resultsTable").innerHTML = tableHTML;
         }
         
-        // Make sortTable global so onclick handlers can access it
+        // Make sortTable global
         window.sortTable = sortTable;
+        
+        // Query function for a single period
+        async function queryPeriod(startDate, endDate, allTimeMode) {
+            const filterClause = buildFilterClause();
+            let baseDateClause = "";
+            
+            if (!allTimeMode) {
+                const startLit = `TIMESTAMP '${startDate} 00:00:00'`;
+                const endLit = `TIMESTAMP '${endDate} 23:59:59'`;
+                baseDateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+            }
+            
+            const categories = [
+                {name: "Total Assigned", includeStatuses: ['ASSG']},
+                {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
+                {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
+                {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
+                {name: "On Hold", includeStatuses: ['ONHOLD']},
+                {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
+                {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
+                {name: "Invoiced", includeStatuses: ['INVCMPLT']}
+            ];
+            
+            const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+            const results = [];
+            
+            for (const category of categories) {
+                const categoryResults = {
+                    name: category.name,
+                    layers: [],
+                    categoryData: category
+                };
+                
+                for (const targetLayer of targetLayers) {
+                    try {
+                        const layer = allFL.find(l => l.layerId === targetLayer.id);
+                        if (!layer) {
+                            categoryResults.layers.push({
+                                name: targetLayer.name,
+                                value: "Layer not found",
+                                error: true
+                            });
+                            continue;
+                        }
+                        
+                        await layer.load();
+                        
+                        let statusClause;
+                        if (category.includeStatuses) {
+                            statusClause = category.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
+                        } else if (category.excludeStatuses) {
+                            statusClause = category.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
+                        }
+                        
+                        if (category.requireStage) {
+                            const stageClause = `workflow_stage = '${category.requireStage}'`;
+                            statusClause = statusClause ? `(${statusClause}) AND ${stageClause}` : stageClause;
+                        }
+                        
+                        let additionalFilter = "";
+                        if (targetLayer.additionalFilter) {
+                            additionalFilter = ` AND ${targetLayer.additionalFilter}`;
+                        }
+                        
+                        const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${baseDateClause}`;
+                        
+                        const oidField = layer.objectIdField;
+                        const outFields = [oidField, targetLayer.field];
+                        
+                        const queryResult = await layer.queryFeatures({
+                            where: whereClause,
+                            outFields: outFields,
+                            returnGeometry: false
+                        });
+                        
+                        let value;
+                        if (targetLayer.metric === "count") {
+                            value = queryResult.features.length;
+                        } else if (targetLayer.metric === "sum") {
+                            value = queryResult.features.reduce((sum, feature) => {
+                                const fieldValue = feature.attributes[targetLayer.field];
+                                return sum + (Number(fieldValue) || 0);
+                            }, 0);
+                            value = Math.round(value * 100) / 100;
+                        }
+                        
+                        categoryResults.layers.push({
+                            name: targetLayer.name,
+                            value: value,
+                            metric: targetLayer.metric,
+                            error: false
+                        });
+                        
+                    } catch (err) {
+                        console.error(`Error querying layer ${targetLayer.name} for ${category.name}:`, err);
+                        categoryResults.layers.push({
+                            name: targetLayer.name,
+                            value: "Error: " + (err.message || "Unknown error"),
+                            error: true
+                        });
+                    }
+                }
+                
+                results.push(categoryResults);
+            }
+            
+            // Build table data
+            const tableData = [];
+            results.forEach(categoryResult => {
+                const rowValues = [];
+                const rawValues = [];
+                
+                categoryResult.layers.forEach((layerResult, idx) => {
+                    let valueDisplay;
+                    let rawValue = 0;
+                    
+                    if (layerResult.error) {
+                        valueDisplay = layerResult.value;
+                    } else {
+                        rawValue = layerResult.value;
+                        valueDisplay = layerResult.metric === "sum" ? 
+                            layerResult.value.toLocaleString() : 
+                            layerResult.value.toLocaleString();
+                    }
+                    
+                    rowValues.push(valueDisplay);
+                    rawValues.push(rawValue);
+                });
+                
+                tableData.push({
+                    category: categoryResult.name, 
+                    values: rowValues,
+                    rawValues: rawValues,
+                    categoryData: categoryResult.categoryData
+                });
+            });
+            
+            return tableData;
+        }
         
         // Main report function
         $("#runBtn").onclick = async () => {
@@ -916,10 +1264,6 @@
                 runBtn.style.opacity = '0.6';
                 runBtn.style.cursor = 'not-allowed';
                 
-                const start = $("#startDate").value;
-                const end = $("#endDate").value;
-                const allTimeMode = $("#startDate").disabled;
-                
                 if (selectedWorkorders.length === 0 && selectedPurchaseOrders.length === 0) {
                     runBtn.innerHTML = originalText;
                     runBtn.disabled = false;
@@ -929,219 +1273,108 @@
                     return alert("Please select at least one work order or purchase order.");
                 }
                 
-                if (!allTimeMode && (!start || !end)) {
-                    runBtn.innerHTML = originalText;
-                    runBtn.disabled = false;
-                    runBtn.style.opacity = '1';
-                    runBtn.style.cursor = 'pointer';
-                    isProcessing = false;
-                    return alert("Please select both dates or use All Time.");
-                }
-                
-                let s = start, e = end;
-                if (!allTimeMode && e < s) [s, e] = [e, s];
-                
-                const filterClause = buildFilterClause();
-                let baseDateClause = "";
-                
-                if (!allTimeMode) {
-                    const startLit = `TIMESTAMP '${s} 00:00:00'`;
-                    const endLit = `TIMESTAMP '${e} 23:59:59'`;
-                    baseDateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
-                }
-                
-                const categories = [
-                    {name: "Total Assigned", includeStatuses: ['ASSG']},
-                    {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
-                    {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
-                    {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
-                    {name: "On Hold", includeStatuses: ['ONHOLD']},
-                    {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
-                    {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
-                    {name: "Invoiced", includeStatuses: ['INVCMPLT']}
-                ];
-                
-                const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
-                let selectionText = "";
-                
-                if (selectedPurchaseOrders.length > 0 && selectedWorkorders.length > 0) {
-                    selectionText = `${selectedPurchaseOrders.length} PO(s) and ${selectedWorkorders.length} WO(s)`;
-                } else if (selectedPurchaseOrders.length > 0) {
-                    selectionText = selectedPurchaseOrders.length === 1 ? selectedPurchaseOrders[0] : `${selectedPurchaseOrders.length} purchase orders`;
-                } else {
-                    selectionText = selectedWorkorders.length === 1 ? selectedWorkorders[0] : `${selectedWorkorders.length} work orders`;
-                }
-                
-                updateStatus(`Querying layers for ${selectionText} (${dateRangeText})...`, "processing");
-                $("#resultsTable").innerHTML = "";
-                $("#summarySection").style.display = "none";
-                currentTableData = [];
-                
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                if (!allFL.length) {
-                    runBtn.innerHTML = originalText;
-                    runBtn.disabled = false;
-                    runBtn.style.opacity = '1';
-                    runBtn.style.cursor = 'pointer';
-                    isProcessing = false;
-                    return alert("No feature layers found.");
-                }
-                
-                const results = [];
-                const totalQueries = categories.length * targetLayers.length;
-                let completedQueries = 0;
-                
-                for (const category of categories) {
-                    const categoryResults = {
-                        name: category.name,
-                        layers: [],
-                        categoryData: category
-                    };
+                if (comparisonMode) {
+                    // Comparison mode - query both periods
+                    const p1Start = $("#period1Start").value;
+                    const p1End = $("#period1End").value;
+                    const p2Start = $("#period2Start").value;
+                    const p2End = $("#period2End").value;
                     
-                    for (const targetLayer of targetLayers) {
-                        try {
-                            completedQueries++;
-                            updateStatus(`Querying ${category.name}: ${targetLayer.name} (${completedQueries}/${totalQueries})...`, "processing");
-                            
-                            const layer = allFL.find(l => l.layerId === targetLayer.id);
-                            if (!layer) {
-                                categoryResults.layers.push({
-                                    name: targetLayer.name,
-                                    value: "Layer not found",
-                                    error: true
-                                });
-                                continue;
-                            }
-                            
-                            await layer.load();
-                            
-                            let statusClause;
-                            if (category.includeStatuses) {
-                                statusClause = category.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
-                            } else if (category.excludeStatuses) {
-                                statusClause = category.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
-                            }
-                            
-                            if (category.requireStage) {
-                                const stageClause = `workflow_stage = '${category.requireStage}'`;
-                                statusClause = statusClause ? `(${statusClause}) AND ${stageClause}` : stageClause;
-                            }
-                            
-                            let additionalFilter = "";
-                            if (targetLayer.additionalFilter) {
-                                additionalFilter = ` AND ${targetLayer.additionalFilter}`;
-                            }
-                            
-                            const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${baseDateClause}`;
-                            
-                            const oidField = layer.objectIdField;
-                            const outFields = [oidField, targetLayer.field];
-                            
-                            const queryResult = await layer.queryFeatures({
-                                where: whereClause,
-                                outFields: outFields,
-                                returnGeometry: false
-                            });
-                            
-                            let value;
-                            if (targetLayer.metric === "count") {
-                                value = queryResult.features.length;
-                            } else if (targetLayer.metric === "sum") {
-                                value = queryResult.features.reduce((sum, feature) => {
-                                    const fieldValue = feature.attributes[targetLayer.field];
-                                    return sum + (Number(fieldValue) || 0);
-                                }, 0);
-                                value = Math.round(value * 100) / 100;
-                            }
-                            
-                            categoryResults.layers.push({
-                                name: targetLayer.name,
-                                value: value,
-                                metric: targetLayer.metric,
-                                error: false
-                            });
-                            
-                        } catch (err) {
-                            console.error(`Error querying layer ${targetLayer.name} for ${category.name}:`, err);
-                            categoryResults.layers.push({
-                                name: targetLayer.name,
-                                value: "Error: " + (err.message || "Unknown error"),
-                                error: true
-                            });
-                        }
+                    if (!p1Start || !p1End || !p2Start || !p2End) {
+                        runBtn.innerHTML = originalText;
+                        runBtn.disabled = false;
+                        runBtn.style.opacity = '1';
+                        runBtn.style.cursor = 'pointer';
+                        isProcessing = false;
+                        return alert("Please select dates for both periods.");
                     }
                     
-                    results.push(categoryResults);
-                }
-                
-                // Build results table data
-                currentTableData = [];
-                const totals = new Array(targetLayers.length).fill(0);
-                
-                results.forEach(categoryResult => {
-                    const rowValues = [];
-                    const rawValues = [];
+                    updateStatus(`Querying Period 1 (${p1Start} to ${p1End})...`, "processing");
+                    period1Data = await queryPeriod(p1Start, p1End, false);
                     
-                    categoryResult.layers.forEach((layerResult, idx) => {
-                        let valueDisplay;
-                        let rawValue = 0;
+                    updateStatus(`Querying Period 2 (${p2Start} to ${p2End})...`, "processing");
+                    period2Data = await queryPeriod(p2Start, p2End, false);
+                    
+                    // Build comparison table
+                    currentTableData = [];
+                    period2Data.forEach((p2Row, rowIdx) => {
+                        const p1Row = period1Data[rowIdx];
+                        const values = [];
+                        const rawValues = [];
                         
-                        if (layerResult.error) {
-                            valueDisplay = layerResult.value;
-                        } else {
-                            rawValue = layerResult.value;
-                            
-                            if (showPercentages) {
-                                // Show as percentage of Total Assigned
-                                const totalAssignedResult = results.find(r => r.name === "Total Assigned");
-                                if (totalAssignedResult) {
-                                    const totalValue = totalAssignedResult.layers[idx].value;
-                                    const percentage = totalValue > 0 ? (rawValue / totalValue * 100) : 0;
-                                    valueDisplay = percentage.toFixed(1) + '%';
-                                }
-                            } else {
-                                // Show actual values
-                                valueDisplay = layerResult.metric === "sum" ? 
-                                    layerResult.value.toLocaleString() : 
-                                    layerResult.value.toLocaleString();
-                            }
-                            
-                            // Add to totals if not error and not in percentage mode
-                            if (!showPercentages) {
-                                totals[idx] += layerResult.value;
-                            }
-                        }
+                        // Calculate total variance
+                        let p1Total = 0, p2Total = 0;
                         
-                        rowValues.push(valueDisplay);
-                        rawValues.push(rawValue);
+                        targetLayers.forEach((layer, colIdx) => {
+                            const p1Val = p1Row.rawValues[colIdx] || 0;
+                            const p2Val = p2Row.rawValues[colIdx] || 0;
+                            
+                            p1Total += p1Val;
+                            p2Total += p2Val;
+                            
+                            values.push(p2Row.values[colIdx]);
+                            rawValues.push(p2Val);
+                        });
+                        
+                        const varianceTotal = p2Total - p1Total;
+                        const percentChange = p1Total > 0 ? ((p2Total - p1Total) / p1Total * 100) : 0;
+                        
+                        currentTableData.push({
+                            category: p2Row.category,
+                            values: values,
+                            rawValues: rawValues,
+                            categoryData: p2Row.categoryData,
+                            varianceTotal: varianceTotal,
+                            percentChange: percentChange
+                        });
+                    });
+                    
+                    updateStatus(`Comparison completed: Period 1 vs Period 2`, "success");
+                    
+                } else {
+                    // Single period mode
+                    const start = $("#startDate").value;
+                    const end = $("#endDate").value;
+                    const allTimeMode = $("#startDate").disabled;
+                    
+                    if (!allTimeMode && (!start || !end)) {
+                        runBtn.innerHTML = originalText;
+                        runBtn.disabled = false;
+                        runBtn.style.opacity = '1';
+                        runBtn.style.cursor = 'pointer';
+                        isProcessing = false;
+                        return alert("Please select both dates or use All Time.");
+                    }
+                    
+                    let s = start, e = end;
+                    if (!allTimeMode && e < s) [s, e] = [e, s];
+                    
+                    const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
+                    updateStatus(`Querying layers for ${dateRangeText}...`, "processing");
+                    
+                    currentTableData = await queryPeriod(s, e, allTimeMode);
+                    
+                    // Add totals row
+                    const totals = new Array(targetLayers.length).fill(0);
+                    currentTableData.forEach(row => {
+                        row.rawValues.forEach((val, idx) => {
+                            totals[idx] += val;
+                        });
                     });
                     
                     currentTableData.push({
-                        category: categoryResult.name, 
-                        values: rowValues,
-                        rawValues: rawValues,
-                        categoryData: categoryResult.categoryData
-                    });
-                });
-                
-                // Add totals row (only when not in percentage mode)
-                if (!showPercentages) {
-                    const totalsRow = {
                         category: 'TOTALS',
                         values: totals.map(total => total.toLocaleString())
-                    };
-                    currentTableData.push(totalsRow);
+                    });
+                    
+                    updateStatus(`Report completed for ${dateRangeText}`, "success");
                 }
                 
-                // Show view options
+                // Show view options and render
                 $("#viewOptions").style.display = "block";
-                
-                // Render summary and table
                 renderSummary();
                 renderTable();
-                
                 $("#exportBtn").style.display = "inline-block";
-                updateStatus(`Report completed for ${selectionText} (${dateRangeText})`, "success");
                 
                 runBtn.innerHTML = originalText;
                 runBtn.disabled = false;
@@ -1216,7 +1449,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully (Week 2 Core Metrics - Fixed)');
+        console.log('Metrics By WOID Tool loaded successfully (Week 3 Comparison Mode)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
