@@ -1574,9 +1574,9 @@
                             try {
                                 await layer.load();
                                 
-                                // Build query for constructed features in period
-                                const constructedStatuses = ['CMPLT', 'QCINPROG', 'QCCMPLT', 'INVCMPLT', 'RDYFDLY'];
-                                const statusClause = constructedStatuses.map(s => `workflow_status = '${s}'`).join(' OR ');
+                                // Use SAME filter logic as Constructed category
+                                const excludedStatuses = ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG'];
+                                const statusClause = excludedStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
                                 
                                 let additionalFilter = "";
                                 if (targetLayer.additionalFilter) {
