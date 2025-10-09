@@ -173,6 +173,9 @@
                     <input type="checkbox" id="comparisonModeToggle">
                     <span style="font-weight:bold;">📊 Compare Two Periods</span>
                 </label>
+                <div style="font-size:10px;color:#666;margin-left:22px;margin-top:2px;font-style:italic;">
+                    Compares total progress at end of each period (cumulative snapshots)
+                </div>
             </div>
             
             <div id="singlePeriodSection">
@@ -936,6 +939,12 @@
                             <div style="font-size:11px;color:#666;margin-top:2px;">Period 1: ${p1InvoicedPct.toFixed(1)}% → Period 2: ${p2InvoicedPct.toFixed(1)}%</div>
                         </div>
                     </div>
+                    <div style="margin-top:12px;padding:8px;background:#e3f2fd;border-radius:4px;font-size:11px;">
+                        <strong>📊 How Comparison Works:</strong><br>
+                        • <strong>Constructed/Invoiced categories:</strong> Shows cumulative totals as of end date (all work installed BY that date)<br>
+                        • <strong>Designed/Assigned categories:</strong> Shows current totals (no date filter)<br>
+                        • <strong>Variance:</strong> Shows what was added/changed between period end dates
+                    </div>
                 `;
                 
             } else {
@@ -1104,7 +1113,7 @@
                 tableHTML += `</tr>`;
             });
             
-            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click category names to filter map | Click headers to sort</div>`;
+            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click category names to filter map | Click headers to sort${comparisonMode ? ' | Variance shows change from Period 1 to Period 2 end dates' : ''}</div>`;
             
             $("#resultsTable").innerHTML = tableHTML;
         }
@@ -1113,14 +1122,33 @@
         window.sortTable = sortTable;
         
         // Query function for a single period
-        async function queryPeriod(startDate, endDate, allTimeMode) {
+        async function queryPeriod(startDate, endDate, allTimeMode, isComparison = false) {
             const filterClause = buildFilterClause();
-            let baseDateClause = "";
             
-            if (!allTimeMode) {
-                const startLit = `TIMESTAMP '${startDate} 00:00:00'`;
-                const endLit = `TIMESTAMP '${endDate} 23:59:59'`;
-                baseDateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+            // Categories that should NOT be filtered by date
+            const noDateFilterCategories = ['Total Assigned', 'Designed', 'Remaining to Construct', 'On Hold'];
+            
+            function getDateClause(categoryName) {
+                // No date filter for these categories
+                if (noDateFilterCategories.includes(categoryName)) {
+                    return "";
+                }
+                
+                // All other categories use installation_date
+                if (allTimeMode) {
+                    return "";
+                }
+                
+                if (isComparison) {
+                    // Comparison mode: cumulative snapshot (everything installed BY end date)
+                    const endLit = `TIMESTAMP '${endDate} 23:59:59'`;
+                    return ` AND installation_date <= ${endLit}`;
+                } else {
+                    // Single-period mode: activity DURING the period
+                    const startLit = `TIMESTAMP '${startDate} 00:00:00'`;
+                    const endLit = `TIMESTAMP '${endDate} 23:59:59'`;
+                    return ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+                }
             }
             
             const categories = [
@@ -1175,7 +1203,8 @@
                             additionalFilter = ` AND ${targetLayer.additionalFilter}`;
                         }
                         
-                        const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${baseDateClause}`;
+                        const dateClause = getDateClause(category.name);
+                        const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
                         
                         const oidField = layer.objectIdField;
                         const outFields = [oidField, targetLayer.field];
@@ -1290,10 +1319,10 @@
                     }
                     
                     updateStatus(`Querying Period 1 (${p1Start} to ${p1End})...`, "processing");
-                    period1Data = await queryPeriod(p1Start, p1End, false);
+                    period1Data = await queryPeriod(p1Start, p1End, false, true);
                     
                     updateStatus(`Querying Period 2 (${p2Start} to ${p2End})...`, "processing");
-                    period2Data = await queryPeriod(p2Start, p2End, false);
+                    period2Data = await queryPeriod(p2Start, p2End, false, true);
                     
                     // Build comparison table
                     currentTableData = [];
@@ -1352,7 +1381,7 @@
                     const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
                     updateStatus(`Querying layers for ${dateRangeText}...`, "processing");
                     
-                    currentTableData = await queryPeriod(s, e, allTimeMode);
+                    currentTableData = await queryPeriod(s, e, allTimeMode, false);
                     
                     // Add totals row
                     const totals = new Array(targetLayers.length).fill(0);
