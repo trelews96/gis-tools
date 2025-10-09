@@ -27,9 +27,9 @@
         // Target layers configuration with weights based on construction sequence
         const targetLayers = [
             {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'", weight: 0.50, stage: "Main Infrastructure"},
-            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length", weight: 0.15, stage: "Foundation"},
-            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'", weight: 0.15, stage: "Foundation"},
-            {id: 42100, name: "Vault", metric: "count", field: "objectid", weight: 0.10, stage: "Foundation"},
+            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length", weight: 0.10, stage: "Foundation"},
+            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'", weight: 0.10, stage: "Foundation"},
+            {id: 42100, name: "Vault", metric: "count", field: "objectid", weight: 0.05, stage: "Foundation"},
             {id: 41150, name: "Splice Closure", metric: "count", field: "objectid", weight: 0.15, stage: "Finishing"},
             {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid", weight: 0.10, stage: "Finishing"}
         ];
@@ -751,6 +751,7 @@
             // Find key rows
             const designedRow = currentTableData.find(r => r.category === "Designed");
             const constructedRow = currentTableData.find(r => r.category === "Constructed");
+            const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
             const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
             
             if (!designedRow || !constructedRow) {
@@ -760,48 +761,61 @@
             
             // Calculate weighted percentages
             let weightedConstruction = 0;
-            let weightedBilling = 0;
+            let weightedBillingComplete = 0;
+            let weightedInvoiced = 0;
             
             targetLayers.forEach((layer, idx) => {
                 const designed = designedRow.rawValues[idx] || 0;
                 const constructed = constructedRow.rawValues[idx] || 0;
+                const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
                 const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
                 
                 if (designed > 0) {
                     const layerConstructionPct = (constructed / designed) * 100;
-                    const layerBillingPct = (invoiced / designed) * 100;
+                    const layerBillingCompletePct = (dailyComplete / designed) * 100;
+                    const layerInvoicedPct = (invoiced / designed) * 100;
                     
                     weightedConstruction += layerConstructionPct * layer.weight;
-                    weightedBilling += layerBillingPct * layer.weight;
+                    weightedBillingComplete += layerBillingCompletePct * layer.weight;
+                    weightedInvoiced += layerInvoicedPct * layer.weight;
                 }
             });
             
             const constructionColor = getCompletionColor(weightedConstruction);
-            const billingColor = getCompletionColor(weightedBilling);
+            const billingColor = getCompletionColor(weightedBillingComplete);
+            const invoicedColor = getCompletionColor(weightedInvoiced);
             
             summarySection.innerHTML = `
                 <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Project Summary</div>
                 <div style="display:flex;gap:16px;flex-wrap:wrap;">
-                    <div style="flex:1;min-width:200px;">
+                    <div style="flex:1;min-width:180px;">
                         <div style="font-weight:bold;margin-bottom:4px;">Construction Progress</div>
                         <div style="font-size:24px;font-weight:bold;color:${constructionColor};">${weightedConstruction.toFixed(1)}%</div>
                         <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
                             <div class="completion-fill" style="width:${weightedConstruction}%;background:${constructionColor};"></div>
                         </div>
-                        <div style="font-size:10px;color:#666;margin-top:4px;">Weighted average across all layers</div>
+                        <div style="font-size:10px;color:#666;margin-top:4px;">Work physically constructed</div>
                     </div>
-                    <div style="flex:1;min-width:200px;">
-                        <div style="font-weight:bold;margin-bottom:4px;">Billing Progress</div>
-                        <div style="font-size:24px;font-weight:bold;color:${billingColor};">${weightedBilling.toFixed(1)}%</div>
+                    <div style="flex:1;min-width:180px;">
+                        <div style="font-weight:bold;margin-bottom:4px;">Billing Complete</div>
+                        <div style="font-size:24px;font-weight:bold;color:${billingColor};">${weightedBillingComplete.toFixed(1)}%</div>
                         <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
-                            <div class="completion-fill" style="width:${weightedBilling}%;background:${billingColor};"></div>
+                            <div class="completion-fill" style="width:${weightedBillingComplete}%;background:${billingColor};"></div>
                         </div>
-                        <div style="font-size:10px;color:#666;margin-top:4px;">Weighted average of invoiced work</div>
+                        <div style="font-size:10px;color:#666;margin-top:4px;">Marked daily complete by field</div>
+                    </div>
+                    <div style="flex:1;min-width:180px;">
+                        <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
+                        <div style="font-size:24px;font-weight:bold;color:${invoicedColor};">${weightedInvoiced.toFixed(1)}%</div>
+                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                            <div class="completion-fill" style="width:${weightedInvoiced}%;background:${invoicedColor};"></div>
+                        </div>
+                        <div style="font-size:10px;color:#666;margin-top:4px;">Invoiced to customer</div>
                     </div>
                 </div>
                 <div style="margin-top:12px;font-size:11px;color:#666;">
                     <strong>Layer Weights:</strong> 
-                    Foundation (25%): UG Span 15%, Vaults 10% | 
+                    Foundation (25%): UG Span 10%, Aerial Span 10%, Vaults 5% | 
                     Main Infrastructure (50%): Fiber Cable 50% | 
                     Finishing (25%): Splice Closures 15%, Equipment 10%
                 </div>
@@ -842,6 +856,7 @@
             // Get designed and constructed rows for per-layer percentages
             const designedRow = currentTableData.find(r => r.category === "Designed");
             const constructedRow = currentTableData.find(r => r.category === "Constructed");
+            const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
             const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
             
             // Data rows
@@ -862,16 +877,12 @@
                     const cellStyle = row.error ? "color:#d32f2f;" : "";
                     let cellContent = value;
                     
-                    // Add per-layer percentages for Constructed and Invoiced rows
+                    // Add per-layer percentages for Constructed, Daily Complete, and Invoiced rows
                     if (!showPercentages && !isTotals && designedRow && row.rawValues) {
                         const designed = designedRow.rawValues[colIdx] || 0;
                         const current = row.rawValues[colIdx] || 0;
                         
-                        if (row.category === "Constructed" && designed > 0) {
-                            const pct = (current / designed * 100).toFixed(1);
-                            const color = getCompletionColor(parseFloat(pct));
-                            cellContent += `<span class="layer-percent" style="color:${color};">(${pct}%)</span>`;
-                        } else if (row.category === "Invoiced" && designed > 0) {
+                        if ((row.category === "Constructed" || row.category === "Daily Complete" || row.category === "Invoiced") && designed > 0) {
                             const pct = (current / designed * 100).toFixed(1);
                             const color = getCompletionColor(parseFloat(pct));
                             cellContent += `<span class="layer-percent" style="color:${color};">(${pct}%)</span>`;
@@ -945,7 +956,8 @@
                     {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
                     {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
                     {name: "On Hold", includeStatuses: ['ONHOLD']},
-                    {name: "Ready to Bill", includeStatuses: ['RDYFDLY']},
+                    {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
+                    {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
                     {name: "Invoiced", includeStatuses: ['INVCMPLT']}
                 ];
                 
