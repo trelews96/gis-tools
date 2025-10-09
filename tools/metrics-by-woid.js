@@ -1777,9 +1777,9 @@
                 {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
                 {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
                 {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
-                {name: "On Hold", includeStatuses: ['ONHOLD']},
-                {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
-                {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
+                {name: "On Hold", includeStatuses: ['ONHOLD','DEFRD']},
+                {name: "Daily Complete", includeStatuses: ['DLYCMPLT','INVCMPLT']},
+                {name: "Ready for Daily", includeStatuses: ['RDYFDLY','QCCMPLT']},
                 {name: "Invoiced", includeStatuses: ['INVCMPLT']}
             ];
             
