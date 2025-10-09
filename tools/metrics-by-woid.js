@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Converted from bookmarklet format
+// tools/metrics-by-woid.js - Week 1 Improvements
 // Layer Metrics Report with Purchase Order and Work Order filtering
 
 (function() {
@@ -42,6 +42,47 @@
         let selectedPurchaseOrders = [];
         let allPurchaseOrders = [];
         let currentTableData = [];
+        let sortColumn = null;
+        let sortDirection = 'asc';
+        let isProcessing = false;
+        
+        // CSS Spinner keyframes
+        const spinnerStyle = document.createElement('style');
+        spinnerStyle.textContent = `
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .spinner {
+                display: inline-block;
+                width: 14px;
+                height: 14px;
+                border: 2px solid #f3f3f3;
+                border-top: 2px solid #3367d6;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin-right: 6px;
+                vertical-align: middle;
+            }
+            .dropdown-option:hover {
+                background-color: #e3f2fd !important;
+            }
+            .table-row:hover {
+                background-color: #f0f7ff !important;
+            }
+            .sortable-header {
+                cursor: pointer;
+                user-select: none;
+            }
+            .sortable-header:hover {
+                background-color: #e8e8e8 !important;
+            }
+            .sort-indicator {
+                font-size: 10px;
+                margin-left: 4px;
+            }
+        `;
+        document.head.appendChild(spinnerStyle);
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -67,17 +108,40 @@
             <label>Purchase Order ID:</label><br>
             <div style="position:relative;margin:4px 0 8px 0;">
                 <div id="purchaseDropdown" style="width:100%;border:1px solid #ccc;padding:4px;background:#fff;cursor:pointer;min-height:20px;">
-                    <span id="purchasePlaceholder" style="color:#999;">Loading purchase orders...</span>
+                    <span id="purchasePlaceholder" style="color:#999;"><span class="spinner"></span>Loading purchase orders...</span>
                 </div>
-                <div id="purchaseOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;"></div>
+                <div id="purchaseOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;">
+                    <div style="padding:4px;background:#f5f5f5;border-bottom:1px solid #ddd;display:flex;gap:4px;">
+                        <button id="selectAllPO" style="flex:1;padding:4px;font-size:11px;">Select All</button>
+                        <button id="clearAllPO" style="flex:1;padding:4px;font-size:11px;">Clear All</button>
+                    </div>
+                    <div id="purchaseOptionsList"></div>
+                </div>
             </div>
             
             <label>Work Order ID:</label><br>
             <div style="position:relative;margin:4px 0 8px 0;">
                 <div id="workorderDropdown" style="width:100%;border:1px solid #ccc;padding:4px;background:#fff;cursor:pointer;min-height:20px;">
-                    <span id="workorderPlaceholder" style="color:#999;">Loading work orders...</span>
+                    <span id="workorderPlaceholder" style="color:#999;"><span class="spinner"></span>Loading work orders...</span>
                 </div>
-                <div id="workorderOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;"></div>
+                <div id="workorderOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;">
+                    <div style="padding:4px;background:#f5f5f5;border-bottom:1px solid #ddd;display:flex;gap:4px;">
+                        <button id="selectAllWO" style="flex:1;padding:4px;font-size:11px;">Select All</button>
+                        <button id="clearAllWO" style="flex:1;padding:4px;font-size:11px;">Clear All</button>
+                    </div>
+                    <div id="workorderOptionsList"></div>
+                </div>
+            </div>
+            
+            <label>Quick Date Range:</label><br>
+            <div style="display:flex;gap:4px;margin:4px 0 8px 0;flex-wrap:wrap;">
+                <button class="date-preset" data-days="7" style="padding:4px 8px;font-size:11px;">Last 7 Days</button>
+                <button class="date-preset" data-days="30" style="padding:4px 8px;font-size:11px;">Last 30 Days</button>
+                <button class="date-preset" data-preset="this-month" style="padding:4px 8px;font-size:11px;">This Month</button>
+                <button class="date-preset" data-preset="last-month" style="padding:4px 8px;font-size:11px;">Last Month</button>
+                <button class="date-preset" data-preset="this-quarter" style="padding:4px 8px;font-size:11px;">This Quarter</button>
+                <button class="date-preset" data-preset="ytd" style="padding:4px 8px;font-size:11px;">YTD</button>
+                <button id="allTimeBtn" style="padding:4px 8px;font-size:11px;">All Time</button>
             </div>
             
             <div style="display:flex;gap:8px;margin:4px 0 8px 0;">
@@ -89,20 +153,16 @@
                     <label>End date</label><br>
                     <input type="date" id="endDate" style="width:100%;">
                 </div>
-                <div style="flex:0;">
-                    <label>&nbsp;</label><br>
-                    <button id="allTimeBtn" style="height:100%;padding:0 12px;">All Time</button>
-                </div>
             </div>
             
             <div style="display:flex;gap:8px;">
-                <button id="runBtn">Run Report</button>
-                <button id="exportBtn" style="display:none;">Export CSV</button>
-                <button id="clearBtn" style="display:none;">Clear Filters</button>
-                <button id="closeTool">Close</button>
+                <button id="runBtn">▶ Run Report</button>
+                <button id="exportBtn" style="display:none;">📥 Export CSV</button>
+                <button id="clearBtn" style="display:none;">🔄 Clear Filters</button>
+                <button id="closeTool">✖ Close</button>
             </div>
             
-            <div id="toolStatus" style="margin-top:8px;color:#3367d6;"></div>
+            <div id="toolStatus" style="margin-top:8px;padding:6px;border-radius:3px;"></div>
             <div id="resultsTable" style="margin-top:12px;"></div>
         `;
         
@@ -113,9 +173,88 @@
         const $ = (id) => toolBox.querySelector(id);
         const status = $("#toolStatus");
         
-        function updateStatus(message) {
+        function updateStatus(message, type = 'info') {
             status.textContent = message;
+            status.style.display = message ? 'block' : 'none';
+            
+            // Color code by type
+            const colors = {
+                'info': '#e3f2fd',
+                'success': '#e8f5e9',
+                'error': '#ffebee',
+                'warning': '#fff3e0',
+                'processing': '#f3e5f5'
+            };
+            status.style.background = colors[type] || colors.info;
+            status.style.color = '#333';
+            
+            // Add icon
+            const icons = {
+                'info': 'ℹ️',
+                'success': '✅',
+                'error': '❌',
+                'warning': '⚠️',
+                'processing': '⏳'
+            };
+            const icon = icons[type] || icons.info;
+            status.textContent = `${icon} ${message}`;
         }
+        
+        // Date preset handlers
+        function setDateRange(startDate, endDate) {
+            $("#startDate").value = startDate;
+            $("#endDate").value = endDate;
+            $("#startDate").disabled = false;
+            $("#endDate").disabled = false;
+            $("#allTimeBtn").style.background = "";
+            $("#allTimeBtn").style.color = "";
+            
+            // Reset all preset buttons
+            toolBox.querySelectorAll('.date-preset').forEach(btn => {
+                btn.style.background = "";
+                btn.style.color = "";
+            });
+        }
+        
+        function formatDateForInput(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+        
+        toolBox.querySelectorAll('.date-preset').forEach(btn => {
+            btn.onclick = () => {
+                const today = new Date();
+                let startDate, endDate;
+                
+                if (btn.dataset.days) {
+                    const days = parseInt(btn.dataset.days);
+                    endDate = new Date(today);
+                    startDate = new Date(today);
+                    startDate.setDate(startDate.getDate() - days);
+                } else if (btn.dataset.preset === 'this-month') {
+                    startDate = new Date(today.getFullYear(), today.getMonth(), 1);
+                    endDate = new Date(today);
+                } else if (btn.dataset.preset === 'last-month') {
+                    startDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                    endDate = new Date(today.getFullYear(), today.getMonth(), 0);
+                } else if (btn.dataset.preset === 'this-quarter') {
+                    const quarter = Math.floor(today.getMonth() / 3);
+                    startDate = new Date(today.getFullYear(), quarter * 3, 1);
+                    endDate = new Date(today);
+                } else if (btn.dataset.preset === 'ytd') {
+                    startDate = new Date(today.getFullYear(), 0, 1);
+                    endDate = new Date(today);
+                }
+                
+                setDateRange(formatDateForInput(startDate), formatDateForInput(endDate));
+                
+                // Highlight active button
+                btn.style.background = "#3367d6";
+                btn.style.color = "#fff";
+            };
+        });
         
         // Load purchase orders from fiber layer
         async function loadPurchaseOrders() {
@@ -124,7 +263,7 @@
                 const fiberLayer = allFL.find(l => l.layerId === 41050);
                 
                 if (!fiberLayer) {
-                    $("#purchasePlaceholder").textContent = "No fiber layer found";
+                    $("#purchasePlaceholder").innerHTML = "No fiber layer found";
                     return;
                 }
                 
@@ -159,24 +298,40 @@
                 });
                 
                 if (!allPurchaseOrders.length) {
-                    $("#purchasePlaceholder").textContent = "No purchase orders found";
+                    $("#purchasePlaceholder").innerHTML = "No purchase orders found";
                     return;
                 }
                 
                 const optionsHtml = allPurchaseOrders.map(po => `
-                    <div class="purchase-option" data-value="${po.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
+                    <div class="purchase-option dropdown-option" data-value="${po.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
                         <input type="checkbox" style="margin-right:6px;"> ${po.name}
                     </div>
                 `).join('');
                 
-                $("#purchaseOptions").innerHTML = optionsHtml;
-                $("#purchasePlaceholder").textContent = "Select purchase orders...";
+                $("#purchaseOptionsList").innerHTML = optionsHtml;
+                $("#purchasePlaceholder").innerHTML = "Select purchase orders...";
+                
+                // Select All / Clear All handlers
+                $("#selectAllPO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedPurchaseOrders = allPurchaseOrders.map(po => po.code.toString());
+                    $("#purchaseOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+                    updatePurchaseDropdownDisplay();
+                };
+                
+                $("#clearAllPO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedPurchaseOrders = [];
+                    $("#purchaseOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+                    updatePurchaseDropdownDisplay();
+                };
                 
                 $("#purchaseDropdown").onclick = () => {
                     $("#purchaseOptions").style.display = $("#purchaseOptions").style.display === 'none' ? 'block' : 'none';
+                    $("#workorderOptions").style.display = 'none';
                 };
                 
-                $("#purchaseOptions").addEventListener('click', (e) => {
+                $("#purchaseOptionsList").addEventListener('click', (e) => {
                     if (e.target.classList.contains('purchase-option') || e.target.type === 'checkbox') {
                         const option = e.target.classList.contains('purchase-option') ? e.target : e.target.parentElement;
                         const checkbox = option.querySelector('input[type="checkbox"]');
@@ -199,22 +354,27 @@
                 
             } catch (error) {
                 console.error("Error loading purchase orders:", error);
-                $("#purchasePlaceholder").textContent = "Error loading purchase orders";
+                $("#purchasePlaceholder").innerHTML = "Error loading purchase orders";
             }
         }
         
         function updatePurchaseDropdownDisplay() {
             const placeholder = $("#purchasePlaceholder");
+            const total = allPurchaseOrders.length;
+            const selected = selectedPurchaseOrders.length;
             
-            if (selectedPurchaseOrders.length === 0) {
-                placeholder.textContent = "Select purchase orders...";
+            if (selected === 0) {
+                placeholder.innerHTML = "Select purchase orders...";
                 placeholder.style.color = "#999";
-            } else if (selectedPurchaseOrders.length === 1) {
-                const selected = allPurchaseOrders.find(p => p.code.toString() === selectedPurchaseOrders[0]);
-                placeholder.textContent = selected ? selected.name : selectedPurchaseOrders[0];
+            } else if (selected === 1) {
+                const selectedPO = allPurchaseOrders.find(p => p.code.toString() === selectedPurchaseOrders[0]);
+                placeholder.innerHTML = selectedPO ? selectedPO.name : selectedPurchaseOrders[0];
+                placeholder.style.color = "#000";
+            } else if (selected === total) {
+                placeholder.innerHTML = `All ${total} purchase orders selected`;
                 placeholder.style.color = "#000";
             } else {
-                placeholder.textContent = `${selectedPurchaseOrders.length} purchase orders selected`;
+                placeholder.innerHTML = `${selected} of ${total} purchase orders selected`;
                 placeholder.style.color = "#000";
             }
         }
@@ -226,7 +386,7 @@
                 const fiberLayer = allFL.find(l => l.layerId === 41050);
                 
                 if (!fiberLayer) {
-                    $("#workorderPlaceholder").textContent = "No fiber layer found";
+                    $("#workorderPlaceholder").innerHTML = "No fiber layer found";
                     return;
                 }
                 
@@ -261,24 +421,40 @@
                 });
                 
                 if (!allWorkorders.length) {
-                    $("#workorderPlaceholder").textContent = "No work orders found";
+                    $("#workorderPlaceholder").innerHTML = "No work orders found";
                     return;
                 }
                 
                 const optionsHtml = allWorkorders.map(wo => `
-                    <div class="workorder-option" data-value="${wo.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
+                    <div class="workorder-option dropdown-option" data-value="${wo.code.toString().replace(/"/g, '&quot;')}" style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
                         <input type="checkbox" style="margin-right:6px;"> ${wo.name}
                     </div>
                 `).join('');
                 
-                $("#workorderOptions").innerHTML = optionsHtml;
-                $("#workorderPlaceholder").textContent = "Select work orders...";
+                $("#workorderOptionsList").innerHTML = optionsHtml;
+                $("#workorderPlaceholder").innerHTML = "Select work orders...";
+                
+                // Select All / Clear All handlers
+                $("#selectAllWO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedWorkorders = allWorkorders.map(wo => wo.code.toString());
+                    $("#workorderOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+                    updateWorkorderDropdownDisplay();
+                };
+                
+                $("#clearAllWO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedWorkorders = [];
+                    $("#workorderOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+                    updateWorkorderDropdownDisplay();
+                };
                 
                 $("#workorderDropdown").onclick = () => {
                     $("#workorderOptions").style.display = $("#workorderOptions").style.display === 'none' ? 'block' : 'none';
+                    $("#purchaseOptions").style.display = 'none';
                 };
                 
-                $("#workorderOptions").addEventListener('click', (e) => {
+                $("#workorderOptionsList").addEventListener('click', (e) => {
                     if (e.target.classList.contains('workorder-option') || e.target.type === 'checkbox') {
                         const option = e.target.classList.contains('workorder-option') ? e.target : e.target.parentElement;
                         const checkbox = option.querySelector('input[type="checkbox"]');
@@ -301,22 +477,27 @@
                 
             } catch (error) {
                 console.error("Error loading work orders:", error);
-                $("#workorderPlaceholder").textContent = "Error loading work orders";
+                $("#workorderPlaceholder").innerHTML = "Error loading work orders";
             }
         }
         
         function updateWorkorderDropdownDisplay() {
             const placeholder = $("#workorderPlaceholder");
+            const total = allWorkorders.length;
+            const selected = selectedWorkorders.length;
             
-            if (selectedWorkorders.length === 0) {
-                placeholder.textContent = "Select work orders...";
+            if (selected === 0) {
+                placeholder.innerHTML = "Select work orders...";
                 placeholder.style.color = "#999";
-            } else if (selectedWorkorders.length === 1) {
-                const selected = allWorkorders.find(w => w.code.toString() === selectedWorkorders[0]);
-                placeholder.textContent = selected ? selected.name : selectedWorkorders[0];
+            } else if (selected === 1) {
+                const selectedWO = allWorkorders.find(w => w.code.toString() === selectedWorkorders[0]);
+                placeholder.innerHTML = selectedWO ? selectedWO.name : selectedWorkorders[0];
+                placeholder.style.color = "#000";
+            } else if (selected === total) {
+                placeholder.innerHTML = `All ${total} work orders selected`;
                 placeholder.style.color = "#000";
             } else {
-                placeholder.textContent = `${selectedWorkorders.length} work orders selected`;
+                placeholder.innerHTML = `${selected} of ${total} work orders selected`;
                 placeholder.style.color = "#000";
             }
         }
@@ -329,6 +510,12 @@
             $("#endDate").disabled = true;
             $("#allTimeBtn").style.background = "#3367d6";
             $("#allTimeBtn").style.color = "#fff";
+            
+            // Reset date preset buttons
+            toolBox.querySelectorAll('.date-preset').forEach(btn => {
+                btn.style.background = "";
+                btn.style.color = "";
+            });
         };
         
         $("#startDate").onclick = $("#endDate").onclick = () => {
@@ -336,6 +523,12 @@
             $("#endDate").disabled = false;
             $("#allTimeBtn").style.background = "";
             $("#allTimeBtn").style.color = "";
+            
+            // Reset date preset buttons
+            toolBox.querySelectorAll('.date-preset').forEach(btn => {
+                btn.style.background = "";
+                btn.style.color = "";
+            });
         };
         
         // Build filter clause for queries
@@ -372,7 +565,9 @@
             
             const csvRows = [["Category", ...targetLayers.map(l => l.name)]];
             currentTableData.forEach(row => {
-                csvRows.push([csvEsc(row.category), ...row.values.map(v => csvEsc(v))]);
+                if (row.category !== 'TOTALS') { // Skip totals row in export or include it based on preference
+                    csvRows.push([csvEsc(row.category), ...row.values.map(v => csvEsc(v))]);
+                }
             });
             
             const csv = csvRows.map(r => r.join(",")).join("\n");
@@ -388,6 +583,8 @@
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
+            
+            updateStatus("CSV exported successfully!", "success");
         };
         
         // Clear map filters
@@ -399,18 +596,18 @@
                         layer.definitionExpression = "";
                     }
                 });
-                updateStatus("Map filters cleared.");
+                updateStatus("Map filters cleared.", "success");
                 $("#clearBtn").style.display = "none";
             } catch (error) {
                 console.error("Error clearing filters:", error);
-                updateStatus("Error clearing filters.");
+                updateStatus("Error clearing filters.", "error");
             }
         };
         
         // Global function for filtering map by category
         window.filterMapByCategory = async function(categoryName, categoryData) {
             try {
-                updateStatus(`Applying ${categoryName} filters to map...`);
+                updateStatus(`Applying ${categoryName} filters to map...`, "processing");
                 
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
                 
@@ -454,27 +651,144 @@
                     layer.definitionExpression = fullFilter;
                 }
                 
-                updateStatus(`Map filtered to show ${categoryName} features. Click "Clear Filters" to reset.`);
+                updateStatus(`Map filtered to show ${categoryName} features. Click "Clear Filters" to reset.`, "success");
                 $("#clearBtn").style.display = "inline-block";
                 
             } catch (error) {
                 console.error("Error filtering map:", error);
-                updateStatus("Error applying map filters.");
+                updateStatus("Error applying map filters.", "error");
             }
         };
         
+        // Sorting function
+        function sortTable(columnIndex) {
+            if (sortColumn === columnIndex) {
+                sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortColumn = columnIndex;
+                sortDirection = 'asc';
+            }
+            
+            // Don't sort the TOTALS row
+            const totalsRow = currentTableData.find(row => row.category === 'TOTALS');
+            const dataRows = currentTableData.filter(row => row.category !== 'TOTALS');
+            
+            if (columnIndex === -1) {
+                // Sort by category name
+                dataRows.sort((a, b) => {
+                    const comparison = a.category.localeCompare(b.category);
+                    return sortDirection === 'asc' ? comparison : -comparison;
+                });
+            } else {
+                // Sort by numeric value
+                dataRows.sort((a, b) => {
+                    const aVal = parseFloat(a.values[columnIndex].replace(/,/g, '')) || 0;
+                    const bVal = parseFloat(b.values[columnIndex].replace(/,/g, '')) || 0;
+                    return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+                });
+            }
+            
+            // Rebuild table data with totals at bottom
+            currentTableData = [...dataRows];
+            if (totalsRow) {
+                currentTableData.push(totalsRow);
+            }
+            
+            // Redraw table
+            renderTable();
+        }
+        
+        // Render table function
+        function renderTable() {
+            if (!currentTableData.length) return;
+            
+            let tableHTML = `<div style="overflow-x:auto;margin-top:8px;"><table style="min-width:100%;border-collapse:collapse;white-space:nowrap;"><thead><tr style="background:#f5f5f5;">`;
+            
+            // Category header with sort
+            tableHTML += `<th class="sortable-header" onclick="sortTable(-1)" style="border:1px solid #ddd;padding:8px;text-align:left;font-weight:bold;">Category`;
+            if (sortColumn === -1) {
+                tableHTML += `<span class="sort-indicator">${sortDirection === 'asc' ? '▲' : '▼'}</span>`;
+            }
+            tableHTML += `</th>`;
+            
+            // Layer headers with sort
+            targetLayers.forEach((layer, idx) => {
+                let headerText = layer.name;
+                if (layer.additionalFilter) {
+                    if (layer.name === "Fiber Cable") headerText += " (Excl. DROP)";
+                    else if (layer.name === "Aerial Span") headerText += " (Excl. EXISTINGINFRA)";
+                }
+                tableHTML += `<th class="sortable-header" onclick="sortTable(${idx})" style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;">${headerText}`;
+                if (sortColumn === idx) {
+                    tableHTML += `<span class="sort-indicator">${sortDirection === 'asc' ? '▲' : '▼'}</span>`;
+                }
+                tableHTML += `</th>`;
+            });
+            
+            tableHTML += `</tr></thead><tbody>`;
+            
+            // Data rows
+            currentTableData.forEach((row, rowIdx) => {
+                const isTotals = row.category === 'TOTALS';
+                const rowClass = isTotals ? '' : 'table-row';
+                const rowStyle = isTotals ? 
+                    'background:#e8eaf6;font-weight:bold;border-top:2px solid #333;' : 
+                    (rowIdx % 2 === 0 ? 'background:#fff;' : 'background:#f9f9f9;');
+                
+                if (isTotals) {
+                    tableHTML += `<tr class="${rowClass}" style="${rowStyle}"><td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${row.category}</td>`;
+                } else {
+                    tableHTML += `<tr class="${rowClass}" style="${rowStyle}"><td style="border:1px solid #ddd;padding:8px;font-weight:bold;cursor:pointer;transition:background 0.2s;" onclick="filterMapByCategory('${row.category}',${JSON.stringify(row.categoryData).replace(/"/g, '&quot;')})" title="Click to filter map to show only ${row.category} features">${row.category}</td>`;
+                }
+                
+                row.values.forEach(value => {
+                    const cellStyle = row.error ? "color:#d32f2f;" : "";
+                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${value}</td>`;
+                });
+                
+                tableHTML += `</tr>`;
+            });
+            
+            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map to show only those features | Click column headers to sort</div>`;
+            
+            $("#resultsTable").innerHTML = tableHTML;
+        }
+        
+        // Make sortTable global so onclick handlers can access it
+        window.sortTable = sortTable;
+        
         // Main report function
         $("#runBtn").onclick = async () => {
+            if (isProcessing) return;
+            
             try {
+                isProcessing = true;
+                const runBtn = $("#runBtn");
+                const originalText = runBtn.innerHTML;
+                runBtn.innerHTML = '<span class="spinner"></span>Running...';
+                runBtn.disabled = true;
+                runBtn.style.opacity = '0.6';
+                runBtn.style.cursor = 'not-allowed';
+                
                 const start = $("#startDate").value;
                 const end = $("#endDate").value;
                 const allTimeMode = $("#startDate").disabled;
                 
                 if (selectedWorkorders.length === 0 && selectedPurchaseOrders.length === 0) {
+                    runBtn.innerHTML = originalText;
+                    runBtn.disabled = false;
+                    runBtn.style.opacity = '1';
+                    runBtn.style.cursor = 'pointer';
+                    isProcessing = false;
                     return alert("Please select at least one work order or purchase order.");
                 }
                 
                 if (!allTimeMode && (!start || !end)) {
+                    runBtn.innerHTML = originalText;
+                    runBtn.disabled = false;
+                    runBtn.style.opacity = '1';
+                    runBtn.style.cursor = 'pointer';
+                    isProcessing = false;
                     return alert("Please select both dates or use All Time.");
                 }
                 
@@ -508,14 +822,23 @@
                     selectionText = selectedWorkorders.length === 1 ? selectedWorkorders[0] : `${selectedWorkorders.length} work orders`;
                 }
                 
-                updateStatus(`Querying layers for ${selectionText} (${dateRangeText})...`);
+                updateStatus(`Querying layers for ${selectionText} (${dateRangeText})...`, "processing");
                 $("#resultsTable").innerHTML = "";
                 currentTableData = [];
                 
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                if (!allFL.length) return alert("No feature layers found.");
+                if (!allFL.length) {
+                    runBtn.innerHTML = originalText;
+                    runBtn.disabled = false;
+                    runBtn.style.opacity = '1';
+                    runBtn.style.cursor = 'pointer';
+                    isProcessing = false;
+                    return alert("No feature layers found.");
+                }
                 
                 const results = [];
+                const totalQueries = categories.length * targetLayers.length;
+                let completedQueries = 0;
                 
                 for (const category of categories) {
                     const categoryResults = {
@@ -526,6 +849,9 @@
                     
                     for (const targetLayer of targetLayers) {
                         try {
+                            completedQueries++;
+                            updateStatus(`Querying ${category.name}: ${targetLayer.name} (${completedQueries}/${totalQueries})...`, "processing");
+                            
                             const layer = allFL.find(l => l.layerId === targetLayer.id);
                             if (!layer) {
                                 categoryResults.layers.push({
@@ -597,46 +923,60 @@
                     results.push(categoryResults);
                 }
                 
-                // Build results table
-                let tableHTML = `<div style="overflow-x:auto;margin-top:8px;"><table style="min-width:100%;border-collapse:collapse;white-space:nowrap;"><thead><tr style="background:#f5f5f5;"><th style="border:1px solid #ddd;padding:8px;text-align:left;font-weight:bold;">Category</th>`;
-                
-                targetLayers.forEach(layer => {
-                    let headerText = layer.name;
-                    if (layer.additionalFilter) {
-                        if (layer.name === "Fiber Cable") headerText += " (Excl. DROP)";
-                        else if (layer.name === "Aerial Span") headerText += " (Excl. EXISTINGINFRA)";
-                    }
-                    tableHTML += `<th style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;">${headerText}</th>`;
-                });
-                
-                tableHTML += `</tr></thead><tbody>`;
+                // Build results table data
+                currentTableData = [];
+                const totals = new Array(targetLayers.length).fill(0);
                 
                 results.forEach(categoryResult => {
                     const rowValues = [];
-                    tableHTML += `<tr><td style="border:1px solid #ddd;padding:8px;font-weight:bold;cursor:pointer;background:#f8f9fa;transition:background 0.2s;" onclick="filterMapByCategory('${categoryResult.name}',${JSON.stringify(categoryResult.categoryData).replace(/"/g, '&quot;')})" title="Click to filter map to show only ${categoryResult.name} features">${categoryResult.name}</td>`;
                     
-                    categoryResult.layers.forEach(layerResult => {
+                    categoryResult.layers.forEach((layerResult, idx) => {
                         const valueDisplay = layerResult.error ? layerResult.value : 
                             (layerResult.metric === "sum" ? layerResult.value.toLocaleString() : layerResult.value.toLocaleString());
                         rowValues.push(valueDisplay);
                         
-                        const cellStyle = layerResult.error ? "color:#d32f2f;" : "";
-                        tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${valueDisplay}</td>`;
+                        // Add to totals if not error
+                        if (!layerResult.error) {
+                            totals[idx] += layerResult.value;
+                        }
                     });
                     
-                    currentTableData.push({category: categoryResult.name, values: rowValues});
-                    tableHTML += `</tr>`;
+                    currentTableData.push({
+                        category: categoryResult.name, 
+                        values: rowValues,
+                        categoryData: categoryResult.categoryData
+                    });
                 });
                 
-                tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map to show only those features</div>`;
+                // Add totals row
+                const totalsRow = {
+                    category: 'TOTALS',
+                    values: totals.map(total => total.toLocaleString())
+                };
+                currentTableData.push(totalsRow);
                 
-                $("#resultsTable").innerHTML = tableHTML;
+                // Render table
+                renderTable();
+                
                 $("#exportBtn").style.display = "inline-block";
-                updateStatus("Report completed.");
+                updateStatus(`Report completed for ${selectionText} (${dateRangeText})`, "success");
+                
+                runBtn.innerHTML = originalText;
+                runBtn.disabled = false;
+                runBtn.style.opacity = '1';
+                runBtn.style.cursor = 'pointer';
+                isProcessing = false;
                 
             } catch (err) {
                 console.error(err);
-                updateStatus("Error: " + (err.message || err));
+                updateStatus("Error: " + (err.message || err), "error");
+                
+                const runBtn = $("#runBtn");
+                runBtn.innerHTML = '▶ Run Report';
+                runBtn.disabled = false;
+                runBtn.style.opacity = '1';
+                runBtn.style.cursor = 'pointer';
+                isProcessing = false;
             }
         };
         
@@ -662,9 +1002,17 @@
                 console.warn("Error clearing filters during cleanup:", error);
             }
             
-            // Clean up global function
+            // Clean up global functions
             if (window.filterMapByCategory) {
                 delete window.filterMapByCategory;
+            }
+            if (window.sortTable) {
+                delete window.sortTable;
+            }
+            
+            // Remove spinner style
+            if (spinnerStyle && spinnerStyle.parentNode) {
+                spinnerStyle.parentNode.removeChild(spinnerStyle);
             }
             
             toolBox.remove();
@@ -686,7 +1034,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully');
+        console.log('Metrics By WOID Tool loaded successfully (Week 1 Enhanced)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
