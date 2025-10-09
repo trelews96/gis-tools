@@ -908,6 +908,23 @@
             
             if (!designedRow || !constructedRow) return alerts;
             
+            // Check for data quality issues per layer
+            targetLayers.forEach((layer, idx) => {
+                const designed = designedRow.rawValues[idx] || 0;
+                const constructed = constructedRow.rawValues[idx] || 0;
+                
+                if (constructed > designed && designed > 0) {
+                    const excess = constructed - designed;
+                    const unit = layer.metric === "sum" ? "ft" : "units";
+                    alerts.push({
+                        type: 'critical',
+                        icon: '🚨',
+                        title: `Data Quality Issue - ${layer.name}`,
+                        message: `Constructed (${constructed.toLocaleString()}) exceeds Designed (${designed.toLocaleString()}) by ${excess.toLocaleString()} ${unit}. Please verify data accuracy.`
+                    });
+                }
+            });
+            
             // Calculate totals
             let designedTotal = 0, constructedTotal = 0, dailyCompleteTotal = 0, onHoldTotal = 0, readyForDailyTotal = 0, invoicedTotal = 0;
             
@@ -918,46 +935,79 @@
             if (readyForDailyRow) readyForDailyRow.rawValues.forEach((val, idx) => { readyForDailyTotal += val; });
             if (invoicedRow) invoicedRow.rawValues.forEach((val, idx) => { invoicedTotal += val; });
             
-            // Alert: Data quality issue (Constructed > Designed)
-            if (constructedTotal > designedTotal) {
-                alerts.push({
-                    type: 'critical',
-                    icon: '🚨',
-                    title: 'Data Quality Issue',
-                    message: `Constructed (${constructedTotal.toLocaleString()}) exceeds Designed (${designedTotal.toLocaleString()}). Please verify data accuracy.`
-                });
-            }
-            
-            // Alert: High % on hold
+            // Alert: High % on hold with layer breakdown
             if (designedTotal > 0) {
                 const onHoldPct = (onHoldTotal / designedTotal) * 100;
                 if (onHoldPct > 20) {
+                    // Find which layers have the most on hold
+                    const highOnHoldLayers = [];
+                    if (onHoldRow) {
+                        targetLayers.forEach((layer, idx) => {
+                            const designed = designedRow.rawValues[idx] || 0;
+                            const onHold = onHoldRow.rawValues[idx] || 0;
+                            if (designed > 0) {
+                                const layerPct = (onHold / designed) * 100;
+                                if (layerPct > 20) {
+                                    highOnHoldLayers.push(`${layer.name} (${layerPct.toFixed(0)}%)`);
+                                }
+                            }
+                        });
+                    }
+                    
+                    let message = `${onHoldPct.toFixed(1)}% of designed work is on hold. Consider reviewing blocked items.`;
+                    if (highOnHoldLayers.length > 0) {
+                        message += ` Affected: ${highOnHoldLayers.join(', ')}.`;
+                    }
+                    
                     alerts.push({
                         type: 'warning',
                         icon: '⚠️',
                         title: 'High Volume On Hold',
-                        message: `${onHoldPct.toFixed(1)}% of designed work is on hold. Consider reviewing blocked items.`
+                        message: message
                     });
                 }
             }
             
-            // Alert: Large billing lag
+            // Alert: Large billing lag with layer breakdown
             if (constructedTotal > 0 && dailyCompleteTotal > 0) {
                 const billingGap = constructedTotal - dailyCompleteTotal;
                 const gapPct = (billingGap / constructedTotal) * 100;
                 if (gapPct > 25) {
+                    // Find which layers have the biggest gap
+                    const laggyLayers = [];
+                    if (dailyCompleteRow) {
+                        targetLayers.forEach((layer, idx) => {
+                            const constructed = constructedRow.rawValues[idx] || 0;
+                            const dailyComplete = dailyCompleteRow.rawValues[idx] || 0;
+                            if (constructed > 0) {
+                                const layerGap = constructed - dailyComplete;
+                                const layerPct = (layerGap / constructed) * 100;
+                                if (layerPct > 30 && layerGap > 0) {
+                                    const unit = layer.metric === "sum" ? "ft" : "units";
+                                    laggyLayers.push(`${layer.name} (${layerGap.toFixed(0)} ${unit}, ${layerPct.toFixed(0)}%)`);
+                                }
+                            }
+                        });
+                    }
+                    
+                    let message = `${gapPct.toFixed(1)}% of constructed work not marked Daily Complete. Consider submitting for billing.`;
+                    if (laggyLayers.length > 0) {
+                        message += ` Top gaps: ${laggyLayers.slice(0, 3).join(', ')}.`;
+                    }
+                    
                     alerts.push({
                         type: 'warning',
                         icon: '📋',
                         title: 'Billing Lag Detected',
-                        message: `${billingGap.toLocaleString()} units constructed but not marked Daily Complete (${gapPct.toFixed(1)}%). Consider submitting for billing.`
+                        message: message
                     });
                 }
             }
             
             // Alert: Ready for Daily stuck
-            if (readyForDailyTotal > 0 && invoicedTotal > 0) {
-                const stuckPct = (readyForDailyTotal / (readyForDailyTotal + invoicedTotal)) * 100;
+            if (readyForDailyTotal > 0 && invoicedTotal >= 0) {
+                const totalInBilling = readyForDailyTotal + invoicedTotal;
+                const stuckPct = totalInBilling > 0 ? (readyForDailyTotal / totalInBilling) * 100 : 0;
                 if (stuckPct > 40) {
                     alerts.push({
                         type: 'info',
@@ -996,6 +1046,23 @@
                     title: 'Low Activity',
                     message: `${velocityData.daysSinceLastInstall} days since last installation. Last activity: ${velocityData.lastInstallDate}.`
                 });
+            }
+            
+            // Alert: Identify slow layers (low velocity)
+            if (velocityData && velocityData.layerVelocities) {
+                const slowLayers = velocityData.layerVelocities.filter(lv => 
+                    lv.rawVelocity === 0 && lv.velocity.includes("No activity")
+                );
+                
+                if (slowLayers.length > 0 && slowLayers.length < velocityData.layerVelocities.length) {
+                    const layerNames = slowLayers.map(l => l.name).join(', ');
+                    alerts.push({
+                        type: 'info',
+                        icon: '🐌',
+                        title: 'Stalled Layers',
+                        message: `No activity in period for: ${layerNames}. Consider checking for blockers.`
+                    });
+                }
             }
             
             return alerts;
@@ -1168,17 +1235,28 @@
                 // Velocity section
                 let velocityHTML = '';
                 if (velocityData) {
-                    velocityHTML = `
-                        <div style="margin-top:12px;padding:8px;background:#f0f4ff;border-radius:4px;">
-                            <div style="font-weight:bold;margin-bottom:6px;">📈 Velocity Metrics</div>
-                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;font-size:11px;">
+                    // Build velocity table
+                    let velocityTableHTML = `
+                        <div style="margin-top:12px;padding:10px;background:#f0f4ff;border-radius:4px;">
+                            <div style="font-weight:bold;margin-bottom:8px;">📈 Velocity Metrics${velocityData.periodDays ? ` (${velocityData.periodDays} days)` : ''}</div>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:10px;">
+                    `;
+                    
+                    velocityData.layerVelocities.forEach((layer, idx) => {
+                        velocityTableHTML += `
+                            <div style="font-size:11px;">
+                                <div style="font-weight:bold;color:#1976d2;margin-bottom:2px;">${layer.name}</div>
+                                <div style="color:#333;">${layer.velocity}</div>
+                            </div>
+                        `;
+                    });
+                    
+                    velocityTableHTML += `
+                            </div>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;padding-top:8px;border-top:1px solid #d0d5dd;font-size:11px;">
                                 <div>
-                                    <strong>Construction Rate:</strong><br>
-                                    ${velocityData.constructionVelocity} units/day
-                                </div>
-                                <div>
-                                    <strong>Days Since Last Install:</strong><br>
-                                    ${velocityData.daysSinceLastInstall} days (${velocityData.lastInstallDate})
+                                    <strong>Last Activity:</strong><br>
+                                    ${velocityData.daysSinceLastInstall} days ago (${velocityData.lastInstallDate})
                                 </div>
                                 ${velocityData.estimatedCompletion ? `
                                 <div>
@@ -1186,13 +1264,48 @@
                                     ${velocityData.estimatedCompletion}
                                 </div>
                                 ` : ''}
-                                <div>
-                                    <strong>Billing Lag:</strong><br>
-                                    ${velocityData.billingLagDays} days avg
-                                </div>
                             </div>
                         </div>
                     `;
+                    
+                    // Build billing lag table
+                    let billingLagHTML = `
+                        <div style="margin-top:8px;padding:10px;background:#fff9e6;border-radius:4px;">
+                            <div style="font-weight:bold;margin-bottom:8px;">⏱️ Billing Pipeline Status</div>
+                            <div style="overflow-x:auto;">
+                                <table style="width:100%;border-collapse:collapse;font-size:11px;">
+                                    <thead>
+                                        <tr style="background:#f5f5f5;">
+                                            <th style="border:1px solid #ddd;padding:6px;text-align:left;">Layer</th>
+                                            <th style="border:1px solid #ddd;padding:6px;text-align:center;">Constructed → Daily Complete</th>
+                                            <th style="border:1px solid #ddd;padding:6px;text-align:center;">Daily Complete → Invoiced</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                    `;
+                    
+                    velocityData.layerBillingLags.forEach((layer, idx) => {
+                        const rowStyle = idx % 2 === 0 ? 'background:#fff;' : 'background:#fefef8;';
+                        billingLagHTML += `
+                            <tr style="${rowStyle}">
+                                <td style="border:1px solid #ddd;padding:6px;font-weight:bold;">${layer.name}</td>
+                                <td style="border:1px solid #ddd;padding:6px;text-align:center;">${layer.dailyCompleteLag}</td>
+                                <td style="border:1px solid #ddd;padding:6px;text-align:center;">${layer.invoiceLag}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    billingLagHTML += `
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top:6px;font-size:10px;color:#666;font-style:italic;">
+                                Shows amount and % of work waiting at each billing stage
+                            </div>
+                        </div>
+                    `;
+                    
+                    velocityHTML = velocityTableHTML + billingLagHTML;
                 }
                 
                 summarySection.innerHTML = `
@@ -1332,7 +1445,7 @@
         // Make sortTable global
         window.sortTable = sortTable;
         
-        // Calculate velocity metrics
+        // Calculate velocity metrics per layer
         async function calculateVelocity(startDate, endDate, allTimeMode) {
             try {
                 const filterClause = buildFilterClause();
@@ -1343,78 +1456,145 @@
                 
                 await fiberLayer.load();
                 
-                // Get most recent installation date
-                const recentQuery = await fiberLayer.queryFeatures({
-                    where: `(${filterClause}) AND installation_date IS NOT NULL`,
-                    outFields: ["installation_date"],
-                    orderByFields: ["installation_date DESC"],
-                    num: 1,
-                    returnGeometry: false
-                });
-                
+                // Get most recent installation date across all layers
                 let lastInstallDate = "N/A";
                 let daysSinceLastInstall = 0;
                 
-                if (recentQuery.features.length > 0) {
-                    const lastDate = new Date(recentQuery.features[0].attributes.installation_date);
-                    const today = new Date();
-                    daysSinceLastInstall = daysBetween(lastDate, today);
-                    lastInstallDate = lastDate.toLocaleDateString();
-                }
-                
-                // Calculate construction velocity (if date range provided)
-                let constructionVelocity = 0;
-                let estimatedCompletion = null;
-                
-                if (!allTimeMode && startDate && endDate) {
-                    const days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
+                for (const targetLayer of targetLayers) {
+                    const layer = allFL.find(l => l.layerId === targetLayer.id);
+                    if (!layer) continue;
                     
-                    const designedRow = currentTableData.find(r => r.category === "Designed");
-                    const constructedRow = currentTableData.find(r => r.category === "Constructed");
+                    await layer.load();
                     
-                    if (designedRow && constructedRow) {
-                        let totalDesigned = 0, totalConstructed = 0;
-                        designedRow.rawValues.forEach(v => totalDesigned += v);
-                        constructedRow.rawValues.forEach(v => totalConstructed += v);
+                    const recentQuery = await layer.queryFeatures({
+                        where: `(${filterClause}) AND installation_date IS NOT NULL`,
+                        outFields: ["installation_date"],
+                        orderByFields: ["installation_date DESC"],
+                        num: 1,
+                        returnGeometry: false
+                    });
+                    
+                    if (recentQuery.features.length > 0) {
+                        const lastDate = new Date(recentQuery.features[0].attributes.installation_date);
+                        const today = new Date();
+                        const daysSince = daysBetween(lastDate, today);
                         
-                        if (days > 0) {
-                            constructionVelocity = (totalConstructed / days).toFixed(1);
-                            
-                            // Estimate completion
-                            const remaining = totalDesigned - totalConstructed;
-                            if (constructionVelocity > 0) {
-                                const daysToComplete = Math.ceil(remaining / constructionVelocity);
-                                const completionDate = new Date();
-                                completionDate.setDate(completionDate.getDate() + daysToComplete);
-                                estimatedCompletion = `${daysToComplete} days (${completionDate.toLocaleDateString()})`;
-                            }
+                        if (daysSinceLastInstall === 0 || daysSince < daysSinceLastInstall) {
+                            daysSinceLastInstall = daysSince;
+                            lastInstallDate = lastDate.toLocaleDateString();
                         }
                     }
                 }
                 
-                // Calculate billing lag (average days from constructed to invoiced)
-                const constructedRow = currentTableData.find(r => r.category === "Constructed");
-                const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
-                let billingLagDays = 0;
+                // Calculate per-layer velocity and billing lag
+                const layerVelocities = [];
+                const layerBillingLags = [];
                 
-                if (constructedRow && invoicedRow) {
-                    let totalConstructed = 0, totalInvoiced = 0;
-                    constructedRow.rawValues.forEach(v => totalConstructed += v);
-                    invoicedRow.rawValues.forEach(v => totalInvoiced += v);
+                const designedRow = currentTableData.find(r => r.category === "Designed");
+                const constructedRow = currentTableData.find(r => r.category === "Constructed");
+                const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
+                const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+                
+                if (designedRow && constructedRow) {
+                    let days = 1;
+                    if (!allTimeMode && startDate && endDate) {
+                        days = daysBetween(new Date(startDate), new Date(endDate)) + 1;
+                    }
                     
-                    if (totalConstructed > 0) {
-                        const invoicedPct = totalInvoiced / totalConstructed;
-                        // Rough estimate: if 50% invoiced, assume ~15 day lag
-                        billingLagDays = Math.round((1 - invoicedPct) * 30);
+                    targetLayers.forEach((layer, idx) => {
+                        const designed = designedRow.rawValues[idx] || 0;
+                        const constructed = constructedRow.rawValues[idx] || 0;
+                        const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+                        const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+                        
+                        // Construction velocity
+                        let velocity = 0;
+                        if (!allTimeMode && days > 0 && constructed > 0) {
+                            velocity = (constructed / days).toFixed(2);
+                        }
+                        
+                        const unit = layer.metric === "sum" ? "ft/day" : "units/day";
+                        
+                        layerVelocities.push({
+                            name: layer.name,
+                            velocity: velocity > 0 ? `${velocity} ${unit}` : "No activity in period",
+                            rawVelocity: parseFloat(velocity)
+                        });
+                        
+                        // Billing lag calculation
+                        let dailyCompleteLag = "—";
+                        let invoiceLag = "—";
+                        
+                        if (constructed > 0) {
+                            const dailyCompleteGap = constructed - dailyComplete;
+                            const dailyCompletePct = ((dailyCompleteGap / constructed) * 100).toFixed(1);
+                            
+                            if (dailyCompleteGap > 0) {
+                                const gapFormatted = layer.metric === "sum" ? 
+                                    `${dailyCompleteGap.toFixed(0)} ft` : 
+                                    `${dailyCompleteGap.toFixed(0)} units`;
+                                dailyCompleteLag = `${gapFormatted} (${dailyCompletePct}%)`;
+                            } else {
+                                dailyCompleteLag = "✓ Current";
+                            }
+                        }
+                        
+                        if (dailyComplete > 0) {
+                            const invoiceGap = dailyComplete - invoiced;
+                            const invoicePct = ((invoiceGap / dailyComplete) * 100).toFixed(1);
+                            
+                            if (invoiceGap > 0) {
+                                const gapFormatted = layer.metric === "sum" ? 
+                                    `${invoiceGap.toFixed(0)} ft` : 
+                                    `${invoiceGap.toFixed(0)} units`;
+                                invoiceLag = `${gapFormatted} (${invoicePct}%)`;
+                            } else {
+                                invoiceLag = "✓ Current";
+                            }
+                        }
+                        
+                        layerBillingLags.push({
+                            name: layer.name,
+                            dailyCompleteLag: dailyCompleteLag,
+                            invoiceLag: invoiceLag
+                        });
+                    });
+                }
+                
+                // Calculate weighted estimated completion
+                let estimatedCompletion = null;
+                if (!allTimeMode && designedRow && constructedRow) {
+                    let weightedVelocity = 0;
+                    let totalRemaining = 0;
+                    
+                    targetLayers.forEach((layer, idx) => {
+                        const designed = designedRow.rawValues[idx] || 0;
+                        const constructed = constructedRow.rawValues[idx] || 0;
+                        const remaining = designed - constructed;
+                        
+                        if (remaining > 0 && layerVelocities[idx].rawVelocity > 0) {
+                            // Weight by the layer's overall project weight
+                            weightedVelocity += layerVelocities[idx].rawVelocity * layer.weight;
+                            totalRemaining += remaining * layer.weight;
+                        }
+                    });
+                    
+                    if (weightedVelocity > 0 && totalRemaining > 0) {
+                        const daysToComplete = Math.ceil(totalRemaining / weightedVelocity);
+                        const completionDate = new Date();
+                        completionDate.setDate(completionDate.getDate() + daysToComplete);
+                        estimatedCompletion = `${daysToComplete} days (${completionDate.toLocaleDateString()})`;
                     }
                 }
                 
                 return {
-                    constructionVelocity,
+                    layerVelocities,
+                    layerBillingLags,
                     daysSinceLastInstall,
                     lastInstallDate,
                     estimatedCompletion,
-                    billingLagDays
+                    periodDays: !allTimeMode && startDate && endDate ? 
+                        daysBetween(new Date(startDate), new Date(endDate)) + 1 : null
                 };
                 
             } catch (error) {
