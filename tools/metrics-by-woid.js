@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Week 2 Core Metrics
+// tools/metrics-by-woid.js - Week 2 Core Metrics (Fixed)
 // Layer Metrics Report with Purchase Order and Work Order filtering
 
 (function() {
@@ -24,14 +24,14 @@
         
         const mapView = utils.getMapView();
         
-        // Target layers configuration
+        // Target layers configuration with weights based on construction sequence
         const targetLayers = [
-            {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'"},
-            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length"},
-            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'"},
-            {id: 42100, name: "Vault", metric: "count", field: "objectid"},
-            {id: 41150, name: "Splice Closure", metric: "count", field: "objectid"},
-            {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid"}
+            {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'", weight: 0.50, stage: "Main Infrastructure"},
+            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length", weight: 0.15, stage: "Foundation"},
+            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'", weight: 0.15, stage: "Foundation"},
+            {id: 42100, name: "Vault", metric: "count", field: "objectid", weight: 0.10, stage: "Foundation"},
+            {id: 41150, name: "Splice Closure", metric: "count", field: "objectid", weight: 0.15, stage: "Finishing"},
+            {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid", weight: 0.10, stage: "Finishing"}
         ];
         
         const z = 99999;
@@ -95,6 +95,12 @@
             .completion-fill {
                 height: 100%;
                 transition: width 0.3s ease;
+            }
+            .layer-percent {
+                font-size: 10px;
+                color: #666;
+                display: block;
+                margin-top: 2px;
             }
         `;
         document.head.appendChild(spinnerStyle);
@@ -185,6 +191,7 @@
             </div>
             
             <div id="toolStatus" style="margin-top:8px;padding:6px;border-radius:3px;"></div>
+            <div id="summarySection" style="display:none;margin-top:12px;padding:12px;background:#f5f7fa;border:1px solid #d0d5dd;border-radius:4px;"></div>
             <div id="resultsTable" style="margin-top:12px;"></div>
         `;
         
@@ -226,6 +233,7 @@
         $("#showPercentToggle").onchange = (e) => {
             showPercentages = e.target.checked;
             renderTable();
+            renderSummary();
         };
         
         // Date preset handlers
@@ -592,17 +600,11 @@
             if (!currentTableData.length) return alert("No data to export");
             
             const headers = ["Category", ...targetLayers.map(l => l.name)];
-            if (!showPercentages) {
-                headers.push("% Complete");
-            }
             const csvRows = [headers];
             
             currentTableData.forEach(row => {
                 if (row.category !== 'TOTALS') {
                     const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
-                    if (!showPercentages && row.percentComplete !== undefined) {
-                        rowData.push(csvEsc(row.percentComplete));
-                    }
                     csvRows.push(rowData);
                 }
             });
@@ -716,13 +718,6 @@
                     const comparison = a.category.localeCompare(b.category);
                     return sortDirection === 'asc' ? comparison : -comparison;
                 });
-            } else if (columnIndex === -2) {
-                // Sort by % Complete
-                dataRows.sort((a, b) => {
-                    const aVal = a.percentCompleteRaw || 0;
-                    const bVal = b.percentCompleteRaw || 0;
-                    return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
-                });
             } else {
                 // Sort by numeric value
                 dataRows.sort((a, b) => {
@@ -747,6 +742,72 @@
             if (percent >= 80) return '#4caf50'; // Green
             if (percent >= 50) return '#ff9800'; // Orange
             return '#f44336'; // Red
+        }
+        
+        // Render summary section
+        function renderSummary() {
+            const summarySection = $("#summarySection");
+            
+            // Find key rows
+            const designedRow = currentTableData.find(r => r.category === "Designed");
+            const constructedRow = currentTableData.find(r => r.category === "Constructed");
+            const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+            
+            if (!designedRow || !constructedRow) {
+                summarySection.style.display = "none";
+                return;
+            }
+            
+            // Calculate weighted percentages
+            let weightedConstruction = 0;
+            let weightedBilling = 0;
+            
+            targetLayers.forEach((layer, idx) => {
+                const designed = designedRow.rawValues[idx] || 0;
+                const constructed = constructedRow.rawValues[idx] || 0;
+                const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+                
+                if (designed > 0) {
+                    const layerConstructionPct = (constructed / designed) * 100;
+                    const layerBillingPct = (invoiced / designed) * 100;
+                    
+                    weightedConstruction += layerConstructionPct * layer.weight;
+                    weightedBilling += layerBillingPct * layer.weight;
+                }
+            });
+            
+            const constructionColor = getCompletionColor(weightedConstruction);
+            const billingColor = getCompletionColor(weightedBilling);
+            
+            summarySection.innerHTML = `
+                <div style="font-weight:bold;margin-bottom:8px;font-size:14px;">📈 Project Summary</div>
+                <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:200px;">
+                        <div style="font-weight:bold;margin-bottom:4px;">Construction Progress</div>
+                        <div style="font-size:24px;font-weight:bold;color:${constructionColor};">${weightedConstruction.toFixed(1)}%</div>
+                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                            <div class="completion-fill" style="width:${weightedConstruction}%;background:${constructionColor};"></div>
+                        </div>
+                        <div style="font-size:10px;color:#666;margin-top:4px;">Weighted average across all layers</div>
+                    </div>
+                    <div style="flex:1;min-width:200px;">
+                        <div style="font-weight:bold;margin-bottom:4px;">Billing Progress</div>
+                        <div style="font-size:24px;font-weight:bold;color:${billingColor};">${weightedBilling.toFixed(1)}%</div>
+                        <div class="completion-bar" style="width:100%;height:16px;margin-top:6px;">
+                            <div class="completion-fill" style="width:${weightedBilling}%;background:${billingColor};"></div>
+                        </div>
+                        <div style="font-size:10px;color:#666;margin-top:4px;">Weighted average of invoiced work</div>
+                    </div>
+                </div>
+                <div style="margin-top:12px;font-size:11px;color:#666;">
+                    <strong>Layer Weights:</strong> 
+                    Foundation (25%): UG Span 15%, Vaults 10% | 
+                    Main Infrastructure (50%): Fiber Cable 50% | 
+                    Finishing (25%): Splice Closures 15%, Equipment 10%
+                </div>
+            `;
+            
+            summarySection.style.display = "block";
         }
         
         // Render table function
@@ -776,16 +837,12 @@
                 tableHTML += `</th>`;
             });
             
-            // % Complete column (only when not showing percentages)
-            if (!showPercentages) {
-                tableHTML += `<th class="sortable-header" onclick="sortTable(-2)" style="border:1px solid #ddd;padding:8px;text-align:center;font-weight:bold;">% Complete`;
-                if (sortColumn === -2) {
-                    tableHTML += `<span class="sort-indicator">${sortDirection === 'asc' ? '▲' : '▼'}</span>`;
-                }
-                tableHTML += `</th>`;
-            }
-            
             tableHTML += `</tr></thead><tbody>`;
+            
+            // Get designed and constructed rows for per-layer percentages
+            const designedRow = currentTableData.find(r => r.category === "Designed");
+            const constructedRow = currentTableData.find(r => r.category === "Constructed");
+            const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
             
             // Data rows
             currentTableData.forEach((row, rowIdx) => {
@@ -801,28 +858,33 @@
                     tableHTML += `<tr class="${rowClass}" style="${rowStyle}"><td style="border:1px solid #ddd;padding:8px;font-weight:bold;cursor:pointer;transition:background 0.2s;" onclick="filterMapByCategory('${row.category}',${JSON.stringify(row.categoryData).replace(/"/g, '&quot;')})" title="Click to filter map to show only ${row.category} features">${row.category}</td>`;
                 }
                 
-                row.values.forEach(value => {
+                row.values.forEach((value, colIdx) => {
                     const cellStyle = row.error ? "color:#d32f2f;" : "";
-                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${value}</td>`;
+                    let cellContent = value;
+                    
+                    // Add per-layer percentages for Constructed and Invoiced rows
+                    if (!showPercentages && !isTotals && designedRow && row.rawValues) {
+                        const designed = designedRow.rawValues[colIdx] || 0;
+                        const current = row.rawValues[colIdx] || 0;
+                        
+                        if (row.category === "Constructed" && designed > 0) {
+                            const pct = (current / designed * 100).toFixed(1);
+                            const color = getCompletionColor(parseFloat(pct));
+                            cellContent += `<span class="layer-percent" style="color:${color};">(${pct}%)</span>`;
+                        } else if (row.category === "Invoiced" && designed > 0) {
+                            const pct = (current / designed * 100).toFixed(1);
+                            const color = getCompletionColor(parseFloat(pct));
+                            cellContent += `<span class="layer-percent" style="color:${color};">(${pct}%)</span>`;
+                        }
+                    }
+                    
+                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:right;${cellStyle}">${cellContent}</td>`;
                 });
-                
-                // Add % Complete column (only for non-TOTALS rows and when not in percentage mode)
-                if (!isTotals && !showPercentages && row.percentComplete !== undefined) {
-                    const color = getCompletionColor(row.percentCompleteRaw);
-                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;text-align:center;">
-                        ${row.percentComplete}
-                        <div class="completion-bar">
-                            <div class="completion-fill" style="width:${row.percentCompleteRaw}%;background:${color};"></div>
-                        </div>
-                    </td>`;
-                } else if (isTotals && !showPercentages) {
-                    tableHTML += `<td style="border:1px solid #ddd;padding:8px;"></td>`;
-                }
                 
                 tableHTML += `</tr>`;
             });
             
-            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map to show only those features | Click column headers to sort</div>`;
+            tableHTML += `</tbody></table></div><div style="margin-top:8px;font-size:11px;color:#666;font-style:italic;">💡 Click on any category name to filter the map | Click column headers to sort | Percentages show layer completion</div>`;
             
             $("#resultsTable").innerHTML = tableHTML;
         }
@@ -878,12 +940,13 @@
                 }
                 
                 const categories = [
-                    {name: "Total Assigned", excludeStatuses: []}, // Gets everything
+                    {name: "Total Assigned", includeStatuses: ['ASSG']},
                     {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
                     {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
                     {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
                     {name: "On Hold", includeStatuses: ['ONHOLD']},
-                    {name: "Ready to Bill", includeStatuses: ['RDYFDLY']}
+                    {name: "Ready to Bill", includeStatuses: ['RDYFDLY']},
+                    {name: "Invoiced", includeStatuses: ['INVCMPLT']}
                 ];
                 
                 const dateRangeText = allTimeMode ? "All Time" : `${s} to ${e}`;
@@ -899,6 +962,7 @@
                 
                 updateStatus(`Querying layers for ${selectionText} (${dateRangeText})...`, "processing");
                 $("#resultsTable").innerHTML = "";
+                $("#summarySection").style.display = "none";
                 currentTableData = [];
                 
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
@@ -940,15 +1004,10 @@
                             await layer.load();
                             
                             let statusClause;
-                            if (category.name === "Total Assigned") {
-                                // Get everything for Total Assigned
-                                statusClause = "1=1";
-                            } else if (category.includeStatuses) {
+                            if (category.includeStatuses) {
                                 statusClause = category.includeStatuses.map(status => `workflow_status = '${status}'`).join(' OR ');
-                            } else if (category.excludeStatuses && category.excludeStatuses.length > 0) {
+                            } else if (category.excludeStatuses) {
                                 statusClause = category.excludeStatuses.map(status => `workflow_status <> '${status}'`).join(' AND ');
-                            } else {
-                                statusClause = "1=1";
                             }
                             
                             if (category.requireStage) {
@@ -1003,14 +1062,9 @@
                     results.push(categoryResults);
                 }
                 
-                // Build results table data with percentage calculations
+                // Build results table data
                 currentTableData = [];
                 const totals = new Array(targetLayers.length).fill(0);
-                
-                // Get Total Assigned row for percentage calculations
-                const totalAssignedResult = results.find(r => r.name === "Total Assigned");
-                const designedResult = results.find(r => r.name === "Designed");
-                const constructedResult = results.find(r => r.name === "Constructed");
                 
                 results.forEach(categoryResult => {
                     const rowValues = [];
@@ -1025,11 +1079,14 @@
                         } else {
                             rawValue = layerResult.value;
                             
-                            if (showPercentages && totalAssignedResult) {
+                            if (showPercentages) {
                                 // Show as percentage of Total Assigned
-                                const totalValue = totalAssignedResult.layers[idx].value;
-                                const percentage = totalValue > 0 ? (rawValue / totalValue * 100) : 0;
-                                valueDisplay = percentage.toFixed(1) + '%';
+                                const totalAssignedResult = results.find(r => r.name === "Total Assigned");
+                                if (totalAssignedResult) {
+                                    const totalValue = totalAssignedResult.layers[idx].value;
+                                    const percentage = totalValue > 0 ? (rawValue / totalValue * 100) : 0;
+                                    valueDisplay = percentage.toFixed(1) + '%';
+                                }
                             } else {
                                 // Show actual values
                                 valueDisplay = layerResult.metric === "sum" ? 
@@ -1047,31 +1104,11 @@
                         rawValues.push(rawValue);
                     });
                     
-                    // Calculate % Complete (Constructed / Designed)
-                    let percentComplete = "N/A";
-                    let percentCompleteRaw = 0;
-                    
-                    if (categoryResult.name === "Designed" || categoryResult.name === "Constructed") {
-                        // Calculate completion percentage
-                        const designedValues = designedResult.layers.map(l => l.value);
-                        const constructedValues = constructedResult.layers.map(l => l.value);
-                        
-                        const totalDesigned = designedValues.reduce((sum, val) => sum + val, 0);
-                        const totalConstructed = constructedValues.reduce((sum, val) => sum + val, 0);
-                        
-                        if (totalDesigned > 0) {
-                            percentCompleteRaw = (totalConstructed / totalDesigned) * 100;
-                            percentComplete = percentCompleteRaw.toFixed(1) + '%';
-                        }
-                    }
-                    
                     currentTableData.push({
                         category: categoryResult.name, 
                         values: rowValues,
                         rawValues: rawValues,
-                        categoryData: categoryResult.categoryData,
-                        percentComplete: percentComplete,
-                        percentCompleteRaw: percentCompleteRaw
+                        categoryData: categoryResult.categoryData
                     });
                 });
                 
@@ -1087,7 +1124,8 @@
                 // Show view options
                 $("#viewOptions").style.display = "block";
                 
-                // Render table
+                // Render summary and table
+                renderSummary();
                 renderTable();
                 
                 $("#exportBtn").style.display = "inline-block";
@@ -1166,7 +1204,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully (Week 2 Core Metrics)');
+        console.log('Metrics By WOID Tool loaded successfully (Week 2 Core Metrics - Fixed)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
