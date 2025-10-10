@@ -1,4 +1,4 @@
-// tools/metrics-by-woid.js - Week 4 Analytics & Insights + Timeline Chart
+// tools/metrics-by-woid.js - Week 4 Analytics & Insights + Timeline Chart + Crew Performance
 // Layer Metrics Report with Purchase Order and Work Order filtering
 // Features:
 // - Selectable layers with proportional weight recalculation
@@ -6,6 +6,7 @@
 // - Comparison mode for period-over-period analysis
 // - Velocity metrics with production day tracking
 // - Smart alerts and insights
+// - Crew performance dashboard with quality and billing metrics
 
 (function() {
     try {
@@ -82,6 +83,7 @@
         let progressChart = null; // Custom chart instance
         let timelineData = null;
         let isGeneratingTimeline = false;
+        let crewPerformanceData = null;
         
         // Custom lightweight chart renderer (no external dependencies)
         class SimpleLineChart {
@@ -726,6 +728,20 @@
             
             <div id="alertsSection" style="display:none;margin-top:12px;"></div>
             <div id="summarySection" style="display:none;margin-top:12px;padding:12px;background:#f5f7fa;border:1px solid #d0d5dd;border-radius:4px;"></div>
+            
+            <!-- Crew Performance Dashboard -->
+            <div id="crewPerformanceSection" style="display:none;margin-top:16px;padding:12px;background:#f8f9fa;border:1px solid #d0d5dd;border-radius:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <div style="font-weight:bold;font-size:14px;">👷 Crew Performance Dashboard</div>
+                    <button id="toggleCrewBtn" style="padding:4px 8px;font-size:11px;">Hide</button>
+                </div>
+                
+                <div id="crewPerformanceContent">
+                    <div id="crewCardsContainer" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px;"></div>
+                    <div id="crewTableContainer" style="overflow-x:auto;"></div>
+                </div>
+            </div>
+            
             <div id="resultsTable" style="margin-top:12px;"></div>
         `;
         
@@ -841,6 +857,244 @@
         initializeLayerCheckboxes();
         initializeGlobalLayerCheckboxes();
         
+        // Calculate crew performance metrics
+        async function calculateCrewPerformance() {
+            try {
+                updateStatus('Calculating crew performance...', 'processing');
+                
+                const start = $("#startDate").value;
+                const end = $("#endDate").value;
+                const allTimeMode = $("#startDate").disabled;
+                const filterClause = buildFilterClause();
+                const layersToQuery = getSelectedLayers();
+                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                
+                // Build date clause
+                let dateClause = "";
+                if (!allTimeMode && start && end) {
+                    const startLit = `TIMESTAMP '${start} 00:00:00'`;
+                    const endLit = `TIMESTAMP '${end} 23:59:59'`;
+                    dateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+                }
+                
+                // Collect all unique crews from both fields
+                const crewSet = new Set();
+                const crewData = new Map(); // Map crew name to their metrics
+                
+                // Query each selected layer for crew information
+                for (const targetLayer of layersToQuery) {
+                    const layer = allFL.find(l => l.layerId === targetLayer.id);
+                    if (!layer) continue;
+                    
+                    await layer.load();
+                    
+                    // Build query for constructed items
+                    const excludedStatuses = ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG'];
+                    const statusClause = excludedStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
+                    
+                    let additionalFilter = "";
+                    if (targetLayer.additionalFilter) {
+                        additionalFilter = ` AND ${targetLayer.additionalFilter}`;
+                    }
+                    
+                    const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
+                    
+                    const queryResult = await layer.queryFeatures({
+                        where: whereClause,
+                        outFields: ["crew", "construction_subcontractor", "installation_date", targetLayer.field],
+                        returnGeometry: false
+                    });
+                    
+                    // Process features and group by crew
+                    queryResult.features.forEach(feature => {
+                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
+                        if (!crew || crew.toString().trim() === '') return;
+                        
+                        const crewName = crew.toString().trim();
+                        crewSet.add(crewName);
+                        
+                        if (!crewData.has(crewName)) {
+                            crewData.set(crewName, {
+                                name: crewName,
+                                totalConstructed: 0,
+                                installationDates: new Set(),
+                                layerBreakdown: {}
+                            });
+                        }
+                        
+                        const data = crewData.get(crewName);
+                        
+                        // Add to total
+                        let value = 0;
+                        if (targetLayer.metric === "count") {
+                            value = 1;
+                        } else if (targetLayer.metric === "sum") {
+                            value = Number(feature.attributes[targetLayer.field]) || 0;
+                        }
+                        data.totalConstructed += value;
+                        
+                        // Track installation dates
+                        const installDate = feature.attributes.installation_date;
+                        if (installDate) {
+                            const date = new Date(installDate);
+                            const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                            data.installationDates.add(dateKey);
+                        }
+                        
+                        // Layer breakdown
+                        if (!data.layerBreakdown[targetLayer.name]) {
+                            data.layerBreakdown[targetLayer.name] = 0;
+                        }
+                        data.layerBreakdown[targetLayer.name] += value;
+                    });
+                }
+                
+                console.log(`Found ${crewSet.size} crews`);
+                
+                // Now query gig layer for quality metrics
+                const gigLayer = allFL.find(l => l.layerId === 22100);
+                const qualityData = new Map();
+                
+                if (gigLayer) {
+                    await gigLayer.load();
+                    
+                    const gigQuery = await gigLayer.queryFeatures({
+                        where: `(${filterClause})${dateClause}`,
+                        outFields: ["crew", "construction_subcontractor", "gig_status", "approval_days"],
+                        returnGeometry: false
+                    });
+                    
+                    gigQuery.features.forEach(feature => {
+                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
+                        if (!crew || crew.toString().trim() === '') return;
+                        
+                        const crewName = crew.toString().trim();
+                        const status = feature.attributes.gig_status;
+                        const approvalDays = feature.attributes.approval_days;
+                        
+                        if (!qualityData.has(crewName)) {
+                            qualityData.set(crewName, {
+                                totalGigs: 0,
+                                openGigs: 0,
+                                approvedGigs: 0,
+                                totalApprovalDays: 0,
+                                approvalDaysCount: 0
+                            });
+                        }
+                        
+                        const qData = qualityData.get(crewName);
+                        qData.totalGigs++;
+                        
+                        if (status === 'OPEN') qData.openGigs++;
+                        if (status === 'APPROVED') {
+                            qData.approvedGigs++;
+                            if (approvalDays != null && !isNaN(approvalDays)) {
+                                qData.totalApprovalDays += Number(approvalDays);
+                                qData.approvalDaysCount++;
+                            }
+                        }
+                    });
+                }
+                
+                // Calculate billing efficiency for each crew
+                const dailyCompleteByCrewMap = new Map();
+                
+                for (const targetLayer of layersToQuery) {
+                    const layer = allFL.find(l => l.layerId === targetLayer.id);
+                    if (!layer) continue;
+                    
+                    await layer.load();
+                    
+                    let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT'${dateClause}`;
+                    if (targetLayer.additionalFilter) {
+                        whereClause += ` AND ${targetLayer.additionalFilter}`;
+                    }
+                    
+                    const dailyCompleteQuery = await layer.queryFeatures({
+                        where: whereClause,
+                        outFields: ["crew", "construction_subcontractor", targetLayer.field],
+                        returnGeometry: false
+                    });
+                    
+                    dailyCompleteQuery.features.forEach(feature => {
+                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
+                        if (!crew || crew.toString().trim() === '') return;
+                        
+                        const crewName = crew.toString().trim();
+                        if (!dailyCompleteByCrewMap.has(crewName)) {
+                            dailyCompleteByCrewMap.set(crewName, 0);
+                        }
+                        
+                        let value = 0;
+                        if (targetLayer.metric === "count") {
+                            value = 1;
+                        } else if (targetLayer.metric === "sum") {
+                            value = Number(feature.attributes[targetLayer.field]) || 0;
+                        }
+                        
+                        dailyCompleteByCrewMap.set(crewName, dailyCompleteByCrewMap.get(crewName) + value);
+                    });
+                }
+                
+                // Build final crew performance array
+                const crewPerformance = [];
+                
+                crewData.forEach((data, crewName) => {
+                    const productionDays = data.installationDates.size;
+                    const dailyRate = productionDays > 0 ? (data.totalConstructed / productionDays) : 0;
+                    
+                    const quality = qualityData.get(crewName);
+                    const avgApprovalDays = quality && quality.approvalDaysCount > 0 ? 
+                        (quality.totalApprovalDays / quality.approvalDaysCount) : null;
+                    
+                    const dailyComplete = dailyCompleteByCrewMap.get(crewName) || 0;
+                    const billingEfficiency = data.totalConstructed > 0 ? 
+                        (dailyComplete / data.totalConstructed * 100) : 0;
+                    
+                    crewPerformance.push({
+                        name: crewName,
+                        totalConstructed: Math.round(data.totalConstructed),
+                        productionDays: productionDays,
+                        dailyRate: dailyRate,
+                        avgApprovalDays: avgApprovalDays,
+                        openGigs: quality ? quality.openGigs : 0,
+                        approvedGigs: quality ? quality.approvedGigs : 0,
+                        totalGigs: quality ? quality.totalGigs : 0,
+                        billingEfficiency: billingEfficiency,
+                        layerBreakdown: data.layerBreakdown
+                    });
+                });
+                
+                // Sort by daily rate (descending)
+                crewPerformance.sort((a, b) => b.dailyRate - a.dailyRate);
+                
+                // Add rankings
+                crewPerformance.forEach((crew, idx) => {
+                    crew.rank = idx + 1;
+                    crew.medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '';
+                });
+                
+                console.log('Crew performance calculated:', crewPerformance);
+                return crewPerformance;
+                
+            } catch (error) {
+                console.error('Error calculating crew performance:', error);
+                throw error;
+            }
+        }
+        $("#toggleCrewBtn").onclick = () => {
+            const content = $("#crewPerformanceContent");
+            const btn = $("#toggleCrewBtn");
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                btn.textContent = 'Hide';
+            } else {
+                content.style.display = 'none';
+                btn.textContent = 'Show';
+            }
+        };
+        
         // Global layer selection button handlers
         $("#selectAllLayers").onclick = () => {
             selectedLayers = targetLayers.map((_, idx) => idx);
@@ -896,7 +1150,106 @@
                 btn.textContent = 'Show Chart';
             }
         };
-        
+        function renderCrewPerformance(data) {
+    const container = $("#crewPerformanceContent");
+    const cardsContainer = $("#crewCardsContainer");
+    const tableContainer = $("#crewTableContainer");
+
+    // Clear previous content
+    cardsContainer.innerHTML = '';
+    tableContainer.innerHTML = '';
+
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div style="font-style:italic;color:#999;text-align:center;">No crew performance data found for the selected filters.</div>';
+        $("#crewPerformanceSection").style.display = 'block';
+        return;
+    }
+
+    // Sortable table headers
+    const headers = [
+        { key: 'name', label: 'Crew', sortable: true },
+        { key: 'rank', label: 'Rank', sortable: false },
+        { key: 'totalConstructed', label: 'Total Constructed', sortable: true },
+        { key: 'dailyRate', label: 'Daily Rate', sortable: true },
+        { key: 'productionDays', label: 'Production Days', sortable: true },
+        { key: 'openGigs', label: 'Open Quality Gigs', sortable: true },
+        { key: 'avgApprovalDays', label: 'Avg. Approval Days', sortable: true },
+        { key: 'billingEfficiency', label: 'Billing Efficiency', sortable: true }
+    ];
+
+    // Build the table HTML
+    let tableHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+                <tr style="background:#f0f4ff;">
+                    ${headers.map(h => `
+                        <th class="sortable-header" data-sort-key="${h.key}" style="border:1px solid #ddd;padding:8px;text-align:left;cursor:${h.sortable ? 'pointer' : 'default'};">
+                            ${h.label}
+                            ${h.sortable ? `<span class="sort-indicator"></span>` : ''}
+                        </th>
+                    `).join('')}
+                </tr>
+            </thead>
+            <tbody id="crewPerformanceTableBody">
+            </tbody>
+        </table>
+    `;
+
+    tableContainer.innerHTML = tableHTML;
+    const tableBody = $("#crewPerformanceTableBody");
+    const crewRows = data.map(crew => {
+        const avgApprovalDisplay = crew.avgApprovalDays !== null ? `${crew.avgApprovalDays.toFixed(1)} days` : 'N/A';
+        const efficiencyDisplay = `${crew.billingEfficiency.toFixed(1)}%`;
+        const totalConstructedDisplay = crew.totalConstructed.toLocaleString();
+        const dailyRateDisplay = `${crew.dailyRate.toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+
+        return `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${crew.medal} ${crew.name}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${crew.rank}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${totalConstructedDisplay}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${dailyRateDisplay}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${crew.productionDays}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${crew.openGigs}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${avgApprovalDisplay}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${efficiencyDisplay}</td>
+            </tr>
+        `;
+    }).join('');
+
+    tableBody.innerHTML = crewRows;
+
+    // Add sort handlers
+    tableContainer.querySelectorAll('.sortable-header').forEach(header => {
+        header.addEventListener('click', () => {
+            const key = header.dataset.sortKey;
+            const direction = header.dataset.sortDirection === 'asc' ? 'desc' : 'asc';
+
+            data.sort((a, b) => {
+                let aVal = a[key] || 0;
+                let bVal = b[key] || 0;
+
+                // Handle string sorting for names
+                if (typeof aVal === 'string') {
+                    return direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                }
+
+                return direction === 'asc' ? aVal - bVal : bVal - aVal;
+            });
+
+            // Update sort indicators
+            tableContainer.querySelectorAll('.sort-indicator').forEach(indicator => indicator.innerHTML = '');
+            header.querySelector('.sort-indicator').innerHTML = direction === 'asc' ? '▲' : '▼';
+            header.dataset.sortDirection = direction;
+
+            renderCrewPerformance(data); // Re-render the table
+        });
+    });
+
+    // Make section visible
+    $("#crewPerformanceSection").style.display = 'block';
+    updateStatus('Crew performance data loaded successfully!', 'success');
+}
         // Generate timeline data
         async function generateTimelineData(interval = 'weekly') {
             try {
@@ -2922,6 +3275,15 @@
                 renderTable();
                 $("#exportBtn").style.display = "inline-block";
                 
+                // Calculate and render crew performance
+                try {
+                    crewPerformanceData = await calculateCrewPerformance();
+                    renderCrewPerformance(crewPerformanceData);
+                } catch (error) {
+                    console.error('Error with crew performance:', error);
+                    // Don't fail the whole report if crew performance fails
+                }
+                
                 runBtn.innerHTML = originalText;
                 runBtn.disabled = false;
                 runBtn.style.opacity = '1';
@@ -2972,6 +3334,7 @@
             
             // Reset flags
             isGeneratingTimeline = false;
+            crewPerformanceData = null;
             
             // Clean up global functions
             if (window.filterMapByCategory) {
@@ -2979,6 +3342,9 @@
             }
             if (window.sortTable) {
                 delete window.sortTable;
+            }
+            if (window.filterMapByCrew) {
+                delete window.filterMapByCrew;
             }
             
             // Remove spinner style
