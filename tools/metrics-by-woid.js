@@ -1046,7 +1046,7 @@
                     
                     await layer.load();
                     
-                    let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT'${dateClause}`;
+                    let whereClause = `(${filterClause}) AND (workflow_status = 'DLYCMPLT' OR workflow_status = 'INVCMPLT')${dateClause}`;
                     if (targetLayer.additionalFilter) {
                         whereClause += ` AND ${targetLayer.additionalFilter}`;
                     }
