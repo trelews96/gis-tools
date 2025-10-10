@@ -857,299 +857,248 @@
         initializeLayerCheckboxes();
         initializeGlobalLayerCheckboxes();
         
-        // Calculate crew performance metrics
-        async function calculateCrewPerformance() {
-            try {
-                updateStatus('Calculating crew performance...', 'processing');
-                
-                const start = $("#startDate").value;
-                const end = $("#endDate").value;
-                const allTimeMode = $("#startDate").disabled;
-                const filterClause = buildFilterClause();
-                const layersToQuery = getSelectedLayers();
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                
-                // Build date clause
-                let dateClause = "";
-                if (!allTimeMode && start && end) {
-                    const startLit = `TIMESTAMP '${start} 00:00:00'`;
-                    const endLit = `TIMESTAMP '${end} 23:59:59'`;
-                    dateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
-                }
-                
-                // Collect all unique crews from both fields
-                const crewSet = new Set();
-                const crewData = new Map(); // Map crew name to their metrics
-                
-                // Query each selected layer for crew information
-                for (const targetLayer of layersToQuery) {
-                    const layer = allFL.find(l => l.layerId === targetLayer.id);
-                    if (!layer) continue;
-                    
-                    await layer.load();
-                    
-                    // Build query for constructed items
-                    const excludedStatuses = ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG'];
-                    const statusClause = excludedStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
-                    
-                    let additionalFilter = "";
-                    if (targetLayer.additionalFilter) {
-                        additionalFilter = ` AND ${targetLayer.additionalFilter}`;
-                    }
-                    
-                    const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
-                    
-                    const queryResult = await layer.queryFeatures({
-                        where: whereClause,
-                        outFields: ["crew", "construction_subcontractor", "installation_date", targetLayer.field],
-                        returnGeometry: false
-                    });
-                    
-                    // Process features and group by crew
-                    queryResult.features.forEach(feature => {
-                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
-                        if (!crew || crew.toString().trim() === '') return;
-                        
-                        const crewName = crew.toString().trim();
-                        crewSet.add(crewName);
-                        
-                        if (!crewData.has(crewName)) {
-                            crewData.set(crewName, {
-                                name: crewName,
-                                totalConstructed: 0,
-                                installationDates: new Set(),
-                                layerBreakdown: {}
-                            });
-                        }
-                        
-                        const data = crewData.get(crewName);
-                        
-                        // Add to total
-                        let value = 0;
-                        if (targetLayer.metric === "count") {
-                            value = 1;
-                        } else if (targetLayer.metric === "sum") {
-                            value = Number(feature.attributes[targetLayer.field]) || 0;
-                        }
-                        data.totalConstructed += value;
-                        
-                        // Track installation dates
-                        const installDate = feature.attributes.installation_date;
-                        if (installDate) {
-                            const date = new Date(installDate);
-                            const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-                            data.installationDates.add(dateKey);
-                        }
-                        
-                        // Layer breakdown
-                        if (!data.layerBreakdown[targetLayer.name]) {
-                            data.layerBreakdown[targetLayer.name] = 0;
-                        }
-                        data.layerBreakdown[targetLayer.name] += value;
-                    });
-                }
-                
-                console.log(`Found ${crewSet.size} crews`);
-                
-                // Now query gig layer for quality metrics
-                const gigLayer = allFL.find(l => l.layerId === 22100);
-                const qualityData = new Map();
-                
-                if (gigLayer) {
-                    await gigLayer.load();
-                    
-                    const gigQuery = await gigLayer.queryFeatures({
-                        where: `(${filterClause})${dateClause}`,
-                        outFields: ["crew", "construction_subcontractor", "gig_status", "approval_days"],
-                        returnGeometry: false
-                    });
-                    
-                    gigQuery.features.forEach(feature => {
-                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
-                        if (!crew || crew.toString().trim() === '') return;
-                        
-                        const crewName = crew.toString().trim();
-                        const status = feature.attributes.gig_status;
-                        const approvalDays = feature.attributes.approval_days;
-                        
-                        if (!qualityData.has(crewName)) {
-                            qualityData.set(crewName, {
-                                totalGigs: 0,
-                                openGigs: 0,
-                                approvedGigs: 0,
-                                totalApprovalDays: 0,
-                                approvalDaysCount: 0
-                            });
-                        }
-                        
-                        const qData = qualityData.get(crewName);
-                        qData.totalGigs++;
-                        
-                        if (status === 'OPEN') qData.openGigs++;
-                        if (status === 'APPROVED') {
-                            qData.approvedGigs++;
-                            if (approvalDays != null && !isNaN(approvalDays)) {
-                                qData.totalApprovalDays += Number(approvalDays);
-                                qData.approvalDaysCount++;
-                            }
-                        }
-                    });
-                }
-                
-                // Calculate billing efficiency for each crew
-                const dailyCompleteByCrewMap = new Map();
-                
-                for (const targetLayer of layersToQuery) {
-                    const layer = allFL.find(l => l.layerId === targetLayer.id);
-                    if (!layer) continue;
-                    
-                    await layer.load();
-                    
-                    let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT'${dateClause}`;
-                    if (targetLayer.additionalFilter) {
-                        whereClause += ` AND ${targetLayer.additionalFilter}`;
-                    }
-                    
-                    const dailyCompleteQuery = await layer.queryFeatures({
-                        where: whereClause,
-                        outFields: ["crew", "construction_subcontractor", targetLayer.field],
-                        returnGeometry: false
-                    });
-                    
-                    dailyCompleteQuery.features.forEach(feature => {
-                        const crew = feature.attributes.crew || feature.attributes.construction_subcontractor;
-                        if (!crew || crew.toString().trim() === '') return;
-                        
-                        const crewName = crew.toString().trim();
-                        if (!dailyCompleteByCrewMap.has(crewName)) {
-                            dailyCompleteByCrewMap.set(crewName, 0);
-                        }
-                        
-                        let value = 0;
-                        if (targetLayer.metric === "count") {
-                            value = 1;
-                        } else if (targetLayer.metric === "sum") {
-                            value = Number(feature.attributes[targetLayer.field]) || 0;
-                        }
-                        
-                        dailyCompleteByCrewMap.set(crewName, dailyCompleteByCrewMap.get(crewName) + value);
-                    });
-                }
-                
-                // Build final crew performance array
-                const crewPerformance = [];
-                
-                crewData.forEach((data, crewName) => {
-                    const productionDays = data.installationDates.size;
-                    const dailyRate = productionDays > 0 ? (data.totalConstructed / productionDays) : 0;
-                    
-                    const quality = qualityData.get(crewName);
-                    const avgApprovalDays = quality && quality.approvalDaysCount > 0 ? 
-                        (quality.totalApprovalDays / quality.approvalDaysCount) : null;
-                    
-                    const dailyComplete = dailyCompleteByCrewMap.get(crewName) || 0;
-                    const billingEfficiency = data.totalConstructed > 0 ? 
-                        (dailyComplete / data.totalConstructed * 100) : 0;
-                    
-                    crewPerformance.push({
-                        name: crewName,
-                        totalConstructed: Math.round(data.totalConstructed),
-                        productionDays: productionDays,
-                        dailyRate: dailyRate,
-                        avgApprovalDays: avgApprovalDays,
-                        openGigs: quality ? quality.openGigs : 0,
-                        approvedGigs: quality ? quality.approvedGigs : 0,
-                        totalGigs: quality ? quality.totalGigs : 0,
-                        billingEfficiency: billingEfficiency,
-                        layerBreakdown: data.layerBreakdown
-                    });
-                });
-                
-                // Sort by daily rate (descending)
-                crewPerformance.sort((a, b) => b.dailyRate - a.dailyRate);
-                
-                // Add rankings
-                crewPerformance.forEach((crew, idx) => {
-                    crew.rank = idx + 1;
-                    crew.medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '';
-                });
-                
-                console.log('Crew performance calculated:', crewPerformance);
-                return crewPerformance;
-                
-            } catch (error) {
-                console.error('Error calculating crew performance:', error);
-                throw error;
-            }
+        // Function to get the display name from a field's coded domain
+function getDisplayNameFromDomain(layer, fieldName, code) {
+    if (!code) return null;
+    const field = layer.fields.find(f => f.name === fieldName);
+    if (field && field.domain && field.domain.codedValues) {
+        const codedValue = field.domain.codedValues.find(cv => cv.code == code);
+        if (codedValue) {
+            return codedValue.name;
         }
-        $("#toggleCrewBtn").onclick = () => {
-            const content = $("#crewPerformanceContent");
-            const btn = $("#toggleCrewBtn");
-            
-            if (content.style.display === 'none') {
-                content.style.display = 'block';
-                btn.textContent = 'Hide';
-            } else {
-                content.style.display = 'none';
-                btn.textContent = 'Show';
+    }
+    return code; // Return the original code if no display value is found
+}
+
+async function calculateCrewPerformance() {
+    try {
+        updateStatus('Calculating crew performance...', 'processing');
+
+        const start = $("#startDate").value;
+        const end = $("#endDate").value;
+        const allTimeMode = $("#startDate").disabled;
+        const filterClause = buildFilterClause();
+        const layersToQuery = getSelectedLayers();
+        const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+        
+        // Find the layers to get domain information from
+        const fiberLayer = allFL.find(l => l.layerId === 41050);
+        const gigLayer = allFL.find(l => l.layerId === 22100);
+
+        if (!fiberLayer) {
+            throw new Error("Fiber layer not found. Cannot retrieve crew domains.");
+        }
+        if (gigLayer) await gigLayer.load();
+        await fiberLayer.load();
+
+        // Collect all unique crews from both fields, converting codes to display names
+        const crewSet = new Set();
+        const crewData = new Map(); // Map crew name to their metrics
+
+        // Query each selected layer for crew information
+        for (const targetLayer of layersToQuery) {
+            const layer = allFL.find(l => l.layerId === targetLayer.id);
+            if (!layer) continue;
+
+            await layer.load();
+
+            const excludedStatuses = ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG'];
+            const statusClause = excludedStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
+
+            let additionalFilter = "";
+            if (targetLayer.additionalFilter) {
+                additionalFilter = ` AND ${targetLayer.additionalFilter}`;
             }
-        };
-        
-        // Global layer selection button handlers
-        $("#selectAllLayers").onclick = () => {
-            selectedLayers = targetLayers.map((_, idx) => idx);
-            toolBox.querySelectorAll('.global-layer-checkbox').forEach(cb => cb.checked = true);
-            updateLayerSelectionDisplay();
-        };
-        
-        $("#clearAllLayers").onclick = () => {
-            selectedLayers = [];
-            toolBox.querySelectorAll('.global-layer-checkbox').forEach(cb => cb.checked = false);
-            updateLayerSelectionDisplay();
-        };
-        
-        // Interval button handlers
-        toolBox.querySelectorAll('.interval-btn').forEach(btn => {
-            btn.onclick = async () => {
-                // Update active state
-                toolBox.querySelectorAll('.interval-btn').forEach(b => {
-                    b.classList.remove('active');
-                    b.style.background = '';
-                    b.style.color = '';
-                });
-                btn.classList.add('active');
-                btn.style.background = '#3367d6';
-                btn.style.color = '#fff';
+
+            let dateClause = "";
+            if (!allTimeMode && start && end) {
+                const startLit = `TIMESTAMP '${start} 00:00:00'`;
+                const endLit = `TIMESTAMP '${end} 23:59:59'`;
+                dateClause = ` AND installation_date >= ${startLit} AND installation_date <= ${endLit}`;
+            }
+
+            const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
+
+            const queryResult = await layer.queryFeatures({
+                where: whereClause,
+                outFields: ["crew", "construction_subcontractor", "installation_date", targetLayer.field],
+                returnGeometry: false
+            });
+
+            // Process features and group by crew, using display names
+            queryResult.features.forEach(feature => {
+                const rawCrew = feature.attributes.crew;
+                const rawSubcontractor = feature.attributes.construction_subcontractor;
                 
-                // Auto-regenerate chart if we already have data
-                if (timelineData && currentTableData.length && !isGeneratingTimeline) {
-                    console.log('Interval changed, auto-regenerating chart...');
-                    
-                    // Trigger regeneration by simulating button click
-                    const genBtn = $("#generateTimelineBtn");
-                    if (genBtn && !genBtn.disabled) {
-                        genBtn.click();
+                // Get display name from domain, prioritizing 'crew' field
+                const crewName = getDisplayNameFromDomain(layer, "crew", rawCrew) || getDisplayNameFromDomain(layer, "construction_subcontractor", rawSubcontractor);
+                
+                if (!crewName || crewName.toString().trim() === '') return;
+
+                crewSet.add(crewName);
+                
+                if (!crewData.has(crewName)) {
+                    crewData.set(crewName, {
+                        name: crewName,
+                        totalConstructed: 0,
+                        installationDates: new Set(),
+                        layerBreakdown: {}
+                    });
+                }
+                const data = crewData.get(crewName);
+                
+                let value = 0;
+                if (targetLayer.metric === "count") {
+                    value = 1;
+                } else if (targetLayer.metric === "sum") {
+                    value = Number(feature.attributes[targetLayer.field]) || 0;
+                }
+                data.totalConstructed += value;
+                
+                const installDate = feature.attributes.installation_date;
+                if (installDate) {
+                    const date = new Date(installDate);
+                    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                    data.installationDates.add(dateKey);
+                }
+                
+                if (!data.layerBreakdown[targetLayer.name]) {
+                    data.layerBreakdown[targetLayer.name] = 0;
+                }
+                data.layerBreakdown[targetLayer.name] += value;
+            });
+        }
+        
+        console.log(`Found ${crewSet.size} crews`);
+        
+        // Now query gig layer for quality metrics
+        const qualityData = new Map();
+        
+        if (gigLayer) {
+            const gigQuery = await gigLayer.queryFeatures({
+                where: `(${filterClause})`, // Gig layer does not have installation_date, so filter only by WO/PO
+                outFields: ["crew", "construction_subcontractor", "gig_status", "approval_days"],
+                returnGeometry: false
+            });
+            
+            gigQuery.features.forEach(feature => {
+                const rawCrew = feature.attributes.crew;
+                const rawSubcontractor = feature.attributes.construction_subcontractor;
+                const crewName = getDisplayNameFromDomain(gigLayer, "crew", rawCrew) || getDisplayNameFromDomain(gigLayer, "construction_subcontractor", rawSubcontractor);
+                if (!crewName || crewName.toString().trim() === '') return;
+                
+                const status = feature.attributes.gig_status;
+                const approvalDays = feature.attributes.approval_days;
+                
+                if (!qualityData.has(crewName)) {
+                    qualityData.set(crewName, {
+                        totalGigs: 0,
+                        openGigs: 0,
+                        approvedGigs: 0,
+                        totalApprovalDays: 0,
+                        approvalDaysCount: 0
+                    });
+                }
+                
+                const qData = qualityData.get(crewName);
+                qData.totalGigs++;
+                
+                if (status === 'OPEN') qData.openGigs++;
+                if (status === 'APPROVED') {
+                    qData.approvedGigs++;
+                    if (approvalDays != null && !isNaN(approvalDays)) {
+                        qData.totalApprovalDays += Number(approvalDays);
+                        qData.approvalDaysCount++;
                     }
                 }
-            };
+            });
+        }
+        
+        // Calculate billing efficiency for each crew
+        const dailyCompleteByCrewMap = new Map();
+        
+        for (const targetLayer of layersToQuery) {
+            const layer = allFL.find(l => l.layerId === targetLayer.id);
+            if (!layer) continue;
+            
+            await layer.load();
+            
+            let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT'${dateClause}`;
+            if (targetLayer.additionalFilter) {
+                whereClause += ` AND ${targetLayer.additionalFilter}`;
+            }
+            
+            const dailyCompleteQuery = await layer.queryFeatures({
+                where: whereClause,
+                outFields: ["crew", "construction_subcontractor", targetLayer.field],
+                returnGeometry: false
+            });
+            
+            dailyCompleteQuery.features.forEach(feature => {
+                const rawCrew = feature.attributes.crew;
+                const rawSubcontractor = feature.attributes.construction_subcontractor;
+                const crewName = getDisplayNameFromDomain(layer, "crew", rawCrew) || getDisplayNameFromDomain(layer, "construction_subcontractor", rawSubcontractor);
+                if (!crewName || crewName.toString().trim() === '') return;
+                
+                if (!dailyCompleteByCrewMap.has(crewName)) {
+                    dailyCompleteByCrewMap.set(crewName, 0);
+                }
+                
+                let value = 0;
+                if (targetLayer.metric === "count") {
+                    value = 1;
+                } else if (targetLayer.metric === "sum") {
+                    value = Number(feature.attributes[targetLayer.field]) || 0;
+                }
+                
+                dailyCompleteByCrewMap.set(crewName, dailyCompleteByCrewMap.get(crewName) + value);
+            });
+        }
+        
+        // Build final crew performance array
+        const crewPerformance = [];
+        
+        crewData.forEach((data, crewName) => {
+            const productionDays = data.installationDates.size;
+            const dailyRate = productionDays > 0 ? (data.totalConstructed / productionDays) : 0;
+            
+            const quality = qualityData.get(crewName);
+            const avgApprovalDays = quality && quality.approvalDaysCount > 0 ?
+                (quality.totalApprovalDays / quality.approvalDaysCount) : null;
+            
+            const dailyComplete = dailyCompleteByCrewMap.get(crewName) || 0;
+            const billingEfficiency = data.totalConstructed > 0 ?
+                (dailyComplete / data.totalConstructed * 100) : 0;
+            
+            crewPerformance.push({
+                name: crewName,
+                totalConstructed: Math.round(data.totalConstructed),
+                productionDays: productionDays,
+                dailyRate: dailyRate,
+                avgApprovalDays: avgApprovalDays,
+                openGigs: quality ? quality.openGigs : 0,
+                approvedGigs: quality ? quality.approvedGigs : 0,
+                totalGigs: quality ? quality.totalGigs : 0,
+                billingEfficiency: billingEfficiency,
+                layerBreakdown: data.layerBreakdown
+            });
         });
         
-        // Toggle timeline visibility
-        $("#toggleTimelineBtn").onclick = () => {
-            const chartContainer = $("#timelineChartContainer");
-            const controls = $("#timelineControls");
-            const btn = $("#toggleTimelineBtn");
-            
-            if (chartContainer.style.display === 'none') {
-                chartContainer.style.display = 'block';
-                controls.style.display = 'block';
-                btn.textContent = 'Hide Chart';
-            } else {
-                chartContainer.style.display = 'none';
-                controls.style.display = 'none';
-                btn.textContent = 'Show Chart';
-            }
-        };
+        crewPerformance.sort((a, b) => b.dailyRate - a.dailyRate);
+        
+        crewPerformance.forEach((crew, idx) => {
+            crew.rank = idx + 1;
+            crew.medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '';
+        });
+        
+        console.log('Crew performance calculated:', crewPerformance);
+        return crewPerformance;
+        
+    } catch (error) {
+        console.error('Error calculating crew performance:', error);
+        throw error;
+    }
+}
         function renderCrewPerformance(data) {
     const container = $("#crewPerformanceContent");
     const cardsContainer = $("#crewCardsContainer");
