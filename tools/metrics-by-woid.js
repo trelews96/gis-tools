@@ -1046,7 +1046,7 @@
                     
                     await layer.load();
                     
-                    let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT'${dateClause}`;
+                    let whereClause = `(${filterClause}) AND workflow_status = 'DLYCMPLT' AND workflow_status = 'INVCMPLT'${dateClause}`;
                     if (targetLayer.additionalFilter) {
                         whereClause += ` AND ${targetLayer.additionalFilter}`;
                     }
@@ -3056,7 +3056,7 @@
                 {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
                 {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
                 {name: "On Hold", includeStatuses: ['ONHOLD']},
-                {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
+                {name: "Daily Complete", includeStatuses: ['DLYCMPLT','INVCMPLT']},
                 {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
                 {name: "Invoiced", includeStatuses: ['INVCMPLT']}
             ];
