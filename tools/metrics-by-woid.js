@@ -675,7 +675,27 @@
             
             <div style="display:flex;gap:8px;margin-top:8px;margin-bottom:8px;">
                 <button id="runBtn">▶ Run Report</button>
-                <button id="exportBtn" style="display:none;">📥 Export CSV</button>
+                <div style="position:relative;display:inline-block;" id="exportDropdownContainer">
+    <button id="exportBtn" style="display:none;">📥 Export Report ▼</button>
+    <div id="exportMenu" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #ccc;box-shadow:0 4px 8px rgba(0,0,0,0.15);z-index:10000;min-width:200px;margin-top:2px;border-radius:4px;">
+        <div style="padding:8px;background:#f5f5f5;border-bottom:1px solid #ddd;font-weight:bold;font-size:11px;">Export Options</div>
+        <button class="export-option" data-format="csv-simple" style="width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer;font-size:11px;border-bottom:1px solid #eee;">
+            📄 CSV - Main Table Only
+        </button>
+        <button class="export-option" data-format="csv-full" style="width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer;font-size:11px;border-bottom:1px solid #eee;">
+            📊 CSV - Comprehensive Report
+        </button>
+        <button class="export-option" data-format="excel" style="width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer;font-size:11px;border-bottom:1px solid #eee;">
+            📗 Excel - Multi-Sheet Workbook
+        </button>
+        <button class="export-option" data-format="csv-crew" style="width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer;font-size:11px;border-bottom:1px solid #eee;">
+            👷 CSV - Crew Performance Only
+        </button>
+        <button class="export-option" data-format="json" style="width:100%;padding:8px;text-align:left;border:none;background:none;cursor:pointer;font-size:11px;">
+            🔧 JSON - Raw Data
+        </button>
+    </div>
+</div>
                 <button id="clearBtn" style="display:none;">🔄 Clear Filters</button>
                 <button id="closeTool">✖ Close</button>
             </div>
@@ -1997,44 +2017,579 @@
             return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
         };
         
+        
         // Export CSV function
-        $("#exportBtn").onclick = () => {
-            if (!currentTableData.length) return alert("No data to export");
-            
-            const layersToExport = getSelectedLayers(); // Use selected layers
-            const headers = ["Category", ...layersToExport.map(l => l.name)];
-            if (comparisonMode) {
-                headers.push("Variance", "% Change");
+$("#exportBtn").onclick = () => {
+    if (!currentTableData.length) return alert("No data to export");
+    
+    const layersToExport = getSelectedLayers(); // Use selected layers
+    const headers = ["Category", ...layersToExport.map(l => l.name)];
+    if (comparisonMode) {
+        headers.push("Variance", "% Change");
+    }
+    const csvRows = [headers];
+    
+    currentTableData.forEach(row => {
+        if (row.category !== 'TOTALS') {
+            const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
+            if (comparisonMode && row.variance) {
+                rowData.push(csvEsc(row.variance), csvEsc(row.percentChange));
             }
-            const csvRows = [headers];
+            csvRows.push(rowData);
+        }
+    });
+    
+    const csv = csvRows.map(r => r.join(",")).join("\n");
+    const timestamp = new Date().toISOString().slice(0,10);
+    const file = `layer_metrics_${timestamp}.csv`;
+    
+    const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    
+    updateStatus("CSV exported successfully!", "success");
+};
+        // Generate metadata for exports
+function generateExportMetadata() {
+    const metadata = {
+        exportDate: new Date().toISOString(),
+        exportDateFormatted: new Date().toLocaleString(),
+        filters: {
+            purchaseOrders: selectedPurchaseOrders.length > 0 ? selectedPurchaseOrders.join(', ') : 'All',
+            workOrders: selectedWorkorders.length > 0 ? selectedWorkorders.join(', ') : 'All',
+            selectedLayers: getSelectedLayers().map(l => l.name).join(', ')
+        },
+        mode: comparisonMode ? 'Comparison' : 'Single Period',
+        dateRange: comparisonMode ? {
+            period1: `${$("#period1Start").value} to ${$("#period1End").value}`,
+            period2: `${$("#period2Start").value} to ${$("#period2End").value}`
+        } : {
+            start: $("#startDate").disabled ? 'All Time' : $("#startDate").value,
+            end: $("#startDate").disabled ? 'All Time' : $("#endDate").value
+        }
+    };
+    return metadata;
+}
+
+// Export main table data to CSV
+function exportMainTableCSV() {
+    const layersToExport = getSelectedLayers();
+    const headers = ["Category", ...layersToExport.map(l => l.name)];
+    
+    if (comparisonMode) {
+        headers.push("Variance Total", "% Change");
+    }
+    
+    const csvRows = [headers];
+    
+    currentTableData.forEach(row => {
+        const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
+        if (comparisonMode && row.varianceTotal !== undefined) {
+            rowData.push(csvEsc(row.varianceTotal), csvEsc(row.percentChange ? row.percentChange.toFixed(2) + '%' : ''));
+        }
+        csvRows.push(rowData);
+    });
+    
+    return csvRows.map(r => r.join(",")).join("\n");
+}
+
+// Export comprehensive CSV report
+function exportComprehensiveCSV() {
+    const sections = [];
+    const metadata = generateExportMetadata();
+    
+    // Metadata section
+    sections.push("=== REPORT METADATA ===");
+    sections.push(`Export Date,${metadata.exportDateFormatted}`);
+    sections.push(`Report Mode,${metadata.mode}`);
+    if (comparisonMode) {
+        sections.push(`Period 1,${metadata.dateRange.period1}`);
+        sections.push(`Period 2,${metadata.dateRange.period2}`);
+    } else {
+        sections.push(`Date Range,${metadata.dateRange.start} to ${metadata.dateRange.end}`);
+    }
+    sections.push(`Purchase Orders,${metadata.filters.purchaseOrders}`);
+    sections.push(`Work Orders,${metadata.filters.workOrders}`);
+    sections.push(`Selected Layers,${metadata.filters.selectedLayers}`);
+    sections.push("");
+    sections.push("");
+    
+    // Summary section
+    if (!comparisonMode) {
+        const designedRow = currentTableData.find(r => r.category === "Designed");
+        const constructedRow = currentTableData.find(r => r.category === "Constructed");
+        const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
+        const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+        
+        if (designedRow && constructedRow) {
+            const layersToUse = getSelectedLayers();
+            let weightedConstruction = 0;
+            let weightedBillingComplete = 0;
+            let weightedInvoiced = 0;
             
-            currentTableData.forEach(row => {
-                if (row.category !== 'TOTALS') {
-                    const rowData = [csvEsc(row.category), ...row.values.map(v => csvEsc(v))];
-                    if (comparisonMode && row.variance) {
-                        rowData.push(csvEsc(row.variance), csvEsc(row.percentChange));
-                    }
-                    csvRows.push(rowData);
+            layersToUse.forEach((layer, idx) => {
+                const designed = designedRow.rawValues[idx] || 0;
+                const constructed = constructedRow.rawValues[idx] || 0;
+                const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+                const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+                
+                if (designed > 0) {
+                    weightedConstruction += (constructed / designed * 100) * layer.weight;
+                    weightedBillingComplete += (dailyComplete / designed * 100) * layer.weight;
+                    weightedInvoiced += (invoiced / designed * 100) * layer.weight;
                 }
             });
             
-            const csv = csvRows.map(r => r.join(",")).join("\n");
-            const timestamp = new Date().toISOString().slice(0,10);
-            const file = `layer_metrics_${timestamp}.csv`;
-            
-            const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = file;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-            
-            updateStatus("CSV exported successfully!", "success");
-        };
+            sections.push("=== PROJECT SUMMARY ===");
+            sections.push(`Metric,Percentage`);
+            sections.push(`Construction Progress,${weightedConstruction.toFixed(2)}%`);
+            sections.push(`Billing Complete,${weightedBillingComplete.toFixed(2)}%`);
+            sections.push(`Invoiced,${weightedInvoiced.toFixed(2)}%`);
+            sections.push("");
+            sections.push("");
+        }
+    }
+    
+    // Velocity metrics
+    if (velocityData && !comparisonMode) {
+        sections.push("=== VELOCITY METRICS ===");
+        sections.push(`Layer,Daily Rate,Production Days`);
+        velocityData.layerVelocities.forEach(lv => {
+            sections.push(`${csvEsc(lv.name)},${csvEsc(lv.velocity)},${lv.productionDays || 0}`);
+        });
+        sections.push("");
+        sections.push(`Calendar Days in Period,${velocityData.calendarDays}`);
+        sections.push(`Days Since Last Install,${velocityData.daysSinceLastInstall}`);
+        sections.push(`Last Install Date,${velocityData.lastInstallDate}`);
+        if (velocityData.estimatedCompletion) {
+            sections.push(`Estimated Completion,${velocityData.estimatedCompletion}`);
+        }
+        sections.push("");
+        sections.push("");
         
+        // Billing lag
+        sections.push("=== BILLING PIPELINE STATUS ===");
+        sections.push(`Layer,Constructed to Daily Complete,Constructed to Invoiced`);
+        velocityData.layerBillingLags.forEach(lag => {
+            sections.push(`${csvEsc(lag.name)},${csvEsc(lag.dailyCompleteLag)},${csvEsc(lag.invoiceLag)}`);
+        });
+        sections.push("");
+        sections.push("");
+    }
+    
+    // Main table
+    sections.push("=== LAYER METRICS ===");
+    sections.push(exportMainTableCSV());
+    sections.push("");
+    sections.push("");
+    
+    // Crew performance
+    if (crewPerformanceData && crewPerformanceData.length > 0) {
+        sections.push("=== CREW PERFORMANCE ===");
+        sections.push("Rank,Crew,Total Constructed,Daily Rate,Production Days,Open Gigs,Avg Approval Days,Billing Efficiency");
+        crewPerformanceData.forEach(crew => {
+            const avgApproval = crew.avgApprovalDays !== null ? crew.avgApprovalDays.toFixed(1) : 'N/A';
+            sections.push(`${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${avgApproval},${crew.billingEfficiency.toFixed(1)}%`);
+        });
+        sections.push("");
+        sections.push("");
+    }
+    
+    // Alerts
+    const alerts = generateAlerts();
+    if (alerts.length > 0) {
+        sections.push("=== ALERTS & INSIGHTS ===");
+        sections.push("Type,Title,Message");
+        alerts.forEach(alert => {
+            sections.push(`${csvEsc(alert.type)},${csvEsc(alert.title)},${csvEsc(alert.message)}`);
+        });
+    }
+    
+    return sections.join("\n");
+}
+
+// Export crew performance CSV
+function exportCrewPerformanceCSV() {
+    if (!crewPerformanceData || crewPerformanceData.length === 0) {
+        return "No crew performance data available";
+    }
+    
+    const metadata = generateExportMetadata();
+    const sections = [];
+    
+    // Metadata
+    sections.push("=== CREW PERFORMANCE REPORT ===");
+    sections.push(`Export Date,${metadata.exportDateFormatted}`);
+    sections.push(`Date Range,${metadata.dateRange.start} to ${metadata.dateRange.end}`);
+    sections.push("");
+    
+    // Main crew data
+    sections.push("Rank,Crew Name,Total Constructed,Daily Rate,Production Days,Open Quality Gigs,Approved Gigs,Total Gigs,Avg Approval Days,Billing Efficiency %");
+    
+    crewPerformanceData.forEach(crew => {
+        const avgApproval = crew.avgApprovalDays !== null ? crew.avgApprovalDays.toFixed(1) : 'N/A';
+        sections.push(
+            `${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${crew.approvedGigs},${crew.totalGigs},${avgApproval},${crew.billingEfficiency.toFixed(1)}`
+        );
+    });
+    
+    sections.push("");
+    sections.push("");
+    
+    // Layer breakdown for each crew
+    sections.push("=== CREW LAYER BREAKDOWN ===");
+    crewPerformanceData.forEach(crew => {
+        sections.push(`Crew: ${crew.name}`);
+        sections.push("Layer,Amount");
+        Object.entries(crew.layerBreakdown).forEach(([layer, amount]) => {
+            sections.push(`${csvEsc(layer)},${amount}`);
+        });
+        sections.push("");
+    });
+    
+    return sections.join("\n");
+}
+
+// Export to Excel with multiple sheets
+async function exportToExcel() {
+    try {
+        updateStatus('Generating Excel workbook...', 'processing');
+        
+        // Import SheetJS
+        const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs');
+        
+        const wb = XLSX.utils.book_new();
+        const metadata = generateExportMetadata();
+        
+        // Sheet 1: Metadata
+        const metaData = [
+            ['Layer Metrics Report'],
+            [''],
+            ['Export Date', metadata.exportDateFormatted],
+            ['Report Mode', metadata.mode],
+        ];
+        
+        if (comparisonMode) {
+            metaData.push(['Period 1', metadata.dateRange.period1]);
+            metaData.push(['Period 2', metadata.dateRange.period2]);
+        } else {
+            metaData.push(['Date Range', `${metadata.dateRange.start} to ${metadata.dateRange.end}`]);
+        }
+        
+        metaData.push(['Purchase Orders', metadata.filters.purchaseOrders]);
+        metaData.push(['Work Orders', metadata.filters.workOrders]);
+        metaData.push(['Selected Layers', metadata.filters.selectedLayers]);
+        
+        const wsMetadata = XLSX.utils.aoa_to_sheet(metaData);
+        XLSX.utils.book_append_sheet(wb, wsMetadata, 'Metadata');
+        
+        // Sheet 2: Main Table
+        const layersToExport = getSelectedLayers();
+        const tableData = [
+            ['Category', ...layersToExport.map(l => l.name), ...(comparisonMode ? ['Variance Total', '% Change'] : [])]
+        ];
+        
+        currentTableData.forEach(row => {
+    // Handle rows that might not have rawValues (like TOTALS)
+    let rowValues;
+    if (row.rawValues) {
+        rowValues = row.rawValues;
+    } else if (row.values) {
+        // Parse values back to numbers (for TOTALS row)
+        rowValues = row.values.map(v => {
+            if (typeof v === 'string') {
+                // Remove commas and parse
+                const parsed = parseFloat(v.replace(/,/g, ''));
+                return isNaN(parsed) ? v : parsed;
+            }
+            return v;
+        });
+    } else {
+        rowValues = [];
+    }
+    
+    const rowData = [row.category, ...rowValues];
+    if (comparisonMode && row.varianceTotal !== undefined) {
+        rowData.push(row.varianceTotal, row.percentChange ? row.percentChange / 100 : null);
+    }
+    tableData.push(rowData);
+});
+        
+        const wsTable = XLSX.utils.aoa_to_sheet(tableData);
+        
+        // Format percentage column
+        if (comparisonMode) {
+            const percentCol = XLSX.utils.encode_col(layersToExport.length + 2);
+            for (let i = 1; i < tableData.length; i++) {
+                const cell = wsTable[percentCol + (i + 1)];
+                if (cell && typeof cell.v === 'number') {
+                    cell.z = '0.00%';
+                }
+            }
+        }
+        
+        XLSX.utils.book_append_sheet(wb, wsTable, 'Layer Metrics');
+        
+        // Sheet 3: Velocity (if available)
+        if (velocityData && !comparisonMode) {
+            const velocityData_sheet = [
+                ['Velocity Metrics'],
+                [''],
+                ['Layer', 'Daily Rate', 'Production Days']
+            ];
+            
+            velocityData.layerVelocities.forEach(lv => {
+                velocityData_sheet.push([lv.name, lv.velocity, lv.productionDays || 0]);
+            });
+            
+            velocityData_sheet.push(['']);
+            velocityData_sheet.push(['Summary']);
+            velocityData_sheet.push(['Calendar Days in Period', velocityData.calendarDays]);
+            velocityData_sheet.push(['Days Since Last Install', velocityData.daysSinceLastInstall]);
+            velocityData_sheet.push(['Last Install Date', velocityData.lastInstallDate]);
+            if (velocityData.estimatedCompletion) {
+                velocityData_sheet.push(['Estimated Completion', velocityData.estimatedCompletion]);
+            }
+            
+            velocityData_sheet.push(['']);
+            velocityData_sheet.push(['Billing Pipeline Status']);
+            velocityData_sheet.push(['Layer', 'Constructed → Daily Complete', 'Constructed → Invoiced']);
+            velocityData.layerBillingLags.forEach(lag => {
+                velocityData_sheet.push([lag.name, lag.dailyCompleteLag, lag.invoiceLag]);
+            });
+            
+            const wsVelocity = XLSX.utils.aoa_to_sheet(velocityData_sheet);
+            XLSX.utils.book_append_sheet(wb, wsVelocity, 'Velocity');
+        }
+        
+        // Sheet 4: Crew Performance (if available)
+        if (crewPerformanceData && crewPerformanceData.length > 0) {
+            const crewData = [
+                ['Crew Performance Dashboard'],
+                [''],
+                ['Rank', 'Crew Name', 'Total Constructed', 'Daily Rate', 'Production Days', 'Open Gigs', 'Approved Gigs', 'Total Gigs', 'Avg Approval Days', 'Billing Efficiency %']
+            ];
+            
+            crewPerformanceData.forEach(crew => {
+                crewData.push([
+                    crew.rank,
+                    crew.name,
+                    crew.totalConstructed,
+                    crew.dailyRate,
+                    crew.productionDays,
+                    crew.openGigs,
+                    crew.approvedGigs,
+                    crew.totalGigs,
+                    crew.avgApprovalDays !== null ? crew.avgApprovalDays : 'N/A',
+                    crew.billingEfficiency / 100
+                ]);
+            });
+            
+            const wsCrew = XLSX.utils.aoa_to_sheet(crewData);
+            
+            // Format percentage column
+            const percentCol = XLSX.utils.encode_col(9);
+            for (let i = 3; i < crewData.length; i++) {
+                const cell = wsCrew[percentCol + i];
+                if (cell && typeof cell.v === 'number') {
+                    cell.z = '0.0%';
+                }
+            }
+            
+            XLSX.utils.book_append_sheet(wb, wsCrew, 'Crew Performance');
+        }
+        
+        // Sheet 5: Alerts (if any)
+        const alerts = generateAlerts();
+        if (alerts.length > 0) {
+            const alertData = [
+                ['Alerts & Insights'],
+                [''],
+                ['Type', 'Title', 'Message']
+            ];
+            
+            alerts.forEach(alert => {
+                alertData.push([alert.type, alert.title, alert.message]);
+            });
+            
+            const wsAlerts = XLSX.utils.aoa_to_sheet(alertData);
+            XLSX.utils.book_append_sheet(wb, wsAlerts, 'Alerts');
+        }
+        
+        // Generate and download
+        const timestamp = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, `layer_metrics_report_${timestamp}.xlsx`);
+        
+        updateStatus('Excel report exported successfully!', 'success');
+        
+    } catch (error) {
+        console.error('Error exporting to Excel:', error);
+        updateStatus('Error exporting to Excel: ' + error.message, 'error');
+    }
+}
+
+// Export to JSON
+function exportToJSON() {
+    const metadata = generateExportMetadata();
+    const layersToExport = getSelectedLayers();
+    
+    const exportData = {
+        metadata: metadata,
+        summary: {},
+        mainTable: {},
+        velocity: velocityData,
+        crewPerformance: crewPerformanceData,
+        alerts: generateAlerts()
+    };
+    
+    // Add summary data
+    if (!comparisonMode) {
+        const designedRow = currentTableData.find(r => r.category === "Designed");
+        const constructedRow = currentTableData.find(r => r.category === "Constructed");
+        const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
+        const invoicedRow = currentTableData.find(r => r.category === "Invoiced");
+        
+        if (designedRow && constructedRow) {
+            let weightedConstruction = 0;
+            let weightedBillingComplete = 0;
+            let weightedInvoiced = 0;
+            
+            layersToExport.forEach((layer, idx) => {
+                const designed = designedRow.rawValues[idx] || 0;
+                const constructed = constructedRow.rawValues[idx] || 0;
+                const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+                const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+                
+                if (designed > 0) {
+                    weightedConstruction += (constructed / designed * 100) * layer.weight;
+                    weightedBillingComplete += (dailyComplete / designed * 100) * layer.weight;
+                    weightedInvoiced += (invoiced / designed * 100) * layer.weight;
+                }
+            });
+            
+            exportData.summary = {
+                constructionProgress: weightedConstruction,
+                billingComplete: weightedBillingComplete,
+                invoiced: weightedInvoiced
+            };
+        }
+    }
+    
+    // Add main table data
+    exportData.mainTable = {
+        layers: layersToExport.map(l => ({
+            name: l.name,
+            weight: l.weight,
+            metric: l.metric
+        })),
+        categories: currentTableData.map(row => ({
+            category: row.category,
+            values: row.rawValues,
+            ...(comparisonMode && row.varianceTotal !== undefined ? {
+                varianceTotal: row.varianceTotal,
+                percentChange: row.percentChange
+            } : {})
+        }))
+    };
+    
+    const json = JSON.stringify(exportData, null, 2);
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `layer_metrics_data_${timestamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    
+    updateStatus('JSON data exported successfully!', 'success');
+}
+
+// Download helper function
+function downloadFile(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+// Export menu handlers
+$("#exportBtn").onclick = (e) => {
+    e.stopPropagation();
+    const menu = $("#exportMenu");
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+};
+
+// Add hover effects and click handlers to menu items
+toolBox.querySelectorAll('.export-option').forEach(btn => {
+    btn.addEventListener('mouseenter', () => {
+        btn.style.background = '#e3f2fd';
+    });
+    btn.addEventListener('mouseleave', () => {
+        btn.style.background = 'none';
+    });
+    
+    btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const format = btn.dataset.format;
+        $("#exportMenu").style.display = 'none';
+        
+        if (!currentTableData.length) {
+            return alert("No data to export. Please run the report first.");
+        }
+        
+        const timestamp = new Date().toISOString().slice(0, 10);
+        
+        try {
+            switch (format) {
+                case 'csv-simple':
+                    const simpleCSV = exportMainTableCSV();
+                    downloadFile(simpleCSV, `layer_metrics_${timestamp}.csv`, 'text/csv;charset=utf-8');
+                    updateStatus('Main table exported to CSV!', 'success');
+                    break;
+                    
+                case 'csv-full':
+                    const fullCSV = exportComprehensiveCSV();
+                    downloadFile(fullCSV, `layer_metrics_comprehensive_${timestamp}.csv`, 'text/csv;charset=utf-8');
+                    updateStatus('Comprehensive report exported to CSV!', 'success');
+                    break;
+                    
+                case 'excel':
+                    await exportToExcel();
+                    break;
+                    
+                case 'csv-crew':
+                    if (!crewPerformanceData || crewPerformanceData.length === 0) {
+                        return alert("No crew performance data available. Please run the report first.");
+                    }
+                    const crewCSV = exportCrewPerformanceCSV();
+                    downloadFile(crewCSV, `crew_performance_${timestamp}.csv`, 'text/csv;charset=utf-8');
+                    updateStatus('Crew performance exported to CSV!', 'success');
+                    break;
+                    
+                case 'json':
+                    exportToJSON();
+                    break;
+            }
+        } catch (error) {
+            console.error('Export error:', error);
+            updateStatus('Error during export: ' + error.message, 'error');
+        }
+    });
+});
         // Clear map filters
         $("#clearBtn").onclick = async () => {
             try {
@@ -3350,12 +3905,13 @@
         };
         
         // Document click handler for dropdown closing
-        document.addEventListener('click', (e) => {
-            if (!toolBox.contains(e.target)) {
-                $("#purchaseOptions").style.display = 'none';
-                $("#workorderOptions").style.display = 'none';
-            }
-        });
+document.addEventListener('click', (e) => {
+    if (!toolBox.contains(e.target)) {
+        $("#purchaseOptions").style.display = 'none';
+        $("#workorderOptions").style.display = 'none';
+        $("#exportMenu").style.display = 'none';
+    }
+});
         
         // Tool cleanup function
         function cleanup() {
