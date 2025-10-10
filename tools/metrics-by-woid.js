@@ -1,5 +1,11 @@
-// tools/metrics-by-woid.js - Week 4 Analytics & Insights
+// tools/metrics-by-woid.js - Week 4 Analytics & Insights + Timeline Chart
 // Layer Metrics Report with Purchase Order and Work Order filtering
+// Features:
+// - Selectable layers with proportional weight recalculation
+// - Progress timeline chart (Daily/Weekly/Monthly views)
+// - Comparison mode for period-over-period analysis
+// - Velocity metrics with production day tracking
+// - Smart alerts and insights
 
 (function() {
     try {
@@ -26,21 +32,44 @@
         
         // Target layers configuration with weights based on construction sequence
         const targetLayers = [
-            {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'", weight: 0.50, stage: "Main Infrastructure"},
-            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length", weight: 0.10, stage: "Foundation"},
-            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'", weight: 0.10, stage: "Foundation"},
-            {id: 42100, name: "Vault", metric: "count", field: "objectid", weight: 0.05, stage: "Foundation"},
-            {id: 41150, name: "Splice Closure", metric: "count", field: "objectid", weight: 0.15, stage: "Finishing"},
-            {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid", weight: 0.10, stage: "Finishing"}
+            {id: 41050, name: "Fiber Cable", metric: "sum", field: "calculated_length", additionalFilter: "cable_category <> 'DROP'", weight: 0.50, stage: "Main Infrastructure", color: "#2196F3"},
+            {id: 42050, name: "Underground Span", metric: "sum", field: "calculated_length", weight: 0.10, stage: "Foundation", color: "#795548"},
+            {id: 43050, name: "Aerial Span", metric: "sum", field: "calculated_length", additionalFilter: "physical_status <> 'EXISTINGINFRASTRUCTURE'", weight: 0.10, stage: "Foundation", color: "#9C27B0"},
+            {id: 42100, name: "Vault", metric: "count", field: "objectid", weight: 0.05, stage: "Foundation", color: "#607D8B"},
+            {id: 41150, name: "Splice Closure", metric: "count", field: "objectid", weight: 0.15, stage: "Finishing", color: "#FF9800"},
+            {id: 41100, name: "Fiber Equipment", metric: "count", field: "objectid", weight: 0.10, stage: "Finishing", color: "#4CAF50"}
         ];
         
         const z = 99999;
+        
+        // Helper function to get selected layers with recalculated weights
+        function getSelectedLayers() {
+            const selected = targetLayers.filter((_, idx) => selectedLayers.includes(idx));
+            
+            if (selected.length === 0) return [];
+            
+            // Calculate total weight of selected layers
+            const totalWeight = selected.reduce((sum, layer) => sum + layer.weight, 0);
+            
+            // Return layers with proportionally recalculated weights
+            return selected.map(layer => ({
+                ...layer,
+                originalWeight: layer.weight,
+                weight: layer.weight / totalWeight // Redistribute to sum to 1.0
+            }));
+        }
+        
+        // Helper function to check if any layers are selected
+        function hasSelectedLayers() {
+            return selectedLayers.length > 0;
+        }
         
         // Tool state variables
         let selectedWorkorders = [];
         let allWorkorders = [];
         let selectedPurchaseOrders = [];
         let allPurchaseOrders = [];
+        let selectedLayers = targetLayers.map((_, idx) => idx); // All layers selected by default
         let currentTableData = [];
         let period1Data = [];
         let period2Data = [];
@@ -50,6 +79,355 @@
         let isProcessing = false;
         let showPercentages = false;
         let comparisonMode = false;
+        let progressChart = null; // Custom chart instance
+        let timelineData = null;
+        let isGeneratingTimeline = false;
+        
+        // Custom lightweight chart renderer (no external dependencies)
+        class SimpleLineChart {
+            constructor(canvas, data, options) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.data = data;
+                this.options = options || {};
+                this.hoveredPoint = null;
+                
+                // Get parent container width
+                const parentWidth = canvas.parentElement.offsetWidth;
+                const width = parentWidth > 0 ? parentWidth : 800;
+                const height = 400;
+                
+                // Set BOTH the internal dimensions AND the CSS dimensions to match
+                this.canvas.width = width;
+                this.canvas.height = height;
+                this.canvas.style.width = width + 'px';
+                this.canvas.style.height = height + 'px';
+                
+                // Make canvas visible
+                this.canvas.style.display = 'block';
+                this.canvas.style.border = '1px solid #ddd';
+                
+                // Bind mouse events
+                this.canvas.addEventListener('mousemove', this.handleMouseMove.bind(this));
+                this.canvas.addEventListener('mouseout', this.handleMouseOut.bind(this));
+                this.canvas.addEventListener('click', this.handleClick.bind(this));
+                this.canvas.style.cursor = 'default';
+                
+                this.render();
+            }
+            
+            destroy() {
+                this.canvas.removeEventListener('mousemove', this.handleMouseMove);
+                this.canvas.removeEventListener('mouseout', this.handleMouseOut);
+                this.canvas.removeEventListener('click', this.handleClick);
+            }
+            
+            handleClick(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                
+                // Account for any scaling between canvas size and display size
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+                
+                // Check if clicking on legend
+                const legendY = this.canvas.height - 50;
+                let legendX = 80; // padding.left
+                
+                for (let i = 0; i < this.data.datasets.length; i++) {
+                    const dataset = this.data.datasets[i];
+                    const labelWidth = this.ctx.measureText(dataset.label).width + 30;
+                    
+                    if (x >= legendX && x <= legendX + labelWidth && 
+                        y >= legendY && y <= legendY + 12) {
+                        // Toggle dataset visibility
+                        dataset.hidden = !dataset.hidden;
+                        this.render();
+                        return;
+                    }
+                    
+                    legendX += labelWidth;
+                }
+            }
+            
+            handleMouseMove(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                
+                // Calculate mouse position relative to canvas
+                // Account for any scaling between canvas size and display size
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+                
+                // Check if hovering over legend
+                const legendY = this.canvas.height - 50;
+                let legendX = 80;
+                let overLegend = false;
+                
+                for (let i = 0; i < this.data.datasets.length; i++) {
+                    const dataset = this.data.datasets[i];
+                    const labelWidth = this.ctx.measureText(dataset.label).width + 30;
+                    
+                    if (x >= legendX && x <= legendX + labelWidth && 
+                        y >= legendY && y <= legendY + 12) {
+                        overLegend = true;
+                        break;
+                    }
+                    
+                    legendX += labelWidth;
+                }
+                
+                this.canvas.style.cursor = overLegend ? 'pointer' : 'default';
+                
+                // Check if hovering over a data point
+                let foundPoint = null;
+                const datasets = this.data.datasets.filter(d => !d.hidden);
+                
+                // Calculate maxValue for positioning
+                const allValues = datasets.flatMap(d => d.data);
+                const maxValue = Math.max(...allValues, 1);
+                
+                for (let i = 0; i < datasets.length; i++) {
+                    const dataset = datasets[i];
+                    for (let j = 0; j < dataset.data.length; j++) {
+                        const point = this.getPointCoordinates(j, dataset.data[j], maxValue);
+                        const distance = Math.sqrt(Math.pow(x - point.x, 2) + Math.pow(y - point.y, 2));
+                        
+                        if (distance < 8) {
+                            foundPoint = { datasetIndex: i, pointIndex: j, dataset: dataset };
+                            this.canvas.style.cursor = 'pointer';
+                            break;
+                        }
+                    }
+                    if (foundPoint) break;
+                }
+                
+                if (foundPoint !== this.hoveredPoint) {
+                    this.hoveredPoint = foundPoint;
+                    this.render();
+                }
+            }
+            
+            handleMouseOut() {
+                if (this.hoveredPoint) {
+                    this.hoveredPoint = null;
+                    this.render();
+                }
+            }
+            
+            getPointCoordinates(index, value, maxValue) {
+                const padding = { top: 60, right: 40, bottom: 80, left: 80 };
+                const chartWidth = this.canvas.width - padding.left - padding.right;
+                const chartHeight = this.canvas.height - padding.top - padding.bottom;
+                
+                // If maxValue not provided, calculate it
+                if (maxValue === undefined) {
+                    const visibleDatasets = this.data.datasets.filter(d => !d.hidden);
+                    maxValue = Math.max(...visibleDatasets.flatMap(d => d.data), 1);
+                }
+                
+                const x = padding.left + (index / (this.data.labels.length - 1)) * chartWidth;
+                const y = padding.top + chartHeight - (value / maxValue) * chartHeight;
+                
+                return { x, y };
+            }
+            
+            render() {
+                const ctx = this.ctx;
+                const canvas = this.canvas;
+                
+                // Clear canvas with white background
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                const padding = { top: 60, right: 40, bottom: 80, left: 80 };
+                const chartWidth = canvas.width - padding.left - padding.right;
+                const chartHeight = canvas.height - padding.top - padding.bottom;
+                
+                // Draw title
+                ctx.font = 'bold 14px Arial';
+                ctx.fillStyle = '#333';
+                ctx.textAlign = 'center';
+                ctx.fillText('Cumulative Construction Progress Over Time', canvas.width / 2, 30);
+                
+                // Calculate max value for scaling
+                const visibleDatasets = this.data.datasets.filter(d => !d.hidden);
+                
+                if (visibleDatasets.length === 0) {
+                    ctx.font = '14px Arial';
+                    ctx.fillStyle = '#999';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('No data to display. Select at least one layer.', canvas.width / 2, canvas.height / 2);
+                    return;
+                }
+                
+                const allValues = visibleDatasets.flatMap(d => d.data);
+                const maxValue = Math.max(...allValues, 1); // Ensure at least 1
+                
+                // Draw Y-axis
+                ctx.strokeStyle = '#ddd';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(padding.left, padding.top);
+                ctx.lineTo(padding.left, padding.top + chartHeight);
+                ctx.stroke();
+                
+                // Draw Y-axis label
+                ctx.save();
+                ctx.translate(20, canvas.height / 2);
+                ctx.rotate(-Math.PI / 2);
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#666';
+                ctx.fillText('Cumulative Amount', 0, 0);
+                ctx.restore();
+                
+                // Draw Y-axis ticks and grid
+                const ySteps = 5;
+                for (let i = 0; i <= ySteps; i++) {
+                    const value = (maxValue / ySteps) * i;
+                    const y = padding.top + chartHeight - (i / ySteps) * chartHeight;
+                    
+                    // Grid line
+                    ctx.strokeStyle = '#f0f0f0';
+                    ctx.beginPath();
+                    ctx.moveTo(padding.left, y);
+                    ctx.lineTo(padding.left + chartWidth, y);
+                    ctx.stroke();
+                    
+                    // Tick label
+                    ctx.font = '10px Arial';
+                    ctx.fillStyle = '#666';
+                    ctx.textAlign = 'right';
+                    ctx.fillText(Math.round(value).toLocaleString(), padding.left - 10, y + 4);
+                }
+                
+                // Draw X-axis
+                ctx.strokeStyle = '#ddd';
+                ctx.beginPath();
+                ctx.moveTo(padding.left, padding.top + chartHeight);
+                ctx.lineTo(padding.left + chartWidth, padding.top + chartHeight);
+                ctx.stroke();
+                
+                // Draw X-axis label
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#666';
+                ctx.fillText('Time Period', canvas.width / 2, canvas.height - 10);
+                
+                // Draw X-axis labels
+                this.data.labels.forEach((label, i) => {
+                    const x = padding.left + (i / (this.data.labels.length - 1)) * chartWidth;
+                    
+                    ctx.save();
+                    ctx.translate(x, padding.top + chartHeight + 10);
+                    ctx.rotate(Math.PI / 4);
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.fillStyle = '#666';
+                    ctx.fillText(label, 0, 0);
+                    ctx.restore();
+                });
+                
+                // Draw datasets
+                this.data.datasets.forEach((dataset, datasetIndex) => {
+                    if (dataset.hidden) return;
+                    
+                    // Draw line
+                    ctx.strokeStyle = dataset.borderColor;
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    
+                    dataset.data.forEach((value, i) => {
+                        const point = this.getPointCoordinates(i, value, maxValue);
+                        if (i === 0) {
+                            ctx.moveTo(point.x, point.y);
+                        } else {
+                            ctx.lineTo(point.x, point.y);
+                        }
+                    });
+                    
+                    ctx.stroke();
+                    
+                    // Draw points
+                    dataset.data.forEach((value, i) => {
+                        const point = this.getPointCoordinates(i, value, maxValue);
+                        
+                        ctx.fillStyle = dataset.borderColor;
+                        ctx.beginPath();
+                        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Highlight if hovered
+                        if (this.hoveredPoint && 
+                            this.hoveredPoint.datasetIndex === datasetIndex && 
+                            this.hoveredPoint.pointIndex === i) {
+                            ctx.strokeStyle = '#333';
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                    });
+                });
+                
+                // Draw tooltip
+                if (this.hoveredPoint) {
+                    const dataset = this.hoveredPoint.dataset;
+                    const pointIndex = this.hoveredPoint.pointIndex;
+                    const value = dataset.data[pointIndex];
+                    const point = this.getPointCoordinates(pointIndex, value, maxValue);
+                    
+                    // Find corresponding layer - need to map back to original targetLayers
+                    // The dataset label contains the layer name, find it in targetLayers
+                    const layer = targetLayers.find(l => l.name === dataset.label);
+                    const unit = layer && layer.metric === 'sum' ? ' ft' : ' units';
+                    
+                    const text = `${dataset.label}: ${value.toLocaleString()}${unit}`;
+                    const label = this.data.labels[pointIndex];
+                    
+                    ctx.font = '11px Arial';
+                    const textWidth = Math.max(ctx.measureText(text).width, ctx.measureText(label).width);
+                    
+                    // Tooltip background
+                    const tooltipX = point.x + 10;
+                    const tooltipY = point.y - 40;
+                    const tooltipWidth = textWidth + 16;
+                    const tooltipHeight = 40;
+                    
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                    ctx.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+                    
+                    // Tooltip text
+                    ctx.fillStyle = '#fff';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(label, tooltipX + 8, tooltipY + 16);
+                    ctx.fillText(text, tooltipX + 8, tooltipY + 32);
+                }
+                
+                // Draw legend
+                const legendY = canvas.height - 50;
+                let legendX = padding.left;
+                
+                this.data.datasets.forEach((dataset, i) => {
+                    // Color box
+                    ctx.fillStyle = dataset.hidden ? '#ccc' : dataset.borderColor;
+                    ctx.fillRect(legendX, legendY, 12, 12);
+                    
+                    // Label
+                    ctx.font = '11px Arial';
+                    ctx.fillStyle = dataset.hidden ? '#999' : '#333';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(dataset.label, legendX + 16, legendY + 10);
+                    
+                    legendX += ctx.measureText(dataset.label).width + 30;
+                });
+            }
+        }
         
         // CSS Spinner keyframes
         const spinnerStyle = document.createElement('style');
@@ -151,6 +529,18 @@
             .alert-message {
                 font-size: 11px;
             }
+            .layer-checkbox-item {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 0;
+            }
+            .layer-color-box {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 1px solid #ccc;
+            }
         `;
         document.head.appendChild(spinnerStyle);
         
@@ -200,6 +590,20 @@
                         <button id="clearAllWO" style="flex:1;padding:4px;font-size:11px;">Clear All</button>
                     </div>
                     <div id="workorderOptionsList"></div>
+                </div>
+            </div>
+            
+            <div style="margin:8px 0;padding:10px;background:#f8f9fa;border:1px solid #d0d5dd;border-radius:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <label style="font-weight:bold;">📋 Select Layers to Include:</label>
+                    <div style="display:flex;gap:4px;">
+                        <button id="selectAllLayers" style="padding:3px 8px;font-size:10px;">Select All</button>
+                        <button id="clearAllLayers" style="padding:3px 8px;font-size:10px;">Clear All</button>
+                    </div>
+                </div>
+                <div id="globalLayerCheckboxes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;"></div>
+                <div style="margin-top:6px;font-size:10px;color:#666;font-style:italic;">
+                    💡 Weights will be recalculated proportionally based on your selection
                 </div>
             </div>
             
@@ -282,6 +686,44 @@
             </div>
             
             <div id="toolStatus" style="margin-top:8px;padding:6px;border-radius:3px;"></div>
+            
+            <!-- Progress Timeline Chart Section -->
+            <div id="timelineSection" style="display:none;margin-top:16px;padding:12px;background:#f8f9fa;border:1px solid #d0d5dd;border-radius:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <div style="font-weight:bold;font-size:14px;">📈 Progress Timeline</div>
+                    <button id="toggleTimelineBtn" style="padding:4px 8px;font-size:11px;">Hide Chart</button>
+                </div>
+                
+                <div id="timelineControls" style="margin-bottom:12px;">
+                    <div style="display:flex;gap:16px;align-items:start;flex-wrap:wrap;">
+                        <div>
+                            <label style="font-weight:bold;display:block;margin-bottom:4px;">Time Interval:</label>
+                            <div style="display:flex;gap:4px;">
+                                <button class="interval-btn" data-interval="daily" style="padding:4px 8px;font-size:11px;">Daily</button>
+                                <button class="interval-btn active" data-interval="weekly" style="padding:4px 8px;font-size:11px;background:#3367d6;color:#fff;">Weekly</button>
+                                <button class="interval-btn" data-interval="monthly" style="padding:4px 8px;font-size:11px;">Monthly</button>
+                            </div>
+                        </div>
+                        
+                        <div style="flex:1;min-width:200px;">
+                            <label style="font-weight:bold;display:block;margin-bottom:4px;">Layers to Display:</label>
+                            <div id="layerCheckboxes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px;"></div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top:8px;">
+                        <button id="generateTimelineBtn" style="padding:6px 12px;font-size:11px;background:#4CAF50;color:#fff;border:none;border-radius:3px;cursor:pointer;">Generate Timeline Chart</button>
+                    </div>
+                </div>
+                
+                <div id="timelineChartContainer" style="display:none;">
+                    <canvas id="progressChart"></canvas>
+                    <div style="margin-top:8px;font-size:10px;color:#666;font-style:italic;">
+                        💡 Chart shows cumulative construction progress over time. Hover over points for details. Click layer names in legend to toggle visibility.
+                    </div>
+                </div>
+            </div>
+            
             <div id="alertsSection" style="display:none;margin-top:12px;"></div>
             <div id="summarySection" style="display:none;margin-top:12px;padding:12px;background:#f5f7fa;border:1px solid #d0d5dd;border-radius:4px;"></div>
             <div id="resultsTable" style="margin-top:12px;"></div>
@@ -321,12 +763,458 @@
             status.textContent = `${icon} ${message}`;
         }
         
+        // Initialize layer checkboxes
+        function initializeLayerCheckboxes() {
+            const container = $("#layerCheckboxes");
+            container.innerHTML = targetLayers.map((layer, idx) => `
+                <label class="layer-checkbox-item" style="cursor:pointer;">
+                    <input type="checkbox" class="layer-checkbox" data-index="${idx}" checked>
+                    <span class="layer-color-box" style="background:${layer.color};"></span>
+                    <span style="font-size:11px;">${layer.name}</span>
+                </label>
+            `).join('');
+        }
+        
+        // Initialize GLOBAL layer checkboxes (for main tool filtering)
+        function initializeGlobalLayerCheckboxes() {
+            const container = $("#globalLayerCheckboxes");
+            container.innerHTML = targetLayers.map((layer, idx) => `
+                <label class="layer-checkbox-item" style="cursor:pointer;">
+                    <input type="checkbox" class="global-layer-checkbox" data-index="${idx}" checked>
+                    <span class="layer-color-box" style="background:${layer.color};"></span>
+                    <span style="font-size:11px;">${layer.name}</span>
+                </label>
+            `).join('');
+            
+            // Add event listeners
+            container.querySelectorAll('.global-layer-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => {
+                    const idx = parseInt(e.target.dataset.index);
+                    if (e.target.checked) {
+                        if (!selectedLayers.includes(idx)) {
+                            selectedLayers.push(idx);
+                            selectedLayers.sort((a, b) => a - b); // Keep sorted
+                        }
+                    } else {
+                        selectedLayers = selectedLayers.filter(i => i !== idx);
+                    }
+                    console.log('Selected layers:', selectedLayers);
+                    updateLayerSelectionDisplay();
+                    
+                    // Update timeline checkboxes if timeline is visible
+                    updateTimelineLayerCheckboxes();
+                });
+            });
+        }
+        
+        // Update timeline layer checkboxes to match global selection
+        function updateTimelineLayerCheckboxes() {
+            const timelineContainer = $("#layerCheckboxes");
+            if (!timelineContainer) return;
+            
+            // Re-render timeline checkboxes based on selected layers
+            const layersToShow = getSelectedLayers();
+            timelineContainer.innerHTML = layersToShow.map((layer, idx) => {
+                // Find the original index in targetLayers
+                const originalIdx = targetLayers.findIndex(l => l.id === layer.id);
+                return `
+                    <label class="layer-checkbox-item" style="cursor:pointer;">
+                        <input type="checkbox" class="layer-checkbox" data-index="${idx}" checked>
+                        <span class="layer-color-box" style="background:${layer.color};"></span>
+                        <span style="font-size:11px;">${layer.name}</span>
+                    </label>
+                `;
+            }).join('');
+        }
+        
+        // Update display to show current layer selection
+        function updateLayerSelectionDisplay() {
+            const selected = getSelectedLayers();
+            if (selected.length === 0) {
+                // Visual warning if no layers selected
+                $("#globalLayerCheckboxes").style.background = '#ffebee';
+            } else {
+                $("#globalLayerCheckboxes").style.background = '';
+            }
+        }
+        
+        initializeLayerCheckboxes();
+        initializeGlobalLayerCheckboxes();
+        
+        // Global layer selection button handlers
+        $("#selectAllLayers").onclick = () => {
+            selectedLayers = targetLayers.map((_, idx) => idx);
+            toolBox.querySelectorAll('.global-layer-checkbox').forEach(cb => cb.checked = true);
+            updateLayerSelectionDisplay();
+        };
+        
+        $("#clearAllLayers").onclick = () => {
+            selectedLayers = [];
+            toolBox.querySelectorAll('.global-layer-checkbox').forEach(cb => cb.checked = false);
+            updateLayerSelectionDisplay();
+        };
+        
+        // Interval button handlers
+        toolBox.querySelectorAll('.interval-btn').forEach(btn => {
+            btn.onclick = async () => {
+                // Update active state
+                toolBox.querySelectorAll('.interval-btn').forEach(b => {
+                    b.classList.remove('active');
+                    b.style.background = '';
+                    b.style.color = '';
+                });
+                btn.classList.add('active');
+                btn.style.background = '#3367d6';
+                btn.style.color = '#fff';
+                
+                // Auto-regenerate chart if we already have data
+                if (timelineData && currentTableData.length && !isGeneratingTimeline) {
+                    console.log('Interval changed, auto-regenerating chart...');
+                    
+                    // Trigger regeneration by simulating button click
+                    const genBtn = $("#generateTimelineBtn");
+                    if (genBtn && !genBtn.disabled) {
+                        genBtn.click();
+                    }
+                }
+            };
+        });
+        
+        // Toggle timeline visibility
+        $("#toggleTimelineBtn").onclick = () => {
+            const chartContainer = $("#timelineChartContainer");
+            const controls = $("#timelineControls");
+            const btn = $("#toggleTimelineBtn");
+            
+            if (chartContainer.style.display === 'none') {
+                chartContainer.style.display = 'block';
+                controls.style.display = 'block';
+                btn.textContent = 'Hide Chart';
+            } else {
+                chartContainer.style.display = 'none';
+                controls.style.display = 'none';
+                btn.textContent = 'Show Chart';
+            }
+        };
+        
+        // Generate timeline data
+        async function generateTimelineData(interval = 'weekly') {
+            try {
+                updateStatus(`Generating ${interval} timeline data...`, 'processing');
+                
+                const start = $("#startDate").value;
+                const end = $("#endDate").value;
+                const allTimeMode = $("#startDate").disabled;
+                
+                if (!allTimeMode && (!start || !end)) {
+                    throw new Error("Please select date range first");
+                }
+                
+                const filterClause = buildFilterClause();
+                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                const layersToQuery = getSelectedLayers(); // Use selected layers only
+                
+                if (layersToQuery.length === 0) {
+                    throw new Error('No layers selected. Please select at least one layer.');
+                }
+                
+                // Determine date range
+                let startDate, endDate;
+                if (allTimeMode) {
+                    // Find earliest and latest installation dates
+                    let earliestDate = null;
+                    let latestDate = null;
+                    
+                    for (const targetLayer of layersToQuery) {
+                        const layer = allFL.find(l => l.layerId === targetLayer.id);
+                        if (!layer) continue;
+                        
+                        await layer.load();
+                        
+                        const dateQuery = await layer.queryFeatures({
+                            where: `(${filterClause}) AND installation_date IS NOT NULL`,
+                            outFields: ["installation_date"],
+                            orderByFields: ["installation_date ASC"],
+                            num: 1,
+                            returnGeometry: false
+                        });
+                        
+                        if (dateQuery.features.length > 0) {
+                            const layerEarliest = new Date(dateQuery.features[0].attributes.installation_date);
+                            if (!earliestDate || layerEarliest < earliestDate) {
+                                earliestDate = layerEarliest;
+                            }
+                        }
+                        
+                        const latestQuery = await layer.queryFeatures({
+                            where: `(${filterClause}) AND installation_date IS NOT NULL`,
+                            outFields: ["installation_date"],
+                            orderByFields: ["installation_date DESC"],
+                            num: 1,
+                            returnGeometry: false
+                        });
+                        
+                        if (latestQuery.features.length > 0) {
+                            const layerLatest = new Date(latestQuery.features[0].attributes.installation_date);
+                            if (!latestDate || layerLatest > latestDate) {
+                                latestDate = layerLatest;
+                            }
+                        }
+                    }
+                    
+                    if (!earliestDate || !latestDate) {
+                        throw new Error("No installation dates found in data");
+                    }
+                    
+                    startDate = earliestDate;
+                    endDate = latestDate;
+                } else {
+                    startDate = new Date(start);
+                    endDate = new Date(end);
+                }
+                
+                // Generate time buckets
+                const buckets = [];
+                let currentDate = new Date(startDate);
+                currentDate.setHours(0, 0, 0, 0); // Start of day
+                
+                while (currentDate <= endDate) {
+                    let bucketEnd = new Date(currentDate);
+                    
+                    if (interval === 'daily') {
+                        // For daily: end of the same day
+                        bucketEnd.setHours(23, 59, 59, 999);
+                    } else if (interval === 'weekly') {
+                        // For weekly: 6 days later (7 days total)
+                        bucketEnd.setDate(bucketEnd.getDate() + 6);
+                        bucketEnd.setHours(23, 59, 59, 999);
+                    } else if (interval === 'monthly') {
+                        // For monthly: end of the month
+                        bucketEnd.setMonth(bucketEnd.getMonth() + 1);
+                        bucketEnd.setDate(0); // Last day of previous month (which is this month)
+                        bucketEnd.setHours(23, 59, 59, 999);
+                    }
+                    
+                    // Don't go past the end date
+                    if (bucketEnd > endDate) {
+                        bucketEnd = new Date(endDate);
+                        bucketEnd.setHours(23, 59, 59, 999);
+                    }
+                    
+                    buckets.push({
+                        start: new Date(currentDate),
+                        end: new Date(bucketEnd),
+                        label: currentDate.toLocaleDateString('en-US', 
+                            interval === 'daily' ? { month: 'short', day: 'numeric' } :
+                            interval === 'weekly' ? { month: 'short', day: 'numeric' } :
+                            { month: 'short', year: 'numeric' }
+                        )
+                    });
+                    
+                    // Move to next period
+                    if (interval === 'daily') {
+                        currentDate.setDate(currentDate.getDate() + 1);
+                    } else if (interval === 'weekly') {
+                        currentDate.setDate(currentDate.getDate() + 7);
+                    } else if (interval === 'monthly') {
+                        currentDate.setMonth(currentDate.getMonth() + 1);
+                        currentDate.setDate(1); // First of next month
+                    }
+                    
+                    // Safety check to prevent infinite loop
+                    if (currentDate > endDate) break;
+                }
+                
+                console.log(`Generated ${buckets.length} ${interval} buckets`);
+                if (buckets.length > 0) {
+                    console.log('First bucket:', buckets[0]);
+                    console.log('Last bucket:', buckets[buckets.length - 1]);
+                }
+                
+                // Query cumulative data for each bucket and layer
+                const timelineData = {
+                    labels: [],
+                    datasets: []
+                };
+                
+                // Initialize datasets for each layer
+                layersToQuery.forEach((layer, idx) => {
+                    timelineData.datasets.push({
+                        label: layer.name,
+                        data: [],
+                        borderColor: layer.color,
+                        backgroundColor: layer.color + '20',
+                        lineTension: 0.3,
+                        fill: false,
+                        hidden: false
+                    });
+                });
+                
+                // Query each bucket
+                for (const bucket of buckets) {
+                    timelineData.labels.push(bucket.label);
+                    
+                    // Query each layer for cumulative construction up to bucket end
+                    for (let layerIdx = 0; layerIdx < layersToQuery.length; layerIdx++) {
+                        const targetLayer = layersToQuery[layerIdx];
+                        const layer = allFL.find(l => l.layerId === targetLayer.id);
+                        
+                        if (!layer) {
+                            timelineData.datasets[layerIdx].data.push(0);
+                            continue;
+                        }
+                        
+                        await layer.load();
+                        
+                        // Build query for constructed items up to bucket end
+                        const excludedStatuses = ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG'];
+                        const statusClause = excludedStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
+                        
+                        let additionalFilter = "";
+                        if (targetLayer.additionalFilter) {
+                            additionalFilter = ` AND ${targetLayer.additionalFilter}`;
+                        }
+                        
+                        const bucketEndStr = bucket.end.toISOString().split('T')[0];
+                        const bucketEndTime = bucket.end.toTimeString().split(' ')[0];
+                        const dateClause = ` AND installation_date <= TIMESTAMP '${bucketEndStr} ${bucketEndTime}'`;
+                        
+                        const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
+                        
+                        const queryResult = await layer.queryFeatures({
+                            where: whereClause,
+                            outFields: [targetLayer.field],
+                            returnGeometry: false
+                        });
+                        
+                        let value = 0;
+                        if (targetLayer.metric === "count") {
+                            value = queryResult.features.length;
+                        } else if (targetLayer.metric === "sum") {
+                            value = queryResult.features.reduce((sum, feature) => {
+                                const fieldValue = feature.attributes[targetLayer.field];
+                                return sum + (Number(fieldValue) || 0);
+                            }, 0);
+                            value = Math.round(value);
+                        }
+                        
+                        timelineData.datasets[layerIdx].data.push(value);
+                    }
+                }
+                
+                console.log('Timeline data generated:', timelineData);
+                return timelineData;
+                
+            } catch (error) {
+                console.error('Error generating timeline data:', error);
+                updateStatus('Error generating timeline: ' + error.message, 'error');
+                throw error;
+            }
+        }
+        
+        // Render timeline chart (using custom SimpleLineChart)
+        function renderTimelineChart(data) {
+            const canvas = $("#progressChart");
+            
+            // Destroy existing chart
+            if (progressChart) {
+                progressChart.destroy();
+            }
+            
+            // Update timeline checkboxes to match global selection
+            updateTimelineLayerCheckboxes();
+            
+            // Apply layer visibility from checkboxes
+            const checkboxes = toolBox.querySelectorAll('.layer-checkbox');
+            checkboxes.forEach((checkbox, idx) => {
+                if (data.datasets[idx]) {
+                    data.datasets[idx].hidden = !checkbox.checked;
+                }
+            });
+            
+            // Create new chart
+            progressChart = new SimpleLineChart(canvas, data, {
+                title: 'Cumulative Construction Progress Over Time'
+            });
+            
+            $("#timelineChartContainer").style.display = 'block';
+            updateStatus('Timeline chart generated successfully!', 'success');
+        }
+        
+        // Generate timeline button handler
+        $("#generateTimelineBtn").onclick = async () => {
+            try {
+                // Prevent multiple simultaneous generations
+                if (isGeneratingTimeline) {
+                    console.log('Timeline generation already in progress, ignoring click');
+                    return;
+                }
+                
+                if (!currentTableData.length) {
+                    return alert("Please run the main report first");
+                }
+                
+                isGeneratingTimeline = true;
+                
+                const genBtn = $("#generateTimelineBtn");
+                const originalText = genBtn.innerHTML;
+                
+                genBtn.innerHTML = '<span class="spinner"></span>Generating...';
+                genBtn.disabled = true;
+                updateStatus('Generating timeline data...', 'processing');
+                
+                // Destroy existing chart first to prevent glitching
+                if (progressChart) {
+                    console.log('Destroying existing chart before creating new one');
+                    progressChart.destroy();
+                    progressChart = null;
+                    
+                    // Clear the canvas
+                    const canvas = $("#progressChart");
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+                
+                const activeInterval = toolBox.querySelector('.interval-btn.active');
+                const interval = activeInterval ? activeInterval.dataset.interval : 'weekly';
+                
+                console.log('Generating timeline data with interval:', interval);
+                const data = await generateTimelineData(interval);
+                timelineData = data;
+                
+                console.log('Rendering chart with data:', data);
+                renderTimelineChart(data);
+                
+                genBtn.innerHTML = originalText;
+                genBtn.disabled = false;
+                isGeneratingTimeline = false;
+                
+            } catch (error) {
+                console.error('Error generating timeline:', error);
+                console.error('Error stack:', error.stack);
+                updateStatus('Error: ' + error.message, 'error');
+                
+                const genBtn = $("#generateTimelineBtn");
+                genBtn.innerHTML = '📈 Generate Timeline Chart';
+                genBtn.disabled = false;
+                isGeneratingTimeline = false;
+            }
+        };
+        
+        // Layer checkbox change handler
+        toolBox.addEventListener('change', (e) => {
+            if (e.target.classList.contains('layer-checkbox') && timelineData && progressChart) {
+                renderTimelineChart(timelineData);
+            }
+        });
+        
         // Comparison mode toggle
         $("#comparisonModeToggle").onchange = (e) => {
             comparisonMode = e.target.checked;
             if (comparisonMode) {
                 $("#singlePeriodSection").style.display = "none";
                 $("#comparisonPeriodSection").style.display = "block";
+                $("#timelineSection").style.display = "none"; // Hide timeline in comparison mode
                 
                 // Pre-fill with suggested periods (last month vs this month)
                 const today = new Date();
@@ -714,7 +1602,8 @@
         $("#exportBtn").onclick = () => {
             if (!currentTableData.length) return alert("No data to export");
             
-            const headers = ["Category", ...targetLayers.map(l => l.name)];
+            const layersToExport = getSelectedLayers(); // Use selected layers
+            const headers = ["Category", ...layersToExport.map(l => l.name)];
             if (comparisonMode) {
                 headers.push("Variance", "% Change");
             }
@@ -899,6 +1788,8 @@
             
             if (!currentTableData.length || comparisonMode) return alerts;
             
+            const layersInUse = getSelectedLayers(); // Use selected layers
+            
             const designedRow = currentTableData.find(r => r.category === "Designed");
             const constructedRow = currentTableData.find(r => r.category === "Constructed");
             const dailyCompleteRow = currentTableData.find(r => r.category === "Daily Complete");
@@ -908,8 +1799,8 @@
             
             if (!designedRow || !constructedRow) return alerts;
             
-            // Check for data quality issues per layer
-            targetLayers.forEach((layer, idx) => {
+            // Check for data quality issues per layer (only selected layers)
+            layersInUse.forEach((layer, idx) => {
                 const designed = designedRow.rawValues[idx] || 0;
                 const constructed = constructedRow.rawValues[idx] || 0;
                 
@@ -942,7 +1833,7 @@
                     // Find which layers have the most on hold
                     const highOnHoldLayers = [];
                     if (onHoldRow) {
-                        targetLayers.forEach((layer, idx) => {
+                        layersToQuery.forEach((layer, idx) => {
                             const designed = designedRow.rawValues[idx] || 0;
                             const onHold = onHoldRow.rawValues[idx] || 0;
                             if (designed > 0) {
@@ -976,7 +1867,7 @@
                     // Find which layers have the biggest gap
                     const laggyLayers = [];
                     if (dailyCompleteRow) {
-                        targetLayers.forEach((layer, idx) => {
+                        layersInUse.forEach((layer, idx) => {
                             const constructed = constructedRow.rawValues[idx] || 0;
                             const dailyComplete = dailyCompleteRow.rawValues[idx] || 0;
                             if (constructed > 0) {
@@ -1020,7 +1911,7 @@
             
             // Alert: Low completion (only for longer periods)
             const calendarDays = velocityData ? velocityData.calendarDays : 0;
-            const isLongPeriod = calendarDays >= 30 || calendarDays === 0; // 0 means couldn't determine, likely All Time
+            const isLongPeriod = calendarDays >= 30 || calendarDays === 0;
             
             if (designedTotal > 0 && isLongPeriod) {
                 const completionPct = (constructedTotal / designedTotal) * 100;
@@ -1104,6 +1995,7 @@
         // Render summary section
         function renderSummary() {
             const summarySection = $("#summarySection");
+            const layersToUse = getSelectedLayers(); // Use selected layers with recalculated weights
             
             if (comparisonMode && period1Data.length && period2Data.length) {
                 // Comparison mode summary
@@ -1127,7 +2019,7 @@
                 let p1Billing = 0, p2Billing = 0;
                 let p1InvoicedPct = 0, p2InvoicedPct = 0;
                 
-                targetLayers.forEach((layer, idx) => {
+                layersToUse.forEach((layer, idx) => {
                     // Period 1
                     const p1Des = p1Designed.rawValues[idx] || 0;
                     const p1Con = p1Constructed ? (p1Constructed.rawValues[idx] || 0) : 0;
@@ -1214,7 +2106,7 @@
                 let weightedBillingComplete = 0;
                 let weightedInvoiced = 0;
                 
-                targetLayers.forEach((layer, idx) => {
+                layersToUse.forEach((layer, idx) => {
                     const designed = designedRow.rawValues[idx] || 0;
                     const constructed = constructedRow.rawValues[idx] || 0;
                     const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
@@ -1360,10 +2252,8 @@
                     </div>
                     ${velocityHTML}
                     <div style="margin-top:12px;font-size:11px;color:#666;">
-                        <strong>Layer Weights:</strong> 
-                        Foundation (25%): UG Span 10%, Aerial Span 10%, Vaults 5% | 
-                        Main Infrastructure (50%): Fiber Cable 50% | 
-                        Finishing (25%): Splice Closures 15%, Equipment 10%
+                        <strong>Selected Layer Weights (Recalculated):</strong> 
+                        ${layersToUse.map(l => `${l.name} ${(l.weight * 100).toFixed(1)}%`).join(' | ')}
                     </div>
                 `;
             }
@@ -1375,6 +2265,8 @@
         function renderTable() {
             if (!currentTableData.length) return;
             
+            const layersToDisplay = getSelectedLayers(); // Use selected layers
+            
             let tableHTML = `<div style="overflow-x:auto;margin-top:8px;"><table style="min-width:100%;border-collapse:collapse;white-space:nowrap;"><thead><tr style="background:#f5f5f5;">`;
             
             // Category header
@@ -1384,8 +2276,8 @@
             }
             tableHTML += `</th>`;
             
-            // Layer headers
-            targetLayers.forEach((layer, idx) => {
+            // Layer headers - only show selected layers
+            layersToDisplay.forEach((layer, idx) => {
                 let headerText = layer.name;
                 if (layer.additionalFilter) {
                     if (layer.name === "Fiber Cable") headerText += " (Excl. DROP)";
@@ -1472,13 +2364,14 @@
             try {
                 const filterClause = buildFilterClause();
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                const layersToQuery = getSelectedLayers(); // Use selected layers only
                 
                 // Get most recent installation date and earliest date across all layers
                 let lastInstallDate = "N/A";
                 let daysSinceLastInstall = 0;
                 let earliestInstallDate = null;
                 
-                for (const targetLayer of targetLayers) {
+                for (const targetLayer of layersToQuery) {
                     const layer = allFL.find(l => l.layerId === targetLayer.id);
                     if (!layer) continue;
                     
@@ -1558,8 +2451,8 @@
                 
                 if (designedRow && constructedRow) {
                     // Query each layer for production days
-                    for (let idx = 0; idx < targetLayers.length; idx++) {
-                        const targetLayer = targetLayers[idx];
+                    for (let idx = 0; idx < layersToQuery.length; idx++) {
+                        const targetLayer = layersToQuery[idx];
                         const layer = allFL.find(l => l.layerId === targetLayer.id);
                         
                         const designed = designedRow.rawValues[idx] || 0;
@@ -1585,8 +2478,6 @@
                                 
                                 const whereClause = `(${filterClause}) AND (${statusClause})${additionalFilter}${dateClause}`;
                                 
-                                console.log(`Querying ${targetLayer.name} for production days...`);
-                                
                                 // Query all features with installation dates
                                 const featuresQuery = await layer.queryFeatures({
                                     where: whereClause,
@@ -1594,16 +2485,12 @@
                                     returnGeometry: false
                                 });
                                 
-                                console.log(`${targetLayer.name}: Found ${featuresQuery.features.length} features`);
-                                
                                 if (featuresQuery.features.length > 0) {
                                     // Get unique installation dates
                                     const uniqueDates = new Set();
-                                    let totalForLayer = 0;
                                     
                                     featuresQuery.features.forEach(feature => {
                                         const installDate = feature.attributes.installation_date;
-                                        const fieldValue = feature.attributes[targetLayer.field];
                                         
                                         if (installDate) {
                                             // Normalize to YYYY-MM-DD format to ensure proper grouping
@@ -1615,20 +2502,9 @@
                                             
                                             uniqueDates.add(dateKey);
                                         }
-                                        
-                                        // Sum up totals for verification
-                                        if (targetLayer.metric === "sum" && fieldValue) {
-                                            totalForLayer += Number(fieldValue) || 0;
-                                        } else if (targetLayer.metric === "count") {
-                                            totalForLayer += 1;
-                                        }
                                     });
                                     
                                     productionDays = uniqueDates.size;
-                                    
-                                    console.log(`${targetLayer.name}: ${productionDays} unique production days`);
-                                    console.log(`${targetLayer.name}: Total from query: ${totalForLayer.toFixed(2)}, Constructed from table: ${constructed}`);
-                                    console.log(`${targetLayer.name}: Unique dates:`, Array.from(uniqueDates).sort());
                                     
                                     if (productionDays > 0) {
                                         velocity = (constructed / productionDays).toFixed(2);
@@ -1665,7 +2541,6 @@
                                 const gapFormatted = targetLayer.metric === "sum" ? 
                                     `${Math.round(dailyCompleteGap)} ft` : 
                                     `${Math.round(dailyCompleteGap)} units`;
-                                const gapPct = ((dailyCompleteGap / constructed) * 100).toFixed(1);
                                 dailyCompleteLag = `${gapFormatted} lag (${dailyCompletePct}% complete)`;
                             } else {
                                 dailyCompleteLag = `✓ 100% marked complete`;
@@ -1679,7 +2554,6 @@
                                 const gapFormatted = targetLayer.metric === "sum" ? 
                                     `${Math.round(invoiceGap)} ft` : 
                                     `${Math.round(invoiceGap)} units`;
-                                const gapPct = ((invoiceGap / constructed) * 100).toFixed(1);
                                 invoiceLag = `${gapFormatted} lag (${invoicedPct}% invoiced)`;
                             } else {
                                 invoiceLag = `✓ 100% invoiced`;
@@ -1745,6 +2619,11 @@
         // Query function for a single period
         async function queryPeriod(startDate, endDate, allTimeMode, isComparison = false) {
             const filterClause = buildFilterClause();
+            const layersToQuery = getSelectedLayers(); // Use selected layers only
+            
+            if (layersToQuery.length === 0) {
+                throw new Error('No layers selected. Please select at least one layer.');
+            }
             
             // Categories that should NOT be filtered by date
             const noDateFilterCategories = ['Total Assigned', 'Designed', 'Remaining to Construct', 'On Hold'];
@@ -1777,9 +2656,9 @@
                 {name: "Designed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']},
                 {name: "Constructed", excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']},
                 {name: "Remaining to Construct", requireStage: 'OSP_CONST', includeStatuses: ['NA']},
-                {name: "On Hold", includeStatuses: ['ONHOLD','DEFRD']},
-                {name: "Daily Complete", includeStatuses: ['DLYCMPLT','INVCMPLT']},
-                {name: "Ready for Daily", includeStatuses: ['RDYFDLY','QCCMPLT']},
+                {name: "On Hold", includeStatuses: ['ONHOLD']},
+                {name: "Daily Complete", includeStatuses: ['DLYCMPLT']},
+                {name: "Ready for Daily", includeStatuses: ['RDYFDLY']},
                 {name: "Invoiced", includeStatuses: ['INVCMPLT']}
             ];
             
@@ -1793,7 +2672,7 @@
                     categoryData: category
                 };
                 
-                for (const targetLayer of targetLayers) {
+                                    for (const targetLayer of layersToQuery) {
                     try {
                         const layer = allFL.find(l => l.layerId === targetLayer.id);
                         if (!layer) {
@@ -1923,6 +2802,15 @@
                     return alert("Please select at least one work order or purchase order.");
                 }
                 
+                if (!hasSelectedLayers()) {
+                    runBtn.innerHTML = originalText;
+                    runBtn.disabled = false;
+                    runBtn.style.opacity = '1';
+                    runBtn.style.cursor = 'pointer';
+                    isProcessing = false;
+                    return alert("Please select at least one layer to include in the report.");
+                }
+                
                 if (comparisonMode) {
                     // Comparison mode - query both periods
                     const p1Start = $("#period1Start").value;
@@ -2022,6 +2910,9 @@
                     });
                     
                     updateStatus(`Report completed for ${dateRangeText}`, "success");
+                    
+                    // Show timeline section in single period mode
+                    $("#timelineSection").style.display = "block";
                 }
                 
                 // Show view options and render
@@ -2072,6 +2963,16 @@
                 console.warn("Error clearing filters during cleanup:", error);
             }
             
+            // Destroy chart
+            if (progressChart) {
+                console.log('Destroying chart during cleanup');
+                progressChart.destroy();
+                progressChart = null;
+            }
+            
+            // Reset flags
+            isGeneratingTimeline = false;
+            
             // Clean up global functions
             if (window.filterMapByCategory) {
                 delete window.filterMapByCategory;
@@ -2104,7 +3005,7 @@
             toolBox: toolBox
         });
         
-        console.log('Metrics By WOID Tool loaded successfully (Week 4 Analytics)');
+        console.log('Metrics By WOID Tool loaded successfully (Week 4 Analytics + Timeline Chart)');
         
     } catch (error) {
         console.error('Error loading Metrics By WOID Tool:', error);
