@@ -904,13 +904,25 @@
         
         // Calculate crew performance metrics
         async function calculateCrewPerformance() {
-            try {
-                updateStatus('Calculating crew performance...', 'processing');
-                
-                const start = $("#startDate").value;
-                const end = $("#endDate").value;
-                const allTimeMode = $("#startDate").disabled;
-                const filterClause = buildFilterClause();
+    try {
+        updateStatus('Calculating crew performance...', 'processing');
+        
+        // Determine which dates to use based on mode
+        let start, end, allTimeMode;
+        
+        if (comparisonMode) {
+            // In comparison mode, use Period 2 dates (most recent period)
+            start = $("#period2Start").value;
+            end = $("#period2End").value;
+            allTimeMode = false;
+        } else {
+            // In single period mode, use standard date inputs
+            start = $("#startDate").value;
+            end = $("#endDate").value;
+            allTimeMode = $("#startDate").disabled;
+        }
+        
+        const filterClause = buildFilterClause();
                 const layersToQuery = getSelectedLayers();
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
                 
@@ -1008,17 +1020,25 @@
                 console.log(`Found ${crewSet.size} crews`);
                 
                 // Now query gig layer for quality metrics
-                const gigLayer = allFL.find(l => l.layerId === 22100);
-                const qualityData = new Map();
-                
-                if (gigLayer) {
-                    await gigLayer.load();
-                    
-                    const gigQuery = await gigLayer.queryFeatures({
-                        where: `(${filterClause})${dateClause}`,
-                        outFields: ["crew", "construction_subcontractor", "gig_status", "approval_days"],
-                        returnGeometry: false
-                    });
+const gigLayer = allFL.find(l => l.layerId === 22100);
+const qualityData = new Map();
+
+if (gigLayer) {
+    await gigLayer.load();
+    
+    // Build date clause for gig layer using created_date instead of installation_date
+    let gigDateClause = "";
+    if (!allTimeMode && start && end) {
+        const startLit = `TIMESTAMP '${start} 00:00:00'`;
+        const endLit = `TIMESTAMP '${end} 23:59:59'`;
+        gigDateClause = ` AND created_date >= ${startLit} AND created_date <= ${endLit}`;
+    }
+    
+    const gigQuery = await gigLayer.queryFeatures({
+        where: `(${filterClause})${gigDateClause}`,
+        outFields: ["crew", "construction_subcontractor", "gig_status", "approval_days"],
+        returnGeometry: false
+    });
                     
                     gigQuery.features.forEach(feature => {
                         // *** MODIFIED: Translate coded values to display names ***
@@ -2196,10 +2216,10 @@ function exportComprehensiveCSV() {
     // Crew performance
     if (crewPerformanceData && crewPerformanceData.length > 0) {
         sections.push("=== CREW PERFORMANCE ===");
-        sections.push("Rank,Crew,Total Constructed,Daily Rate,Production Days,Open Gigs,Avg Approval Days,Billing Efficiency");
+         sections.push("Rank,Crew,Total Constructed,Daily Rate,Production Days,Open Gigs,Avg Approval Days,Outstanding Billing,Billing Efficiency");
         crewPerformanceData.forEach(crew => {
             const avgApproval = crew.avgApprovalDays !== null ? crew.avgApprovalDays.toFixed(1) : 'N/A';
-            sections.push(`${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${avgApproval},${crew.billingEfficiency.toFixed(1)}%`);
+            sections.push(`${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${avgApproval},${crew.outstandingBilling},${crew.billingEfficiency.toFixed(1)}%`);
         });
         sections.push("");
         sections.push("");
@@ -2234,12 +2254,12 @@ function exportCrewPerformanceCSV() {
     sections.push("");
     
     // Main crew data
-    sections.push("Rank,Crew Name,Total Constructed,Daily Rate,Production Days,Open Quality Gigs,Approved Gigs,Total Gigs,Avg Approval Days,Billing Efficiency %");
+    sections.push("Rank,Crew Name,Total Constructed,Daily Rate,Production Days,Open Quality Gigs,Approved Gigs,Total Gigs,Avg Approval Days,Outstanding Billing,Billing Efficiency %");
     
     crewPerformanceData.forEach(crew => {
         const avgApproval = crew.avgApprovalDays !== null ? crew.avgApprovalDays.toFixed(1) : 'N/A';
         sections.push(
-            `${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${crew.approvedGigs},${crew.totalGigs},${avgApproval},${crew.billingEfficiency.toFixed(1)}`
+            `${crew.rank},${csvEsc(crew.name)},${crew.totalConstructed},${crew.dailyRate.toFixed(2)},${crew.productionDays},${crew.openGigs},${crew.approvedGigs},${crew.totalGigs},${crew.outstandingBilling},${avgApproval},${crew.billingEfficiency.toFixed(1)}`
         );
     });
     
