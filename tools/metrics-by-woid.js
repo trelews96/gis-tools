@@ -1127,6 +1127,7 @@
                         approvedGigs: quality ? quality.approvedGigs : 0,
                         totalGigs: quality ? quality.totalGigs : 0,
                         billingEfficiency: billingEfficiency,
+                        outstandingBilling: Math.round(data.totalConstructed - dailyComplete),
                         layerBreakdown: data.layerBreakdown
                     });
                 });
@@ -1240,6 +1241,7 @@
         { key: 'productionDays', label: 'Production Days', sortable: true },
         { key: 'openGigs', label: 'Open Quality Gigs', sortable: true },
         { key: 'avgApprovalDays', label: 'Avg. Approval Days', sortable: true },
+        { key: 'outstandingBilling', label: 'Outstanding Billing', sortable: true },
         { key: 'billingEfficiency', label: 'Billing Efficiency', sortable: true }
     ];
 
@@ -1268,6 +1270,7 @@
         const efficiencyDisplay = `${crew.billingEfficiency.toFixed(1)}%`;
         const totalConstructedDisplay = crew.totalConstructed.toLocaleString();
         const dailyRateDisplay = `${crew.dailyRate.toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+        const outstandingBillingDisplay = crew.outstandingBilling.toLocaleString();
 
         return `
             <tr style="border-bottom:1px solid #eee;">
@@ -1278,6 +1281,7 @@
                 <td style="border:1px solid #ddd;padding:8px;text-align:center;">${crew.productionDays}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:center;">${crew.openGigs}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:center;">${avgApprovalDisplay}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${outstandingBillingDisplay}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:center;">${efficiencyDisplay}</td>
             </tr>
         `;
@@ -2387,6 +2391,7 @@ async function exportToExcel() {
                     crew.approvedGigs,
                     crew.totalGigs,
                     crew.avgApprovalDays !== null ? crew.avgApprovalDays : 'N/A',
+                    crew.outstandingBilling,
                     crew.billingEfficiency / 100
                 ]);
             });
@@ -2394,7 +2399,7 @@ async function exportToExcel() {
             const wsCrew = XLSX.utils.aoa_to_sheet(crewData);
             
             // Format percentage column
-            const percentCol = XLSX.utils.encode_col(9);
+            const percentCol = XLSX.utils.encode_col(10);
             for (let i = 3; i < crewData.length; i++) {
                 const cell = wsCrew[percentCol + i];
                 if (cell && typeof cell.v === 'number') {
