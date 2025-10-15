@@ -89,106 +89,112 @@
             return Math.round((date2 - date1) / oneDay);
         }
         
-        // CSS Styles
-        const styles = document.createElement('style');
-        styles.textContent = `
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-            .spinner {
-                display: inline-block;
-                width: 14px;
-                height: 14px;
-                border: 2px solid #f3f3f3;
-                border-top: 2px solid #3367d6;
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
-                margin-right: 6px;
-                vertical-align: middle;
-            }
-            .dropdown-option:hover {
-                background-color: #e3f2fd !important;
-            }
-            .wo-card {
-                border: 1px solid #ddd;
-                border-radius: 6px;
-                padding: 12px;
-                background: #fff;
-                transition: all 0.2s;
-                cursor: pointer;
-                position: relative;
-            }
-            .wo-card:hover {
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                transform: translateY(-2px);
-            }
-            .wo-card.selected {
-                border: 2px solid #3367d6;
-                background: #f0f7ff;
-            }
-            .progress-bar-container {
-                width: 100%;
-                height: 8px;
-                background: #e0e0e0;
-                border-radius: 4px;
-                overflow: hidden;
-                margin: 3px 0;
-            }
-            .progress-bar-fill {
-                height: 100%;
-                transition: width 0.3s ease;
-            }
-            .freshness-indicator {
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                margin-right: 4px;
-            }
-            .freshness-green { background: #4caf50; }
-            .freshness-yellow { background: #ffc107; }
-            .freshness-orange { background: #ff9800; }
-            .freshness-red { background: #f44336; }
-            .alert-badge {
-                background: #ff5252;
-                color: white;
-                padding: 2px 6px;
-                border-radius: 10px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            .warning-badge {
-                background: #ffa726;
-                color: white;
-                padding: 2px 6px;
-                border-radius: 10px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            .quality-good { color: #4caf50; }
-            .quality-warning { color: #ff9800; }
-            .quality-critical { color: #f44336; }
-            .layer-checkbox-item {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                padding: 4px 0;
-            }
-            .layer-color-box {
-                width: 16px;
-                height: 16px;
-                border-radius: 3px;
-                border: 1px solid #ccc;
-            }
-            .stale-section {
-                margin-top: 16px;
-                padding: 12px;
-                background: #fff9e6;
-                border: 1px solid #ffd54f;
-                border-radius: 6px;
-            }
-        `;
+       const styles = document.createElement('style');
+styles.textContent = `
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #3367d6;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 6px;
+        vertical-align: middle;
+    }
+    .dropdown-option:hover {
+        background-color: #e3f2fd !important;
+    }
+    .wo-card {
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 12px;
+        background: #fff;
+        transition: all 0.2s;
+        cursor: pointer;
+        position: relative;
+    }
+    .wo-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        transform: translateY(-2px);
+    }
+    .wo-card.selected {
+        border: 2px solid #3367d6;
+        background: #f0f7ff;
+    }
+    .stale-project-item:hover {
+        background-color: #fff3e0 !important;
+    }
+    .stale-project-item.selected {
+        background-color: #ffecb3 !important;
+        font-weight: bold;
+    }
+    .progress-bar-container {
+        width: 100%;
+        height: 8px;
+        background: #e0e0e0;
+        border-radius: 4px;
+        overflow: hidden;
+        margin: 3px 0;
+    }
+    .progress-bar-fill {
+        height: 100%;
+        transition: width 0.3s ease;
+    }
+    .freshness-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 4px;
+    }
+    .freshness-green { background: #4caf50; }
+    .freshness-yellow { background: #ffc107; }
+    .freshness-orange { background: #ff9800; }
+    .freshness-red { background: #f44336; }
+    .alert-badge {
+        background: #ff5252;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: bold;
+    }
+    .warning-badge {
+        background: #ffa726;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: bold;
+    }
+    .quality-good { color: #4caf50; }
+    .quality-warning { color: #ff9800; }
+    .quality-critical { color: #f44336; }
+    .layer-checkbox-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 0;
+    }
+    .layer-color-box {
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        border: 1px solid #ccc;
+    }
+    .stale-section {
+        margin-top: 16px;
+        padding: 12px;
+        background: #fff9e6;
+        border: 1px solid #ffd54f;
+        border-radius: 6px;
+    }
+`;
         document.head.appendChild(styles);
         
         // Create tool UI
@@ -1588,74 +1594,86 @@
         }
         
         // Select WO for drilldown
-        window.selectWOForDrilldown = async function(workOrderId) {
-            selectedWOForDrilldown = workOrderId;
-            
-            // Highlight selected card
-            toolBox.querySelectorAll('.wo-card').forEach(card => {
-                if (card.dataset.wo === workOrderId) {
-                    card.classList.add('selected');
-                } else {
-                    card.classList.remove('selected');
-                }
-            });
-            
-            // Show drilldown section
-            $("#drilldownSection").style.display = "block";
-            $("#selectedWOName").textContent = workOrderId;
-            
-            // Set default dates (but don't use them initially - use All Time)
-            const today = new Date();
-            const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
-            $("#drilldownStartDate").value = formatDateForInput(thirtyDaysAgo);
-            $("#drilldownEndDate").value = formatDateForInput(today);
-            
-            // Auto-load with All Time filter
-            updateStatus("Loading work order details...", "processing");
-            $("#drilldownResults").innerHTML = '<div style="text-align:center;padding:20px;"><span class="spinner"></span> Loading...</div>';
-            
-            try {
-                const filterClause = buildFilterClause();
-                const layersToQuery = getSelectedLayers();
-                
-                // Query with All Time (no date filter)
-                drilldownData = await queryWorkOrderDetails(selectedWOForDrilldown, null, null, layersToQuery, filterClause, true);
-                
-                // Calculate crew performance (All Time)
-                const crewPerf = await calculateWOCrewPerformance(selectedWOForDrilldown, null, null, layersToQuery, filterClause, true);
-                
-                // Generate alerts
-                const alerts = generateWOAlerts(drilldownData, selectedWOForDrilldown);
-                
-                // Render results
-                renderDrilldownResults(drilldownData, crewPerf, alerts, true);
-                
-                updateStatus("Work order details loaded", "success");
-                
-            } catch (error) {
-                console.error("Error loading WO details:", error);
-                updateStatus("Error loading details: " + error.message, "error");
-                $("#drilldownResults").innerHTML = '<div style="color:#d32f2f;padding:12px;">Error loading work order details</div>';
-            }
-            
-            // Scroll to drilldown section
-            $("#drilldownSection").scrollIntoView({ behavior: 'smooth' });
-        };
-        
-        // Render stale projects
-        function renderStaleProjects() {
-            const list = $("#staleList");
-            
-            const staleHTML = overviewData.staleWorkOrders.map(wo => {
-                return `
-                    <div style="padding:4px;border-bottom:1px solid #ddd;">
-                        <strong>${wo.workOrderId}</strong> - Last activity: ${wo.lastActivity ? wo.lastActivity.toLocaleDateString() : 'Unknown'} (${wo.daysSince} days ago)
-                    </div>
-                `;
-            }).join('');
-            
-            list.innerHTML = staleHTML;
+window.selectWOForDrilldown = async function(workOrderId) {
+    selectedWOForDrilldown = workOrderId;
+    
+    // Highlight selected card in active section
+    toolBox.querySelectorAll('.wo-card').forEach(card => {
+        if (card.dataset.wo === workOrderId) {
+            card.classList.add('selected');
+        } else {
+            card.classList.remove('selected');
         }
+    });
+    
+    // Highlight selected item in stale section
+    toolBox.querySelectorAll('.stale-project-item').forEach(item => {
+        if (item.dataset.wo === workOrderId) {
+            item.classList.add('selected');
+        } else {
+            item.classList.remove('selected');
+        }
+    });
+    
+    // Show drilldown section
+    $("#drilldownSection").style.display = "block";
+    $("#selectedWOName").textContent = workOrderId;
+    
+    // Set default dates (but don't use them initially - use All Time)
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
+    $("#drilldownStartDate").value = formatDateForInput(thirtyDaysAgo);
+    $("#drilldownEndDate").value = formatDateForInput(today);
+    
+    // Auto-load with All Time filter
+    updateStatus("Loading work order details...", "processing");
+    $("#drilldownResults").innerHTML = '<div style="text-align:center;padding:20px;"><span class="spinner"></span> Loading...</div>';
+    
+    try {
+        const filterClause = buildFilterClause();
+        const layersToQuery = getSelectedLayers();
+        
+        // Query with All Time (no date filter)
+        drilldownData = await queryWorkOrderDetails(selectedWOForDrilldown, null, null, layersToQuery, filterClause, true);
+        
+        // Calculate crew performance (All Time)
+        const crewPerf = await calculateWOCrewPerformance(selectedWOForDrilldown, null, null, layersToQuery, filterClause, true);
+        
+        // Generate alerts
+        const alerts = generateWOAlerts(drilldownData, selectedWOForDrilldown);
+        
+        // Render results
+        renderDrilldownResults(drilldownData, crewPerf, alerts, true);
+        
+        updateStatus("Work order details loaded", "success");
+        
+    } catch (error) {
+        console.error("Error loading WO details:", error);
+        updateStatus("Error loading details: " + error.message, "error");
+        $("#drilldownResults").innerHTML = '<div style="color:#d32f2f;padding:12px;">Error loading work order details</div>';
+    }
+    
+    // Scroll to drilldown section
+    $("#drilldownSection").scrollIntoView({ behavior: 'smooth' });
+};
+        
+      // Render stale projects
+function renderStaleProjects() {
+    const list = $("#staleList");
+    
+    const staleHTML = overviewData.staleWorkOrders.map(wo => {
+        return `
+            <div style="padding:6px;border-bottom:1px solid #ddd;cursor:pointer;transition:background 0.2s;" 
+                 class="stale-project-item"
+                 data-wo="${wo.workOrderId}" 
+                 onclick="selectWOForDrilldown('${wo.workOrderId}')">
+                <strong>${wo.workOrderId}</strong> - Last activity: ${wo.lastActivity ? wo.lastActivity.toLocaleDateString() : 'Unknown'} (${wo.daysSince} days ago)
+            </div>
+        `;
+    }).join('');
+    
+    list.innerHTML = staleHTML;
+}
         
         $("#staleHeader").onclick = () => {
             const list = $("#staleList");
@@ -1724,25 +1742,30 @@
             container.innerHTML = tableHTML;
         }
         
-        // Close drilldown
-        $("#closeDrilldown").onclick = () => {
-            $("#drilldownSection").style.display = "none";
-            selectedWOForDrilldown = null;
-            drilldownData = null;
-            
-            // Remove selected highlighting
-            toolBox.querySelectorAll('.wo-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            
-            // Reset date buttons
-            $("#allTimeDrilldownBtn").style.background = "#3367d6";
-            $("#allTimeDrilldownBtn").style.color = "#fff";
-            toolBox.querySelectorAll('.drilldown-date-preset').forEach(b => {
-                b.style.background = "";
-                b.style.color = "";
-            });
-        };
+   // Close drilldown
+$("#closeDrilldown").onclick = () => {
+    $("#drilldownSection").style.display = "none";
+    selectedWOForDrilldown = null;
+    drilldownData = null;
+    
+    // Remove selected highlighting from active cards
+    toolBox.querySelectorAll('.wo-card').forEach(card => {
+        card.classList.remove('selected');
+    });
+    
+    // Remove selected highlighting from stale items
+    toolBox.querySelectorAll('.stale-project-item').forEach(item => {
+        item.classList.remove('selected');
+    });
+    
+    // Reset date buttons
+    $("#allTimeDrilldownBtn").style.background = "#3367d6";
+    $("#allTimeDrilldownBtn").style.color = "#fff";
+    toolBox.querySelectorAll('.drilldown-date-preset').forEach(b => {
+        b.style.background = "";
+        b.style.color = "";
+    });
+};
         
         // Reset button styles when manually changing dates
         $("#drilldownStartDate").onchange = $("#drilldownEndDate").onchange = () => {
