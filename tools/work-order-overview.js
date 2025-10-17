@@ -58,15 +58,8 @@
         
         // Helper function to get selected layers with recalculated weights
         function getSelectedLayers() {
-            const selected = targetLayers.filter((_, idx) => selectedLayers.includes(idx));
-            if (selected.length === 0) return [];
-            const totalWeight = selected.reduce((sum, layer) => sum + layer.weight, 0);
-            return selected.map(layer => ({
-                ...layer,
-                originalWeight: layer.weight,
-                weight: layer.weight / totalWeight
-            }));
-        }
+    return targetLayers.filter((_, idx) => selectedLayers.includes(idx));
+}
         
         // Helper function to get completion bar color
         function getCompletionColor(percent) {
@@ -973,34 +966,22 @@ styles.textContent = `
             
             // Calculate derived metrics for each WO (using weighted percentages like detailed breakdown)
             woMetrics.forEach((metrics, wo) => {
-                // Calculate weighted percentages (same as detailed breakdown)
-                let weightedConstruction = 0;
-                let weightedBilling = 0;
-                let weightedInvoiced = 0;
-                let totalDesignedForCompletion = 0;
-                
-                layersToQuery.forEach((layer, idx) => {
-                    const layerDesigned = metrics.layerMetrics[idx].designed || 0;
-                    const layerConstructed = metrics.layerMetrics[idx].constructed || 0;
-                    const layerDailyComplete = metrics.layerMetrics[idx].dailycomplete || 0;
-                    const layerInvoiced = metrics.layerMetrics[idx].invoiced || 0;
-                    
-                    if (layerDesigned > 0) {
-                        const constructionPct = (layerConstructed / layerDesigned) * 100;
-                        const billingPct = (layerDailyComplete / layerDesigned) * 100;
-                        const invoicedPct = (layerInvoiced / layerDesigned) * 100;
-                        
-                        weightedConstruction += constructionPct * layer.weight;
-                        weightedBilling += billingPct * layer.weight;
-                        weightedInvoiced += invoicedPct * layer.weight;
-                        
-                        totalDesignedForCompletion += layerDesigned * layer.weight;
-                    }
-                });
-                
-                metrics.completionPct = weightedConstruction;
-                metrics.billingPct = weightedBilling;
-                metrics.invoicePct = weightedInvoiced;
+               // Calculate simple total percentages
+let totalDesigned = 0;
+let totalConstructed = 0;
+let totalDailyComplete = 0;
+let totalInvoiced = 0;
+
+layersToQuery.forEach((layer, idx) => {
+    totalDesigned += metrics.layerMetrics[idx].designed || 0;
+    totalConstructed += metrics.layerMetrics[idx].constructed || 0;
+    totalDailyComplete += metrics.layerMetrics[idx].dailycomplete || 0;
+    totalInvoiced += metrics.layerMetrics[idx].invoiced || 0;
+});
+
+metrics.completionPct = totalDesigned > 0 ? (totalConstructed / totalDesigned) * 100 : 0;
+metrics.billingPct = totalDesigned > 0 ? (totalDailyComplete / totalDesigned) * 100 : 0;
+metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 : 0;
                 
                 // Awaiting billing = Constructed but not yet marked for billing
                 metrics.fiberOutstanding = Math.round(Math.max(0, metrics.fiberConstructed - metrics.fiberDailyComplete));
@@ -1183,25 +1164,24 @@ styles.textContent = `
                     let dailycomplete = 0;
                     let invoiced = 0;
                     
-                    if (designedRow && constructedRow) {
-                        layersToQuery.forEach((layer, idx) => {
-                            const layerDesigned = designedRow.rawValues[idx] || 0;
-                            const layerConstructed = constructedRow.rawValues[idx] || 0;
-                            const layerDailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
-                            const layerInvoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
-                            
-                            designed += layerDesigned;
-                            constructed += layerConstructed;
-                            dailycomplete += layerDailyComplete;
-                            invoiced += layerInvoiced;
-                            
-                            if (layerDesigned > 0) {
-                                completionPct += (layerConstructed / layerDesigned * 100) * layer.weight;
-                                billingPct += (layerDailyComplete / layerDesigned * 100) * layer.weight;
-                                invoicePct += (layerInvoiced / layerDesigned * 100) * layer.weight;
-                            }
-                        });
-                    }
+                   if (designedRow && constructedRow) {
+    layersToQuery.forEach((layer, idx) => {
+        const layerDesigned = designedRow.rawValues[idx] || 0;
+        const layerConstructed = constructedRow.rawValues[idx] || 0;
+        const layerDailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+        const layerInvoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+        
+        designed += layerDesigned;
+        constructed += layerConstructed;
+        dailycomplete += layerDailyComplete;
+        invoiced += layerInvoiced;
+    });
+    
+    // Calculate simple percentages from totals
+    completionPct = designed > 0 ? (constructed / designed) * 100 : 0;
+    billingPct = designed > 0 ? (dailycomplete / designed) * 100 : 0;
+    invoicePct = designed > 0 ? (invoiced / designed) * 100 : 0;
+}
                     
                     // Now get Fiber & UG metrics for awaiting billing and run rates
                     const fiberUGMetrics = await calculateFiberUGMetrics(wo.workOrderId, layersToQuery, filterClause);
@@ -2296,56 +2276,55 @@ $("#closeDrilldown").onclick = () => {
             const invoicedRow = tableData.find(r => r.category === "Invoiced");
             
             if (designedRow && constructedRow) {
-                const layersInUse = getSelectedLayers();
-                let weightedConstruction = 0;
-                let weightedBilling = 0;
-                let weightedInvoiced = 0;
-                
-                layersInUse.forEach((layer, idx) => {
-                    const designed = designedRow.rawValues[idx] || 0;
-                    const constructed = constructedRow.rawValues[idx] || 0;
-                    const dailyComplete = dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
-                    const invoiced = invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
-                    
-                    if (designed > 0) {
-                        weightedConstruction += (constructed / designed * 100) * layer.weight;
-                        weightedBilling += (dailyComplete / designed * 100) * layer.weight;
-                        weightedInvoiced += (invoiced / designed * 100) * layer.weight;
-                    }
-                });
-                
-                const constructionColor = getCompletionColor(weightedConstruction);
-                const billingColor = getCompletionColor(weightedBilling);
-                const invoicedColor = getCompletionColor(weightedInvoiced);
+    const layersInUse = getSelectedLayers();
+    let totalDesigned = 0;
+    let totalConstructed = 0;
+    let totalDailyComplete = 0;
+    let totalInvoiced = 0;
+    
+    layersInUse.forEach((layer, idx) => {
+        totalDesigned += designedRow.rawValues[idx] || 0;
+        totalConstructed += constructedRow.rawValues[idx] || 0;
+        totalDailyComplete += dailyCompleteRow ? (dailyCompleteRow.rawValues[idx] || 0) : 0;
+        totalInvoiced += invoicedRow ? (invoicedRow.rawValues[idx] || 0) : 0;
+    });
+    
+    const overallConstruction = totalDesigned > 0 ? (totalConstructed / totalDesigned) * 100 : 0;
+    const overallBilling = totalDesigned > 0 ? (totalDailyComplete / totalDesigned) * 100 : 0;
+    const overallInvoiced = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 : 0;
+    
+    const constructionColor = getCompletionColor(overallConstruction);
+    const billingColor = getCompletionColor(overallBilling);
+    const invoicedColor = getCompletionColor(overallInvoiced);
                 
                 html += `
-                    <div style="padding:12px;background:#f5f7fa;border-radius:4px;margin-bottom:12px;">
-                        <div style="font-weight:bold;margin-bottom:8px;">📈 Summary</div>
-                        <div style="display:flex;gap:16px;flex-wrap:wrap;">
-                            <div style="flex:1;min-width:150px;">
-                                <div style="font-weight:bold;margin-bottom:4px;">Construction</div>
-                                <div style="font-size:20px;font-weight:bold;color:${constructionColor};">${weightedConstruction.toFixed(1)}%</div>
-                                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
-                                    <div class="progress-bar-fill" style="width:${weightedConstruction}%;background:${constructionColor};"></div>
-                                </div>
-                            </div>
-                            <div style="flex:1;min-width:150px;">
-                                <div style="font-weight:bold;margin-bottom:4px;">Billing</div>
-                                <div style="font-size:20px;font-weight:bold;color:${billingColor};">${weightedBilling.toFixed(1)}%</div>
-                                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
-                                    <div class="progress-bar-fill" style="width:${weightedBilling}%;background:${billingColor};"></div>
-                                </div>
-                            </div>
-                            <div style="flex:1;min-width:150px;">
-                                <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
-                                <div style="font-size:20px;font-weight:bold;color:${invoicedColor};">${weightedInvoiced.toFixed(1)}%</div>
-                                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
-                                    <div class="progress-bar-fill" style="width:${weightedInvoiced}%;background:${invoicedColor};"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
+    <div style="padding:12px;background:#f5f7fa;border-radius:4px;margin-bottom:12px;">
+        <div style="font-weight:bold;margin-bottom:8px;">📈 Summary</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:150px;">
+                <div style="font-weight:bold;margin-bottom:4px;">Construction</div>
+                <div style="font-size:20px;font-weight:bold;color:${constructionColor};">${overallConstruction.toFixed(1)}%</div>
+                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
+                    <div class="progress-bar-fill" style="width:${overallConstruction}%;background:${constructionColor};"></div>
+                </div>
+            </div>
+            <div style="flex:1;min-width:150px;">
+                <div style="font-weight:bold;margin-bottom:4px;">Billing</div>
+                <div style="font-size:20px;font-weight:bold;color:${billingColor};">${overallBilling.toFixed(1)}%</div>
+                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
+                    <div class="progress-bar-fill" style="width:${overallBilling}%;background:${billingColor};"></div>
+                </div>
+            </div>
+            <div style="flex:1;min-width:150px;">
+                <div style="font-weight:bold;margin-bottom:4px;">Invoiced</div>
+                <div style="font-size:20px;font-weight:bold;color:${invoicedColor};">${overallInvoiced.toFixed(1)}%</div>
+                <div class="progress-bar-container" style="width:100%;height:12px;margin-top:4px;">
+                    <div class="progress-bar-fill" style="width:${overallInvoiced}%;background:${invoicedColor};"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+`;
             }
             
             // Alerts section
