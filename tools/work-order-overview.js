@@ -1451,17 +1451,17 @@ if (metrics.ugFirstInstall && metrics.ugLastInstall) {
                         billingEfficiency: billingEfficiency
                     });
                 });
-                
+                const filteredCrewPerformance = crewPerformance.filter(crew => crew.totalConstructed >= 10000);
                 // Sort by daily rate
-                crewPerformance.sort((a, b) => b.dailyRate - a.dailyRate);
+                filteredCrewPerformance.sort((a, b) => b.dailyRate - a.dailyRate);
                 
                 // Add rankings
-                crewPerformance.forEach((crew, idx) => {
+                filteredCrewPerformance.forEach((crew, idx) => {
                     crew.rank = idx + 1;
                     crew.medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '';
                 });
                 
-                return crewPerformance;
+                return filteredCrewPerformance;
                 
             } catch (error) {
                 console.error("Error calculating crew performance:", error);
