@@ -608,85 +608,108 @@ styles.textContent = `
                 ugRunRate: 0,
                 expectedCompletion: "N/A"
             };
-            
             // Fiber Cable
-            const fiberLayer = allFL.find(l => l.layerId === 41050);
-            if (fiberLayer) {
-                await fiberLayer.load();
-                const additionalFilter = "cable_category <> 'DROP'";
-                
-                const constructedWhere = `(${filterClause}) AND ${woClause} AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG' AND ${additionalFilter}`;
-                const constructedQuery = await fiberLayer.queryFeatures({
-                    where: constructedWhere,
-                    outFields: ["calculated_length", "installation_date", "workflow_status"],
-                    returnGeometry: false
-                });
-                
-                let fiberConstructed = 0;
-                let fiberDailyComplete = 0;
-                const fiberInstallDates = new Set();
-                
-                constructedQuery.features.forEach(f => {
-                    const length = Number(f.attributes.calculated_length) || 0;
-                    const status = f.attributes.workflow_status;
-                    
-                    fiberConstructed += length;
-                    
-                    if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
-                        fiberDailyComplete += length;
-                    }
-                    
-                    const installDate = f.attributes.installation_date;
-                    if (installDate) {
-                        const date = new Date(installDate);
-                        const dateKey = date.toISOString().split('T')[0];
-                        fiberInstallDates.add(dateKey);
-                    }
-                });
-                
-                metrics.fiberOutstanding = Math.round(Math.max(0, fiberConstructed - fiberDailyComplete));
-                const fiberProductionDays = fiberInstallDates.size;
-                metrics.fiberRunRate = fiberProductionDays > 0 ? Math.round(fiberConstructed / fiberProductionDays) : 0;
+const fiberLayer = allFL.find(l => l.layerId === 41050);
+if (fiberLayer) {
+    await fiberLayer.load();
+    const additionalFilter = "cable_category <> 'DROP'";
+    
+    const constructedWhere = `(${filterClause}) AND ${woClause} AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG' AND ${additionalFilter}`;
+    const constructedQuery = await fiberLayer.queryFeatures({
+        where: constructedWhere,
+        outFields: ["calculated_length", "installation_date", "workflow_status"],
+        returnGeometry: false
+    });
+    
+    let fiberConstructed = 0;
+    let fiberDailyComplete = 0;
+    let firstInstallDate = null;
+    let lastInstallDate = null;
+    
+    constructedQuery.features.forEach(f => {
+        const length = Number(f.attributes.calculated_length) || 0;
+        const status = f.attributes.workflow_status;
+        
+        fiberConstructed += length;
+        
+        if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
+            fiberDailyComplete += length;
+        }
+        
+        const installDate = f.attributes.installation_date;
+        if (installDate) {
+            const date = new Date(installDate);
+            if (!firstInstallDate || date < firstInstallDate) {
+                firstInstallDate = date;
             }
+            if (!lastInstallDate || date > lastInstallDate) {
+                lastInstallDate = date;
+            }
+        }
+    });
+    
+    metrics.fiberOutstanding = Math.round(Math.max(0, fiberConstructed - fiberDailyComplete));
+    
+    // Calculate run rate based on 5-day work week
+    if (firstInstallDate && lastInstallDate) {
+        const calendarDays = daysBetween(firstInstallDate, lastInstallDate) + 1; // +1 to include both first and last day
+        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+        metrics.fiberRunRate = Math.round(fiberConstructed / workingDays);
+    } else {
+        metrics.fiberRunRate = 0;
+    }
+}
             
             // Underground Span
-            const ugLayer = allFL.find(l => l.layerId === 42050);
-            if (ugLayer) {
-                await ugLayer.load();
-                
-                const constructedWhere = `(${filterClause}) AND ${woClause} AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG'`;
-                const constructedQuery = await ugLayer.queryFeatures({
-                    where: constructedWhere,
-                    outFields: ["calculated_length", "installation_date", "workflow_status"],
-                    returnGeometry: false
-                });
-                
-                let ugConstructed = 0;
-                let ugDailyComplete = 0;
-                const ugInstallDates = new Set();
-                
-                constructedQuery.features.forEach(f => {
-                    const length = Number(f.attributes.calculated_length) || 0;
-                    const status = f.attributes.workflow_status;
-                    
-                    ugConstructed += length;
-                    
-                    if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
-                        ugDailyComplete += length;
-                    }
-                    
-                    const installDate = f.attributes.installation_date;
-                    if (installDate) {
-                        const date = new Date(installDate);
-                        const dateKey = date.toISOString().split('T')[0];
-                        ugInstallDates.add(dateKey);
-                    }
-                });
-                
-                metrics.ugOutstanding = Math.round(Math.max(0, ugConstructed - ugDailyComplete));
-                const ugProductionDays = ugInstallDates.size;
-                metrics.ugRunRate = ugProductionDays > 0 ? Math.round(ugConstructed / ugProductionDays) : 0;
+const ugLayer = allFL.find(l => l.layerId === 42050);
+if (ugLayer) {
+    await ugLayer.load();
+    
+    const constructedWhere = `(${filterClause}) AND ${woClause} AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG'`;
+    const constructedQuery = await ugLayer.queryFeatures({
+        where: constructedWhere,
+        outFields: ["calculated_length", "installation_date", "workflow_status"],
+        returnGeometry: false
+    });
+    
+    let ugConstructed = 0;
+    let ugDailyComplete = 0;
+    let firstInstallDate = null;
+    let lastInstallDate = null;
+    
+    constructedQuery.features.forEach(f => {
+        const length = Number(f.attributes.calculated_length) || 0;
+        const status = f.attributes.workflow_status;
+        
+        ugConstructed += length;
+        
+        if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
+            ugDailyComplete += length;
+        }
+        
+        const installDate = f.attributes.installation_date;
+        if (installDate) {
+            const date = new Date(installDate);
+            if (!firstInstallDate || date < firstInstallDate) {
+                firstInstallDate = date;
             }
+            if (!lastInstallDate || date > lastInstallDate) {
+                lastInstallDate = date;
+            }
+        }
+    });
+    
+    metrics.ugOutstanding = Math.round(Math.max(0, ugConstructed - ugDailyComplete));
+    
+    // Calculate run rate based on 5-day work week
+    if (firstInstallDate && lastInstallDate) {
+        const calendarDays = daysBetween(firstInstallDate, lastInstallDate) + 1; // +1 to include both first and last day
+        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+        metrics.ugRunRate = Math.round(ugConstructed / workingDays);
+    } else {
+        metrics.ugRunRate = 0;
+    }
+}
             
             // Calculate remaining work for expected completion
             const fiberLayerIdx = layersToQuery.findIndex(l => l.id === 41050);
@@ -795,23 +818,25 @@ styles.textContent = `
             const woClause = workOrderIds.map(wo => `workorder_id='${wo.toString().replace(/'/g, "''")}'`).join(' OR ');
             
             // Initialize result map for each WO
-            const woMetrics = new Map();
-            workOrderIds.forEach(wo => {
-                woMetrics.set(wo, {
-                    designed: 0,
-                    constructed: 0,
-                    dailycomplete: 0,
-                    invoiced: 0,
-                    fiberConstructed: 0,
-                    fiberDailyComplete: 0,
-                    fiberInstallDates: new Set(),
-                    ugConstructed: 0,
-                    ugDailyComplete: 0,
-                    ugInstallDates: new Set(),
-                    // Per-layer tracking for weighted percentages
-                    layerMetrics: []
-                });
-            });
+const woMetrics = new Map();
+workOrderIds.forEach(wo => {
+    woMetrics.set(wo, {
+        designed: 0,
+        constructed: 0,
+        dailycomplete: 0,
+        invoiced: 0,
+        fiberConstructed: 0,
+        fiberDailyComplete: 0,
+        fiberFirstInstall: null,
+        fiberLastInstall: null,
+        ugConstructed: 0,
+        ugDailyComplete: 0,
+        ugFirstInstall: null,
+        ugLastInstall: null,
+        // Per-layer tracking
+        layerMetrics: []
+    });
+});
             
             // Initialize per-layer arrays
             workOrderIds.forEach(wo => {
@@ -888,81 +913,89 @@ styles.textContent = `
             }
             
             // Query Fiber Cable specifically (for awaiting billing and run rate)
-            const fiberLayer = allFL.find(l => l.layerId === 41050);
-            if (fiberLayer) {
-                await fiberLayer.load();
-                const additionalFilter = "cable_category <> 'DROP'";
-                
-                // Constructed (with installation dates for run rate) - ALL TIME
-                const constructedWhere = `(${filterClause}) AND (${woClause}) AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG' AND ${additionalFilter}`;
-                const constructedQuery = await fiberLayer.queryFeatures({
-                    where: constructedWhere,
-                    outFields: ["workorder_id", "calculated_length", "installation_date", "workflow_status"],
-                    returnGeometry: false
-                });
-                
-                constructedQuery.features.forEach(f => {
-                    const wo = f.attributes.workorder_id;
-                    if (!woMetrics.has(wo)) return;
-                    
-                    const metrics = woMetrics.get(wo);
-                    const length = Number(f.attributes.calculated_length) || 0;
-                    const status = f.attributes.workflow_status;
-                    
-                    metrics.fiberConstructed += length;
-                    
-                    // Track daily complete separately for fiber
-                    if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
-                        metrics.fiberDailyComplete += length;
-                    }
-                    
-                    // Track unique installation dates (all time)
-                    const installDate = f.attributes.installation_date;
-                    if (installDate) {
-                        const date = new Date(installDate);
-                        const dateKey = date.toISOString().split('T')[0];
-                        metrics.fiberInstallDates.add(dateKey);
-                    }
-                });
+const fiberLayer = allFL.find(l => l.layerId === 41050);
+if (fiberLayer) {
+    await fiberLayer.load();
+    const additionalFilter = "cable_category <> 'DROP'";
+    
+    // Constructed (with installation dates for run rate) - ALL TIME
+    const constructedWhere = `(${filterClause}) AND (${woClause}) AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG' AND ${additionalFilter}`;
+    const constructedQuery = await fiberLayer.queryFeatures({
+        where: constructedWhere,
+        outFields: ["workorder_id", "calculated_length", "installation_date", "workflow_status"],
+        returnGeometry: false
+    });
+    
+    constructedQuery.features.forEach(f => {
+        const wo = f.attributes.workorder_id;
+        if (!woMetrics.has(wo)) return;
+        
+        const metrics = woMetrics.get(wo);
+        const length = Number(f.attributes.calculated_length) || 0;
+        const status = f.attributes.workflow_status;
+        
+        metrics.fiberConstructed += length;
+        
+        // Track daily complete separately for fiber
+        if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
+            metrics.fiberDailyComplete += length;
+        }
+        
+        // Track first and last installation dates
+        const installDate = f.attributes.installation_date;
+        if (installDate) {
+            const date = new Date(installDate);
+            if (!metrics.fiberFirstInstall || date < metrics.fiberFirstInstall) {
+                metrics.fiberFirstInstall = date;
             }
+            if (!metrics.fiberLastInstall || date > metrics.fiberLastInstall) {
+                metrics.fiberLastInstall = date;
+            }
+        }
+    });
+}
             
-            // Query Underground Span specifically
-            const ugLayer = allFL.find(l => l.layerId === 42050);
-            if (ugLayer) {
-                await ugLayer.load();
-                
-                // Constructed (with installation dates) - ALL TIME
-                const constructedWhere = `(${filterClause}) AND (${woClause}) AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG'`;
-                const constructedQuery = await ugLayer.queryFeatures({
-                    where: constructedWhere,
-                    outFields: ["workorder_id", "calculated_length", "installation_date", "workflow_status"],
-                    returnGeometry: false
-                });
-                
-                constructedQuery.features.forEach(f => {
-                    const wo = f.attributes.workorder_id;
-                    if (!woMetrics.has(wo)) return;
-                    
-                    const metrics = woMetrics.get(wo);
-                    const length = Number(f.attributes.calculated_length) || 0;
-                    const status = f.attributes.workflow_status;
-                    
-                    metrics.ugConstructed += length;
-                    
-                    // Track daily complete separately for UG
-                    if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
-                        metrics.ugDailyComplete += length;
-                    }
-                    
-                    // Track unique installation dates (all time)
-                    const installDate = f.attributes.installation_date;
-                    if (installDate) {
-                        const date = new Date(installDate);
-                        const dateKey = date.toISOString().split('T')[0];
-                        metrics.ugInstallDates.add(dateKey);
-                    }
-                });
+           // Query Underground Span specifically
+const ugLayer = allFL.find(l => l.layerId === 42050);
+if (ugLayer) {
+    await ugLayer.load();
+    
+    // Constructed (with installation dates) - ALL TIME
+    const constructedWhere = `(${filterClause}) AND (${woClause}) AND workflow_status <> 'DNB' AND workflow_status <> 'ONHOLD' AND workflow_status <> 'DEFRD' AND workflow_status <> 'NA' AND workflow_status <> 'ASSG' AND workflow_status <> 'INPROG'`;
+    const constructedQuery = await ugLayer.queryFeatures({
+        where: constructedWhere,
+        outFields: ["workorder_id", "calculated_length", "installation_date", "workflow_status"],
+        returnGeometry: false
+    });
+    
+    constructedQuery.features.forEach(f => {
+        const wo = f.attributes.workorder_id;
+        if (!woMetrics.has(wo)) return;
+        
+        const metrics = woMetrics.get(wo);
+        const length = Number(f.attributes.calculated_length) || 0;
+        const status = f.attributes.workflow_status;
+        
+        metrics.ugConstructed += length;
+        
+        // Track daily complete separately for UG
+        if (status === 'DLYCMPLT' || status === 'INVCMPLT') {
+            metrics.ugDailyComplete += length;
+        }
+        
+        // Track first and last installation dates
+        const installDate = f.attributes.installation_date;
+        if (installDate) {
+            const date = new Date(installDate);
+            if (!metrics.ugFirstInstall || date < metrics.ugFirstInstall) {
+                metrics.ugFirstInstall = date;
             }
+            if (!metrics.ugLastInstall || date > metrics.ugLastInstall) {
+                metrics.ugLastInstall = date;
+            }
+        }
+    });
+}
             
             // Calculate derived metrics for each WO (using weighted percentages like detailed breakdown)
             woMetrics.forEach((metrics, wo) => {
@@ -984,15 +1017,25 @@ metrics.billingPct = totalDesigned > 0 ? (totalDailyComplete / totalDesigned) * 
 metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 : 0;
                 
                 // Awaiting billing = Constructed but not yet marked for billing
-                metrics.fiberOutstanding = Math.round(Math.max(0, metrics.fiberConstructed - metrics.fiberDailyComplete));
-                metrics.ugOutstanding = Math.round(Math.max(0, metrics.ugConstructed - metrics.ugDailyComplete));
-                
-                // Run rates
-                const fiberProductionDays = metrics.fiberInstallDates.size;
-                metrics.fiberRunRate = fiberProductionDays > 0 ? Math.round(metrics.fiberConstructed / fiberProductionDays) : 0;
-                
-                const ugProductionDays = metrics.ugInstallDates.size;
-                metrics.ugRunRate = ugProductionDays > 0 ? Math.round(metrics.ugConstructed / ugProductionDays) : 0;
+metrics.fiberOutstanding = Math.round(Math.max(0, metrics.fiberConstructed - metrics.fiberDailyComplete));
+metrics.ugOutstanding = Math.round(Math.max(0, metrics.ugConstructed - metrics.ugDailyComplete));
+
+// Run rates based on 5-day work week
+if (metrics.fiberFirstInstall && metrics.fiberLastInstall) {
+    const calendarDays = daysBetween(metrics.fiberFirstInstall, metrics.fiberLastInstall) + 1;
+    const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+    metrics.fiberRunRate = Math.round(metrics.fiberConstructed / workingDays);
+} else {
+    metrics.fiberRunRate = 0;
+}
+
+if (metrics.ugFirstInstall && metrics.ugLastInstall) {
+    const calendarDays = daysBetween(metrics.ugFirstInstall, metrics.ugLastInstall) + 1;
+    const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+    metrics.ugRunRate = Math.round(metrics.ugConstructed / workingDays);
+} else {
+    metrics.ugRunRate = 0;
+}
                 
                 // For expected completion: calculate remaining work based on fiber & UG designed vs constructed
                 // Use the Fiber and UG layer metrics to get designed amounts
@@ -1292,14 +1335,15 @@ metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 :
                         const crewName = (crewDisplayName || subcontractorDisplayName)?.toString().trim();
                         if (!crewName) return;
                         
-                        if (!crewData.has(crewName)) {
-                            crewData.set(crewName, {
-                                name: crewName,
-                                totalConstructed: 0,
-                                dailyComplete: 0,
-                                installationDates: new Set()
-                            });
-                        }
+                       if (!crewData.has(crewName)) {
+    crewData.set(crewName, {
+        name: crewName,
+        totalConstructed: 0,
+        dailyComplete: 0,
+        firstInstallDate: null,
+        lastInstallDate: null
+    });
+}
                         
                         const data = crewData.get(crewName);
                         
@@ -1317,14 +1361,18 @@ metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 :
                             data.dailyComplete += value;
                         }
                         
-                        const installDate = feature.attributes.installation_date;
-                        if (installDate) {
-                            const date = new Date(installDate);
-                            const dateKey = date.toISOString().split('T')[0];
-                            data.installationDates.add(dateKey);
-                        }
-                    });
-                }
+                         const installDate = feature.attributes.installation_date;
+        if (installDate) {
+            const date = new Date(installDate);
+            if (!data.firstInstallDate || date < data.firstInstallDate) {
+                data.firstInstallDate = date;
+            }
+            if (!data.lastInstallDate || date > data.lastInstallDate) {
+                data.lastInstallDate = date;
+            }
+        }
+    });
+}
                 
                 // Query gig layer for quality metrics
                 const gigLayer = allFL.find(l => l.layerId === 22100);
@@ -1375,8 +1423,12 @@ metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 :
                 const crewPerformance = [];
                 
                 crewData.forEach((data, crewName) => {
-                    const productionDays = data.installationDates.size;
-                    const dailyRate = productionDays > 0 ? (data.totalConstructed / productionDays) : 0;
+    let dailyRate = 0;
+    if (data.firstInstallDate && data.lastInstallDate) {
+        const calendarDays = daysBetween(data.firstInstallDate, data.lastInstallDate) + 1;
+        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     // Quality metrics
                     const quality = qualityData.get(crewName);
@@ -1391,7 +1443,6 @@ metrics.invoicePct = totalDesigned > 0 ? (totalInvoiced / totalDesigned) * 100 :
                     crewPerformance.push({
                         name: crewName,
                         totalConstructed: Math.round(data.totalConstructed),
-                        productionDays: productionDays,
                         dailyRate: dailyRate,
                         avgApprovalDays: avgApprovalDays,
                         totalGigs: quality ? quality.totalGigs : 0,
@@ -1686,7 +1737,6 @@ function renderStaleProjects() {
                                 <th style="border:1px solid #ddd;padding:6px;text-align:left;">Crew</th>
                                 <th style="border:1px solid #ddd;padding:6px;text-align:right;">Total Constructed</th>
                                 <th style="border:1px solid #ddd;padding:6px;text-align:right;">Daily Rate</th>
-                                <th style="border:1px solid #ddd;padding:6px;text-align:center;">Production Days</th>
                                 <th style="border:1px solid #ddd;padding:6px;text-align:center;">Open Gigs</th>
                                 <th style="border:1px solid #ddd;padding:6px;text-align:center;">Total Gigs</th>
                                 <th style="border:1px solid #ddd;padding:6px;text-align:center;">Avg Approval Days</th>
@@ -1703,7 +1753,6 @@ function renderStaleProjects() {
                                     <td style="border:1px solid #ddd;padding:6px;font-weight:bold;">${crew.name}</td>
                                     <td style="border:1px solid #ddd;padding:6px;text-align:right;">${crew.totalConstructed.toLocaleString()}</td>
                                     <td style="border:1px solid #ddd;padding:6px;text-align:right;">${crew.dailyRate.toFixed(1)}</td>
-                                    <td style="border:1px solid #ddd;padding:6px;text-align:center;">${crew.productionDays}</td>
                                     <td style="border:1px solid #ddd;padding:6px;text-align:center;">${crew.openGigs}</td>
                                     <td style="border:1px solid #ddd;padding:6px;text-align:center;">${crew.totalGigs}</td>
                                     <td style="border:1px solid #ddd;padding:6px;text-align:center;">${avgDaysDisplay}</td>
@@ -2056,13 +2105,14 @@ $("#closeDrilldown").onclick = () => {
                         if (!crewName) return;
                         
                         if (!crewData.has(crewName)) {
-                            crewData.set(crewName, {
-                                name: crewName,
-                                totalConstructed: 0,
-                                dailyComplete: 0,
-                                installationDates: new Set()
-                            });
-                        }
+    crewData.set(crewName, {
+        name: crewName,
+        totalConstructed: 0,
+        dailyComplete: 0,
+        firstInstallDate: null,
+        lastInstallDate: null
+    });
+}
                         
                         const data = crewData.get(crewName);
                         
@@ -2080,11 +2130,15 @@ $("#closeDrilldown").onclick = () => {
                         }
                         
                         const installDate = feature.attributes.installation_date;
-                        if (installDate) {
-                            const date = new Date(installDate);
-                            const dateKey = date.toISOString().split('T')[0];
-                            data.installationDates.add(dateKey);
-                        }
+if (installDate) {
+    const date = new Date(installDate);
+    if (!data.firstInstallDate || date < data.firstInstallDate) {
+        data.firstInstallDate = date;
+    }
+    if (!data.lastInstallDate || date > data.lastInstallDate) {
+        data.lastInstallDate = date;
+    }
+}
                     });
                 }
                 
@@ -2138,8 +2192,12 @@ $("#closeDrilldown").onclick = () => {
                 const crewPerformance = [];
                 
                 crewData.forEach((data, crewName) => {
-                    const productionDays = data.installationDates.size;
-                    const dailyRate = productionDays > 0 ? (data.totalConstructed / productionDays) : 0;
+    let dailyRate = 0;
+    if (data.firstInstallDate && data.lastInstallDate) {
+        const calendarDays = daysBetween(data.firstInstallDate, data.lastInstallDate) + 1;
+        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     const quality = qualityData.get(crewName);
                     const avgApprovalDays = quality && quality.approvalDaysCount > 0 ? 
@@ -2152,7 +2210,6 @@ $("#closeDrilldown").onclick = () => {
                     crewPerformance.push({
                         name: crewName,
                         totalConstructed: Math.round(data.totalConstructed),
-                        productionDays: productionDays,
                         dailyRate: dailyRate,
                         avgApprovalDays: avgApprovalDays,
                         totalGigs: quality ? quality.totalGigs : 0,
@@ -2418,7 +2475,6 @@ $("#closeDrilldown").onclick = () => {
                                         <th style="border:1px solid #ddd;padding:6px;text-align:left;">Crew</th>
                                         <th style="border:1px solid #ddd;padding:6px;text-align:right;">Constructed</th>
                                         <th style="border:1px solid #ddd;padding:6px;text-align:right;">Daily Rate</th>
-                                        <th style="border:1px solid #ddd;padding:6px;text-align:center;">Days</th>
                                         <th style="border:1px solid #ddd;padding:6px;text-align:center;">Open Gigs</th>
                                         <th style="border:1px solid #ddd;padding:6px;text-align:center;">Avg Approval</th>
                                         <th style="border:1px solid #ddd;padding:6px;text-align:right;">Outstanding</th>
@@ -2434,7 +2490,6 @@ $("#closeDrilldown").onclick = () => {
                                                 <td style="border:1px solid #ddd;padding:6px;font-weight:bold;">${crew.name}</td>
                                                 <td style="border:1px solid #ddd;padding:6px;text-align:right;">${crew.totalConstructed.toLocaleString()}</td>
                                                 <td style="border:1px solid #ddd;padding:6px;text-align:right;">${crew.dailyRate.toFixed(1)}</td>
-                                                <td style="border:1px solid #ddd;padding:6px;text-align:center;">${crew.productionDays}</td>
                                                 <td style="border:1px solid #ddd;padding:6px;text-align:center;">${crew.openGigs}</td>
                                                 <td style="border:1px solid #ddd;padding:6px;text-align:center;">${avgDaysDisplay}</td>
                                                 <td style="border:1px solid #ddd;padding:6px;text-align:right;">${crew.outstandingBilling.toLocaleString()}</td>
