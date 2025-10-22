@@ -81,6 +81,13 @@
             const oneDay = 24 * 60 * 60 * 1000;
             return Math.round((date2 - date1) / oneDay);
         }
+        // Helper function to get a unique identifier for the week (e.g., the date of the Sunday)
+        function getStartOfWeek(date) {
+            const d = new Date(date);
+            const day = d.getDay(); // 0 = Sunday, 1 = Monday...
+            const diff = d.getDate() - day; // Go back to Sunday
+            return new Date(d.setDate(diff)).toISOString().split('T')[0];
+        }
         
        const styles = document.createElement('style');
 styles.textContent = `
@@ -623,8 +630,8 @@ if (fiberLayer) {
     
     let fiberConstructed = 0;
     let fiberDailyComplete = 0;
-    let firstInstallDate = null;
-    let lastInstallDate = null;
+    const fiberActiveWeeks = new Set();
+  
     
     constructedQuery.features.forEach(f => {
         const length = Number(f.attributes.calculated_length) || 0;
@@ -639,25 +646,20 @@ if (fiberLayer) {
         const installDate = f.attributes.installation_date;
         if (installDate) {
             const date = new Date(installDate);
-            if (!firstInstallDate || date < firstInstallDate) {
-                firstInstallDate = date;
-            }
-            if (!lastInstallDate || date > lastInstallDate) {
-                lastInstallDate = date;
-            }
+           fiberActiveWeeks.add(getStartOfWeek(date));
         }
     });
     
     metrics.fiberOutstanding = Math.round(Math.max(0, fiberConstructed - fiberDailyComplete));
     
-    // Calculate run rate based on 5-day work week
-    if (firstInstallDate && lastInstallDate) {
-        const calendarDays = daysBetween(firstInstallDate, lastInstallDate) + 1; // +1 to include both first and last day
-        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-        metrics.fiberRunRate = Math.round(fiberConstructed / workingDays);
-    } else {
-        metrics.fiberRunRate = 0;
-    }
+   // Calculate run rate based on active work weeks
+    const fiberActiveWeekCount = fiberActiveWeeks.size;
+    if (fiberActiveWeekCount > 0) {
+        const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
+        metrics.fiberRunRate = Math.round(fiberConstructed / workingDays);
+    } else {
+        metrics.fiberRunRate = 0;
+    }
 }
             
             // Underground Span
@@ -674,8 +676,7 @@ if (ugLayer) {
     
     let ugConstructed = 0;
     let ugDailyComplete = 0;
-    let firstInstallDate = null;
-    let lastInstallDate = null;
+    const ugActiveWeeks = new Set();
     
     constructedQuery.features.forEach(f => {
         const length = Number(f.attributes.calculated_length) || 0;
@@ -690,25 +691,20 @@ if (ugLayer) {
         const installDate = f.attributes.installation_date;
         if (installDate) {
             const date = new Date(installDate);
-            if (!firstInstallDate || date < firstInstallDate) {
-                firstInstallDate = date;
-            }
-            if (!lastInstallDate || date > lastInstallDate) {
-                lastInstallDate = date;
-            }
+            ugActiveWeeks.add(getStartOfWeek(date));
         }
     });
     
     metrics.ugOutstanding = Math.round(Math.max(0, ugConstructed - ugDailyComplete));
     
-    // Calculate run rate based on 5-day work week
-    if (firstInstallDate && lastInstallDate) {
-        const calendarDays = daysBetween(firstInstallDate, lastInstallDate) + 1; // +1 to include both first and last day
-        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-        metrics.ugRunRate = Math.round(ugConstructed / workingDays);
-    } else {
-        metrics.ugRunRate = 0;
-    }
+   // Calculate run rate based on active work weeks
+    const ugActiveWeekCount = ugActiveWeeks.size;
+    if (ugActiveWeekCount > 0) {
+        const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
+        metrics.ugRunRate = Math.round(ugConstructed / workingDays);
+    } else {
+        metrics.ugRunRate = 0;
+    }
 }
             
             // Calculate remaining work for expected completion
@@ -827,12 +823,10 @@ workOrderIds.forEach(wo => {
         invoiced: 0,
         fiberConstructed: 0,
         fiberDailyComplete: 0,
-        fiberFirstInstall: null,
-        fiberLastInstall: null,
+        fiberActiveWeeks: new Set(),
         ugConstructed: 0,
         ugDailyComplete: 0,
-        ugFirstInstall: null,
-        ugLastInstall: null,
+        ugActiveWeeks: new Set(),
         // Per-layer tracking
         layerMetrics: []
     });
@@ -945,12 +939,8 @@ if (fiberLayer) {
         const installDate = f.attributes.installation_date;
         if (installDate) {
             const date = new Date(installDate);
-            if (!metrics.fiberFirstInstall || date < metrics.fiberFirstInstall) {
-                metrics.fiberFirstInstall = date;
-            }
-            if (!metrics.fiberLastInstall || date > metrics.fiberLastInstall) {
-                metrics.fiberLastInstall = date;
-            }
+           metrics.fiberActiveWeeks.add(getStartOfWeek(date));
+            
         }
     });
 }
@@ -987,12 +977,7 @@ if (ugLayer) {
         const installDate = f.attributes.installation_date;
         if (installDate) {
             const date = new Date(installDate);
-            if (!metrics.ugFirstInstall || date < metrics.ugFirstInstall) {
-                metrics.ugFirstInstall = date;
-            }
-            if (!metrics.ugLastInstall || date > metrics.ugLastInstall) {
-                metrics.ugLastInstall = date;
-            }
+           metrics.ugActiveWeeks.add(getStartOfWeek(date));
         }
     });
 }
@@ -1021,20 +1006,20 @@ metrics.fiberOutstanding = Math.round(Math.max(0, metrics.fiberConstructed - met
 metrics.ugOutstanding = Math.round(Math.max(0, metrics.ugConstructed - metrics.ugDailyComplete));
 
 // Run rates based on 5-day work week
-if (metrics.fiberFirstInstall && metrics.fiberLastInstall) {
-    const calendarDays = daysBetween(metrics.fiberFirstInstall, metrics.fiberLastInstall) + 1;
-    const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-    metrics.fiberRunRate = Math.round(metrics.fiberConstructed / workingDays);
+const fiberActiveWeekCount = metrics.fiberActiveWeeks.size;
+if (fiberActiveWeekCount > 0) {
+    const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
+    metrics.fiberRunRate = Math.round(metrics.fiberConstructed / workingDays);
 } else {
-    metrics.fiberRunRate = 0;
+    metrics.fiberRunRate = 0;
 }
 
-if (metrics.ugFirstInstall && metrics.ugLastInstall) {
-    const calendarDays = daysBetween(metrics.ugFirstInstall, metrics.ugLastInstall) + 1;
-    const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-    metrics.ugRunRate = Math.round(metrics.ugConstructed / workingDays);
+const ugActiveWeekCount = metrics.ugActiveWeeks.size;
+if (ugActiveWeekCount > 0) {
+    const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
+    metrics.ugRunRate = Math.round(metrics.ugConstructed / workingDays);
 } else {
-    metrics.ugRunRate = 0;
+    metrics.ugRunRate = 0;
 }
                 
                 // For expected completion: calculate remaining work based on fiber & UG designed vs constructed
@@ -1340,8 +1325,7 @@ if (metrics.ugFirstInstall && metrics.ugLastInstall) {
         name: crewName,
         totalConstructed: 0,
         dailyComplete: 0,
-        firstInstallDate: null,
-        lastInstallDate: null
+        activeWeeks: new Set()
     });
 }
                         
@@ -1364,12 +1348,7 @@ if (metrics.ugFirstInstall && metrics.ugLastInstall) {
                          const installDate = feature.attributes.installation_date;
         if (installDate) {
             const date = new Date(installDate);
-            if (!data.firstInstallDate || date < data.firstInstallDate) {
-                data.firstInstallDate = date;
-            }
-            if (!data.lastInstallDate || date > data.lastInstallDate) {
-                data.lastInstallDate = date;
-            }
+           data.activeWeeks.add(getStartOfWeek(date));
         }
     });
 }
@@ -1424,11 +1403,11 @@ if (metrics.ugFirstInstall && metrics.ugLastInstall) {
                 
                 crewData.forEach((data, crewName) => {
     let dailyRate = 0;
-    if (data.firstInstallDate && data.lastInstallDate) {
-        const calendarDays = daysBetween(data.firstInstallDate, data.lastInstallDate) + 1;
-        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-        dailyRate = data.totalConstructed / workingDays;
-    }
+    const activeWeekCount = data.activeWeeks.size;
+    if (activeWeekCount > 0) {
+        const workingDays = Math.max(1, activeWeekCount * 5);
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     // Quality metrics
                     const quality = qualityData.get(crewName);
@@ -2109,8 +2088,7 @@ $("#closeDrilldown").onclick = () => {
         name: crewName,
         totalConstructed: 0,
         dailyComplete: 0,
-        firstInstallDate: null,
-        lastInstallDate: null
+        activeWeeks: new Set()
     });
 }
                         
@@ -2132,12 +2110,7 @@ $("#closeDrilldown").onclick = () => {
                         const installDate = feature.attributes.installation_date;
 if (installDate) {
     const date = new Date(installDate);
-    if (!data.firstInstallDate || date < data.firstInstallDate) {
-        data.firstInstallDate = date;
-    }
-    if (!data.lastInstallDate || date > data.lastInstallDate) {
-        data.lastInstallDate = date;
-    }
+   data.activeWeeks.add(getStartOfWeek(date));
 }
                     });
                 }
@@ -2192,12 +2165,12 @@ if (installDate) {
                 const crewPerformance = [];
                 
                 crewData.forEach((data, crewName) => {
-    let dailyRate = 0;
-    if (data.firstInstallDate && data.lastInstallDate) {
-        const calendarDays = daysBetween(data.firstInstallDate, data.lastInstallDate) + 1;
-        const workingDays = Math.max(1, Math.round((calendarDays / 7) * 5));
-        dailyRate = data.totalConstructed / workingDays;
-    }
+   let dailyRate = 0;
+    const activeWeekCount = data.activeWeeks.size;
+    if (activeWeekCount > 0) {
+        const workingDays = Math.max(1, activeWeekCount * 5);
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     const quality = qualityData.get(crewName);
                     const avgApprovalDays = quality && quality.approvalDaysCount > 0 ? 
