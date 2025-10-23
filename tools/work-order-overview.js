@@ -52,6 +52,7 @@
             globalCrewPerformance: null
         };
         let selectedWOForDrilldown = null;
+        let activeLayerFilter = null; // ADD THIS LINE - tracks active layer filter
         let drilldownData = null;
         let isProcessing = false;
         let sortBy = 'completion'; // completion, billing, invoice, lastActivity
@@ -67,6 +68,79 @@
             if (percent >= 50) return '#ff9800'; // Orange
             return '#f44336'; // Red
         }
+        // Helper function to filter map by layer
+function filterMapByLayer(layerIndex) {
+    try {
+        const layer = targetLayers[layerIndex];
+        const mapLayer = mapView.map.allLayers.find(l => l.id === layer.id);
+        
+        if (!mapLayer) {
+            console.warn(`Layer ${layer.name} not found`);
+            return;
+        }
+        
+        // Toggle filter
+        if (activeLayerFilter === layerIndex) {
+            // Clear filter if clicking the same layer
+            clearMapFilters();
+            activeLayerFilter = null;
+        } else {
+            // Clear all filters first
+            clearAllLayerFilters();
+            
+            // Build filter expression
+            let filterExpression = '';
+            
+            // Add work order filter
+            if (selectedPurchaseOrders.length > 0) {
+                const poList = selectedPurchaseOrders.map(po => `'${po}'`).join(',');
+                filterExpression = `purchase_order IN (${poList})`;
+            }
+            
+            // Add layer-specific filter if exists
+            if (layer.additionalFilter) {
+                filterExpression = filterExpression 
+                    ? `${filterExpression} AND ${layer.additionalFilter}`
+                    : layer.additionalFilter;
+            }
+            
+            // Apply filter to the specific layer
+            mapLayer.definitionExpression = filterExpression;
+            activeLayerFilter = layerIndex;
+            
+            // Zoom to filtered features
+            mapLayer.queryExtent({ where: filterExpression || '1=1' })
+                .then(result => {
+                    if (result.extent) {
+                        mapView.goTo(result.extent.expand(1.2));
+                    }
+                })
+                .catch(err => console.warn('Could not zoom to layer:', err));
+        }
+        
+        // Update UI to show active filter
+        updateDrilldownDisplay();
+        
+    } catch (error) {
+        console.error('Error filtering map by layer:', error);
+    }
+}
+
+// Helper to clear filters from all target layers
+function clearAllLayerFilters() {
+    targetLayers.forEach(layer => {
+        const mapLayer = mapView.map.allLayers.find(l => l.id === layer.id);
+        if (mapLayer) {
+            mapLayer.definitionExpression = '';
+        }
+    });
+}
+
+// Helper to clear all map filters
+function clearMapFilters() {
+    clearAllLayerFilters();
+    activeLayerFilter = null;
+}
         
         // Helper function to format dates
         function formatDateForInput(date) {
@@ -194,6 +268,16 @@ styles.textContent = `
         border: 1px solid #ffd54f;
         border-radius: 6px;
     }
+    .layer-header-cell {
+    transition: background-color 0.2s, transform 0.1s;
+}
+.layer-header-cell:hover {
+    background-color: #e3f2fd !important;
+    transform: scale(1.02);
+}
+.layer-header-cell:active {
+    transform: scale(0.98);
+}
 `;
         document.head.appendChild(styles);
         
@@ -1914,7 +1998,7 @@ $("#closeDrilldown").onclick = () => {
                 updateStatus("Error: " + error.message, "error");
             }
         };
-        
+      
         // Query work order details (layer-by-layer breakdown)
         async function queryWorkOrderDetails(workOrderId, startDate, endDate, layersToQuery, filterClause, allTimeMode = false) {
             const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
@@ -2290,17 +2374,29 @@ if (installDate) {
         
         // Render drilldown results
         function renderDrilldownResults(tableData, crewPerf, alerts, isAllTime = false) {
-            const container = $("#drilldownResults");
-            let html = '';
-            
-            // Show filter status
-            const filterStatus = isAllTime ? 
-                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Showing: <strong>All Time</strong></div>' :
-                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Filtered by date range</div>';
-            html += filterStatus;
-            
-            // Summary section
-            const designedRow = tableData.find(r => r.category === "Designed");
+            const container = $("#drilldownResults");
+            let html = '';
+            
+            // Show filter status
+            const filterStatus = isAllTime ? 
+                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Showing: <strong>All Time</strong></div>' :
+                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Filtered by date range</div>';
+            html += filterStatus;
+            
+            // vvv PASTE THE MOVED CODE HERE AND WRAP IT vvv
+            html += `
+                ${activeLayerFilter !== null ? `
+                <div style="margin-bottom:8px;">
+                    <button onclick="clearMapFilters(); updateDrilldownDisplay();" 
+                            style="padding:6px 12px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+                        ✖ Clear Layer Filter (${targetLayers[activeLayerFilter].name})
+                    </button>
+                </div>
+                ` : ''}
+            `;
+
+            // Summary section
+            const designedRow = tableData.find(r => r.category === "Designed");
             const constructedRow = tableData.find(r => r.category === "Constructed");
             const dailyCompleteRow = tableData.find(r => r.category === "Daily Complete");
             const invoicedRow = tableData.find(r => r.category === "Invoiced");
@@ -2386,13 +2482,26 @@ if (installDate) {
                     <div style="overflow-x:auto;">
                         <table style="width:100%;border-collapse:collapse;font-size:11px;">
                             <thead>
-                                <tr style="background:#f5f5f5;">
-                                    <th style="border:1px solid #ddd;padding:6px;text-align:left;">Category</th>
-                                    ${layersInUse.map(layer => `
-                                        <th style="border:1px solid #ddd;padding:6px;text-align:center;">${layer.name}</th>
-                                    `).join('')}
-                                </tr>
-                            </thead>
+    <tr style="background:#f5f5f5;">
+        <th style="border:1px solid #ddd;padding:6px;text-align:left;">Category</th>
+        ${layersInUse.map((layer, idx) => {
+            const layerIndex = targetLayers.indexOf(layer);
+            const isActive = activeLayerFilter === layerIndex;
+            const headerStyle = isActive 
+                ? 'background:#3367d6;color:white;cursor:pointer;user-select:none;' 
+                : 'cursor:pointer;user-select:none;';
+            const icon = isActive ? '🔍 ' : '';
+            
+            return `
+                <th style="border:1px solid #ddd;padding:6px;text-align:center;${headerStyle}" 
+                    onclick="filterMapByLayer(${layerIndex})"
+                    title="Click to filter map by ${layer.name}">
+                    ${icon}${layer.name}
+                </th>
+            `;
+        }).join('')}
+    </tr>
+</thead>
                             <tbody>
                                 ${tableData.map((row, idx) => {
                                     const rowStyle = idx % 2 === 0 ? 'background:#fff;' : 'background:#f9f9f9;';
@@ -2489,11 +2598,20 @@ if (installDate) {
         $("#closeTool").onclick = () => {
             window.gisToolHost.closeTool('wo-dashboard');
         };
+        // Make functions globally accessible for onclick handlers
+window.filterMapByLayer = filterMapByLayer;
+window.clearMapFilters = clearMapFilters;
+
+// Initialize
+loadPurchaseOrders();
         
         // Cleanup function
-        function cleanup() {
-            // Clear map filters
-            try {
+       function cleanup() {
+    // Clear active layer filter
+    activeLayerFilter = null;
+    
+    // Clear map filters
+    try {
                 const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
                 allFL.forEach(layer => {
                     if (layer.definitionExpression) {
@@ -2516,6 +2634,12 @@ if (installDate) {
             
             toolBox.remove();
             console.log('WO Dashboard Tool cleaned up');
+            }
+            if (window.filterMapByLayer) {
+                delete window.filterMapByLayer;
+            }
+            if (window.clearMapFilters) {
+                delete window.clearMapFilters;
         }
         
         // Initialize
