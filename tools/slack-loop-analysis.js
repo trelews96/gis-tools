@@ -57,7 +57,10 @@
             </select><br>
             
             <label style="font-size:11px;">Fiber Detection Tolerance (meters):</label><br>
-            <input id="fiberTolerance" type="number" value="15" min="1" max="100" style="width:60px;margin:2px 0 6px 0;padding:3px;font-size:11px;"><br>
+            <input id="fiberTolerance" type="number" value="10" min="1" max="100" style="width:60px;margin:2px 0 6px 0;padding:3px;font-size:11px;"><br>
+            
+            <label style="font-size:11px;">Slack Loop Tolerance (meters):</label><br>
+            <input id="slackTolerance" type="number" value="5" min="1" max="50" style="width:60px;margin:2px 0 6px 0;padding:3px;font-size:11px;"><br>
             
             <label style="font-size:11px;"><input type="checkbox" id="debugMode" style="margin-right:4px;">Debug Mode</label><br>
             
@@ -96,10 +99,10 @@
                     
                     if (layer.layerId === 41250) { // Slack Loop layer
                         layer.labelingInfo = originalLabelingInfo;
+                        layer.labelsVisible = false;
                     }
                     
-                    layer.labelsVisible = false;
-                    layer.visible = true;
+                    // Don't change layer visibility - leave as is
                 }
             }
             
@@ -155,10 +158,11 @@
             }
             
             let csv = "data:text/csv;charset=utf-8,";
-            csv += "Issue Type,Location Type,Location ID,Slack Loop ID,Fiber Count,Description,Map URL\n";
+            csv += "Issue Type,Location Type,Location ID,Slack Loop ID,Fiber Count,Distance (m),Description,Map URL\n";
             
             for (const row of analysisData) {
                 const slackId = row.slackLoopId || "N/A";
+                const distance = row.distance !== undefined ? row.distance.toFixed(2) : "N/A";
                 let mapUrl = "";
                 
                 if (row.slackLoopOid) {
@@ -172,6 +176,7 @@
                        escapeCSV(row.locationId) + "," + 
                        escapeCSV(slackId) + "," + 
                        row.fiberCount + "," + 
+                       distance + "," + 
                        escapeCSV(row.description) + "," + 
                        escapeCSV(mapUrl) + "\n";
             }
@@ -284,113 +289,102 @@
             return Math.sqrt(dx * dx + dy * dy);
         }
         
-        // Get fiber count near a location
-        function getFiberCountNearLocation(location, fibers, tolerance) {
+        // Get minimum distance from location to a fiber
+        function getMinimumFiberDistance(location, fiber) {
             const locationCenter = location.geometry.x && location.geometry.y ? 
                 {x: location.geometry.x, y: location.geometry.y} : 
                 (location.geometry.extent && location.geometry.extent.center ? 
                     location.geometry.extent.center : null);
             
-            if (!locationCenter) return 0;
+            if (!locationCenter || !fiber.geometry) return Infinity;
             
-            let nearbyFibers = 0;
-            const debugInfo = [];
+            let minDistance = Infinity;
+            
+            // Handle polyline geometry
+            if (fiber.geometry.type === "polyline" && fiber.geometry.paths) {
+                for (const path of fiber.geometry.paths) {
+                    for (let v = 0; v < path.length - 1; v++) {
+                        const start = {x: path[v][0], y: path[v][1]};
+                        const end = {x: path[v + 1][0], y: path[v + 1][1]};
+                        const segmentDistance = distanceToLineSegment(locationCenter, start, end);
+                        minDistance = Math.min(minDistance, segmentDistance);
+                    }
+                }
+            }
+            // Handle other geometry types with paths
+            else if (fiber.geometry.paths && fiber.geometry.paths.length > 0) {
+                for (const path of fiber.geometry.paths) {
+                    for (let v = 0; v < path.length - 1; v++) {
+                        const start = {x: path[v][0], y: path[v][1]};
+                        const end = {x: path[v + 1][0], y: path[v + 1][1]};
+                        const segmentDistance = distanceToLineSegment(locationCenter, start, end);
+                        minDistance = Math.min(minDistance, segmentDistance);
+                    }
+                }
+            }
+            // Handle extent-based geometry
+            else if (fiber.geometry.extent) {
+                const extent = fiber.geometry.extent;
+                const checkPoints = [
+                    {x: extent.xmin, y: extent.ymin},
+                    {x: extent.xmax, y: extent.ymax},
+                    {x: extent.xmin, y: extent.ymax},
+                    {x: extent.xmax, y: extent.ymin}
+                ];
+                
+                if (extent.center) {
+                    checkPoints.push({x: extent.center.x, y: extent.center.y});
+                }
+                
+                for (const checkPoint of checkPoints) {
+                    const pointDistance = calculateDistance(locationCenter, checkPoint);
+                    minDistance = Math.min(minDistance, pointDistance);
+                }
+            }
+            // Handle point geometry
+            else if (fiber.geometry.x !== undefined && fiber.geometry.y !== undefined) {
+                minDistance = calculateDistance(locationCenter, fiber.geometry);
+            }
+            
+            // Handle polygon geometry with rings
+            if (fiber.geometry.rings && fiber.geometry.rings.length > 0) {
+                for (const ring of fiber.geometry.rings) {
+                    for (let v = 0; v < ring.length - 1; v++) {
+                        const start = {x: ring[v][0], y: ring[v][1]};
+                        const end = {x: ring[v + 1][0], y: ring[v + 1][1]};
+                        const segmentDistance = distanceToLineSegment(locationCenter, start, end);
+                        minDistance = Math.min(minDistance, segmentDistance);
+                    }
+                }
+            }
+            
+            return minDistance;
+        }
+        
+        // Get fiber count near a location with improved accuracy
+        function getFiberCountNearLocation(location, fibers, tolerance) {
+            const nearbyFibers = [];
             
             for (const fiber of fibers) {
                 if (!fiber.geometry) continue;
                 
-                let minDistance = Infinity;
-                let fiberFound = false;
+                const minDistance = getMinimumFiberDistance(location, fiber);
                 
-                // Handle polyline geometry
-                if (fiber.geometry.type === "polyline" && fiber.geometry.paths) {
-                    for (const path of fiber.geometry.paths) {
-                        for (let v = 0; v < path.length - 1; v++) {
-                            const start = {x: path[v][0], y: path[v][1]};
-                            const end = {x: path[v + 1][0], y: path[v + 1][1]};
-                            const segmentDistance = distanceToLineSegment(locationCenter, start, end);
-                            minDistance = Math.min(minDistance, segmentDistance);
-                            
-                            if (segmentDistance <= tolerance) {
-                                fiberFound = true;
-                            }
-                        }
-                    }
-                }
-                // Handle other geometry types with paths
-                else if (fiber.geometry.paths && fiber.geometry.paths.length > 0) {
-                    for (const path of fiber.geometry.paths) {
-                        for (let v = 0; v < path.length - 1; v++) {
-                            const start = {x: path[v][0], y: path[v][1]};
-                            const end = {x: path[v + 1][0], y: path[v + 1][1]};
-                            const segmentDistance = distanceToLineSegment(locationCenter, start, end);
-                            minDistance = Math.min(minDistance, segmentDistance);
-                            
-                            if (segmentDistance <= tolerance) {
-                                fiberFound = true;
-                            }
-                        }
-                    }
-                }
-                // Handle extent-based geometry
-                else if (fiber.geometry.extent) {
-                    const extent = fiber.geometry.extent;
-                    const checkPoints = [
-                        {x: extent.xmin, y: extent.ymin},
-                        {x: extent.xmax, y: extent.ymax},
-                        {x: extent.xmin, y: extent.ymax},
-                        {x: extent.xmax, y: extent.ymin}
-                    ];
-                    
-                    if (extent.center) {
-                        checkPoints.push({x: extent.center.x, y: extent.center.y});
-                    }
-                    
-                    for (const checkPoint of checkPoints) {
-                        const pointDistance = calculateDistance(locationCenter, checkPoint);
-                        minDistance = Math.min(minDistance, pointDistance);
-                        
-                        if (pointDistance <= tolerance) {
-                            fiberFound = true;
-                        }
-                    }
-                }
-                // Handle point geometry
-                else if (fiber.geometry.x !== undefined && fiber.geometry.y !== undefined) {
-                    minDistance = calculateDistance(locationCenter, fiber.geometry);
-                    if (minDistance <= tolerance) {
-                        fiberFound = true;
-                    }
-                }
-                
-                // Handle polygon geometry with rings
-                if (fiber.geometry.rings && fiber.geometry.rings.length > 0) {
-                    for (const ring of fiber.geometry.rings) {
-                        for (let v = 0; v < ring.length - 1; v++) {
-                            const start = {x: ring[v][0], y: ring[v][1]};
-                            const end = {x: ring[v + 1][0], y: ring[v + 1][1]};
-                            const segmentDistance = distanceToLineSegment(locationCenter, start, end);
-                            minDistance = Math.min(minDistance, segmentDistance);
-                            
-                            if (segmentDistance <= tolerance) {
-                                fiberFound = true;
-                            }
-                        }
-                    }
-                }
-                
-                if (fiberFound || minDistance <= tolerance) {
-                    nearbyFibers++;
-                    debugInfo.push({
-                        fiberId: fiber.attributes.gis_id || fiber.attributes.objectid || 'Unknown',
-                        distance: minDistance.toFixed(2),
-                        geometryType: fiber.geometry.type || 'Unknown'
+                if (minDistance <= tolerance) {
+                    nearbyFibers.push({
+                        fiber: fiber,
+                        distance: minDistance,
+                        fiberId: fiber.attributes.gis_id || fiber.attributes.objectid || 'Unknown'
                     });
                 }
             }
             
-            if (window.fiberDebug && debugInfo.length > 0) {
-                console.log('Fibers found near location:', debugInfo);
+            if (window.fiberDebug && nearbyFibers.length > 0) {
+                console.log('Fibers found near location:', nearbyFibers.map(f => ({
+                    id: f.fiberId,
+                    distance: f.distance.toFixed(2) + 'm',
+                    geometryType: f.fiber.geometry.type || 'Unknown'
+                })));
             }
             
             return nearbyFibers;
@@ -580,21 +574,6 @@
             slackLayer.labelsVisible = true;
         }
         
-        // Set layer visibility
-        function setLayerVisibility() {
-            const allLayers = mapView.map.allLayers.filter(l => l && l.type === "feature");
-            
-            for (const layer of allLayers) {
-                if (layer && typeof layer.layerId !== 'undefined') {
-                    if (layer.layerId === 41250) { // Slack Loop layer
-                        layer.visible = true;
-                    } else {
-                        layer.visible = false;
-                    }
-                }
-            }
-        }
-        
         // Run analysis
         async function runAnalysis() {
             const workOrderSelect = $("#workorderSelect");
@@ -606,13 +585,14 @@
             }
             
             const toleranceInput = $("#fiberTolerance");
+            const slackToleranceInput = $("#slackTolerance");
             const debugMode = $("#debugMode").checked;
-            const fiberTolerance = parseFloat(toleranceInput.value) || 15;
-            const slackTolerance = 1.0;
+            const fiberTolerance = parseFloat(toleranceInput.value) || 10;
+            const slackTolerance = parseFloat(slackToleranceInput.value) || 5;
             
             window.fiberDebug = debugMode;
             
-            updateStatus(`Running slack loop analysis for ${selectedWorkOrder} (Fiber tolerance: ${fiberTolerance}m${debugMode ? ", Debug ON" : ""})...`);
+            updateStatus(`Running slack loop analysis for ${selectedWorkOrder} (Fiber: ${fiberTolerance}m, Slack: ${slackTolerance}m${debugMode ? ", Debug ON" : ""})...`);
             updateResults("");
             analysisData = [];
             $("#exportBtn").style.display = "none";
@@ -715,7 +695,8 @@
                         console.log("Analyzing location:", locationType, locationId, "at coordinates:", locationCenter);
                     }
                     
-                    const nearbyFibers = getFiberCountNearLocation(location, fibers, fiberTolerance);
+                    const nearbyFibersData = getFiberCountNearLocation(location, fibers, fiberTolerance);
+                    const nearbyFibers = nearbyFibersData.length;
                     
                     if (debugMode) {
                         console.log("  -> Found", nearbyFibers, "nearby fibers");
@@ -735,44 +716,60 @@
                         
                         const distance = calculateDistance(locationCenter, slackCenter);
                         if (distance <= slackTolerance) {
-                            locationSlacks.push(slack);
+                            locationSlacks.push({
+                                slack: slack,
+                                distance: distance
+                            });
                         }
                     }
                     
                     if (debugMode) {
                         console.log("  -> Found", locationSlacks.length, "slack loops at this location");
+                        if (locationSlacks.length > 0) {
+                            console.log("     Slack loop distances:", locationSlacks.map(s => s.distance.toFixed(2) + 'm'));
+                        }
                     }
                     
-                    // Check for missing slack loops
+                    // Check for missing slack loops (only if fibers are present)
                     if (nearbyFibers > 0 && locationSlacks.length === 0) {
+                        // Get the minimum fiber distance for better reporting
+                        const minFiberDistance = Math.min(...nearbyFibersData.map(f => f.distance));
+                        
                         missingSlackLoops.push({
                             locationType: locationType,
                             locationId: locationId,
                             locationOid: location.attributes.objectid,
                             fiberCount: nearbyFibers,
+                            distance: minFiberDistance,
                             locationGeometry: location.geometry,
                             issueType: "Missing Slack Loop",
-                            description: `Location has ${nearbyFibers} fiber cable(s) but no slack loop`
+                            description: `Location has ${nearbyFibers} fiber cable(s) within ${fiberTolerance}m but no slack loop within ${slackTolerance}m`
                         });
                         
                         if (debugMode) {
                             console.log("  *** MISSING SLACK LOOP DETECTED ***");
+                            console.log("     Closest fiber:", minFiberDistance.toFixed(2) + 'm');
                         }
                     }
                     
                     // Check for invalid slack loops (missing sequential data)
                     const invalidSlacks = [];
-                    for (const slack of locationSlacks) {
+                    for (const slackData of locationSlacks) {
+                        const slack = slackData.slack;
                         const seqIn = slack.attributes.sequential_in;
                         const seqOut = slack.attributes.sequential_out;
                         
                         if ((!seqIn || seqIn === "") && (!seqOut || seqOut === "")) {
-                            invalidSlacks.push(slack);
+                            invalidSlacks.push({
+                                slack: slack,
+                                distance: slackData.distance
+                            });
                         }
                     }
                     
                     if (invalidSlacks.length > 0) {
-                        for (const invalidSlack of invalidSlacks) {
+                        for (const invalidSlackData of invalidSlacks) {
+                            const invalidSlack = invalidSlackData.slack;
                             problems.push({
                                 locationType: locationType,
                                 locationId: locationId,
@@ -782,8 +779,9 @@
                                 slackLoopId: invalidSlack.attributes.gis_id || "Unknown",
                                 slackLoopOid: invalidSlack.attributes.objectid,
                                 slackLoopGeometry: invalidSlack.geometry,
+                                distance: invalidSlackData.distance,
                                 issueType: "Invalid Sequential Data",
-                                description: "Slack loop exists but sequential_in and sequential_out are both empty"
+                                description: `Slack loop exists but sequential_in and sequential_out are both empty (${invalidSlackData.distance.toFixed(2)}m from location)`
                             });
                         }
                     }
@@ -794,7 +792,7 @@
                 formattedResults += `<p style="font-size:10px;margin:2px 0;">Locations: ${allLocations.length} (${poles.length} poles, ${vaults.length} vaults)</p>`;
                 formattedResults += `<p style="font-size:10px;margin:2px 0;">Fiber Cables: ${fibers.length}</p>`;
                 formattedResults += `<p style="font-size:10px;margin:2px 0;">Slack Loops: ${slacks.length}</p>`;
-                formattedResults += `<p style="font-size:10px;margin:2px 0;">Fiber Detection Tolerance: ${fiberTolerance}m</p>`;
+                formattedResults += `<p style="font-size:10px;margin:2px 0;">Tolerances: Fiber ${fiberTolerance}m, Slack Loop ${slackTolerance}m</p>`;
                 
                 if (debugMode) {
                     formattedResults += '<p style="font-size:10px;margin:2px 0;color:orange;">Debug Mode: Check browser console for details</p>';
@@ -808,7 +806,7 @@
                 if (missingSlackLoops.length > 0) {
                     formattedResults += `<h4 style="margin:8px 0 4px 0;font-size:11px;">Missing Slack Loops (${missingSlackLoops.length}):</h4>`;
                     formattedResults += '<div style="overflow-x:auto;"><table border="1" style="border-collapse:collapse;width:100%;font-size:9px;margin-bottom:8px;">';
-                    formattedResults += '<tr><th style="padding:1px 2px;">Location Type</th><th style="padding:1px 2px;">Location ID</th><th style="padding:1px 2px;">Fiber Count</th><th style="padding:1px 2px;">Issue</th><th style="padding:1px 2px;">Action</th></tr>';
+                    formattedResults += '<tr><th style="padding:1px 2px;">Location Type</th><th style="padding:1px 2px;">Location ID</th><th style="padding:1px 2px;">Fiber Count</th><th style="padding:1px 2px;">Min Distance</th><th style="padding:1px 2px;">Issue</th><th style="padding:1px 2px;">Action</th></tr>';
                     
                     for (const missing of missingSlackLoops) {
                         allIssues.push(missing);
@@ -816,6 +814,7 @@
                         formattedResults += `<td style="padding:1px 2px;">${missing.locationType}</td>`;
                         formattedResults += `<td style="padding:1px 2px;">${missing.locationId}</td>`;
                         formattedResults += `<td style="padding:1px 2px;">${missing.fiberCount}</td>`;
+                        formattedResults += `<td style="padding:1px 2px;">${missing.distance.toFixed(2)}m</td>`;
                         formattedResults += '<td style="padding:1px 2px;color:red;">Missing Slack Loop</td>';
                         formattedResults += '<td style="padding:1px 2px;">';
                         formattedResults += `<button onclick="zoomToLocation(${missing.locationOid})" style="padding:1px 3px;margin:0px;font-size:8px;background:#ff4444;color:white;border:none;cursor:pointer;">Zoom</button>`;
@@ -830,7 +829,7 @@
                 if (problems.length > 0) {
                     formattedResults += `<h4 style="margin:8px 0 4px 0;font-size:11px;">Slack Loops Missing Sequential Data (${problems.length}):</h4>`;
                     formattedResults += '<div style="overflow-x:auto;"><table border="1" style="border-collapse:collapse;width:100%;font-size:9px;margin-bottom:8px;">';
-                    formattedResults += '<tr><th style="padding:1px 2px;">Location Type</th><th style="padding:1px 2px;">Location ID</th><th style="padding:1px 2px;">Slack Loop ID</th><th style="padding:1px 2px;">Fiber Count</th><th style="padding:1px 2px;">Action</th></tr>';
+                    formattedResults += '<tr><th style="padding:1px 2px;">Location Type</th><th style="padding:1px 2px;">Location ID</th><th style="padding:1px 2px;">Slack Loop ID</th><th style="padding:1px 2px;">Fiber Count</th><th style="padding:1px 2px;">Distance</th><th style="padding:1px 2px;">Action</th></tr>';
                     
                     for (const problem of problems) {
                         allIssues.push(problem);
@@ -839,6 +838,7 @@
                         formattedResults += `<td style="padding:1px 2px;">${problem.locationId}</td>`;
                         formattedResults += `<td style="padding:1px 2px;">${problem.slackLoopId}</td>`;
                         formattedResults += `<td style="padding:1px 2px;">${problem.fiberCount}</td>`;
+                        formattedResults += `<td style="padding:1px 2px;">${problem.distance.toFixed(2)}m</td>`;
                         formattedResults += '<td style="padding:1px 2px;">';
                         formattedResults += `<button onclick="zoomToSlackLoop(${problem.slackLoopOid})" style="padding:1px 3px;margin:0px;font-size:8px;background:#ff4444;color:white;border:none;cursor:pointer;">Zoom</button>`;
                         formattedResults += '</td>';
@@ -852,7 +852,7 @@
                 configureSlackLoopLabeling(slackLayer, selectedWorkOrder);
                 
                 if (totalIssues === 0) {
-                    formattedResults += '<p style="color:green;font-size:10px;margin:8px 0;">No issues found! All locations with fibers have properly configured slack loops.</p>';
+                    formattedResults += '<p style="color:green;font-size:10px;margin:8px 0;">✓ No issues found! All locations with fibers have properly configured slack loops.</p>';
                 }
                 
                 if (totalIssues > 0) {
@@ -861,8 +861,7 @@
                 }
                 
                 updateResults(formattedResults);
-                setLayerVisibility();
-                updateStatus(`Analysis complete - ${totalIssues} total issues found (${missingSlackLoops.length} missing, ${problems.length} invalid). Labels showing sequential data are now visible.`);
+                updateStatus(`Analysis complete - ${totalIssues} total issues found (${missingSlackLoops.length} missing, ${problems.length} invalid). Labels now visible.`);
                 
             } catch (e) {
                 updateStatus("Error: " + (e.message || e));
@@ -880,10 +879,10 @@
                     
                     if (layer.layerId === 41250) {
                         layer.labelingInfo = originalLabelingInfo;
+                        layer.labelsVisible = false;
                     }
                     
-                    layer.labelsVisible = false;
-                    layer.visible = true;
+                    // Don't change layer visibility on cleanup
                 }
             }
             
