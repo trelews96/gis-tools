@@ -367,7 +367,7 @@
                 if (!fiber.geometry) continue;
                 
                 // Skip fibers with workflow_status = 'NA'
-                if (fiber.attributes.workflow_status === 'NA') {
+               if (fiber.attributes.workflow_status === 'NA' || fiber.attributes.workflow_status === 'DNB') {
                     if (window.fiberDebug) {
                         console.log('Skipping fiber with workflow_status=NA:', fiber.attributes.gis_id || fiber.attributes.objectid);
                     }
@@ -664,15 +664,15 @@
                 const slacks = results[3].features;
                 
                 // Filter out poles with workflow_status = 'NA'
-                const poles = allPoles.filter(p => p.attributes.workflow_status !== 'NA');
+                const poles = allPoles.filter(p => p.attributes.workflow_status !== 'DNB');
                 const excludedPoles = allPoles.length - poles.length;
                 
                 // Filter out vaults with workflow_status = 'NA'
-                const vaults = allVaults.filter(v => v.attributes.workflow_status !== 'NA');
+                const vaults = allVaults.filter(v => v.attributes.workflow_status !== 'NA' && v.attributes.workflow_status !== 'DNB');
                 const excludedVaults = allVaults.length - vaults.length;
                 
                 // Filter out fibers with workflow_status = 'NA'
-                const fibers = allFibers.filter(f => f.attributes.workflow_status !== 'NA');
+                const fibers = allFibers.filter(f => f.attributes.workflow_status !== 'NA' && f.attributes.workflow_status !== 'DNB');
                 const excludedFibers = allFibers.length - fibers.length;
                 
                 const excludedLocations = excludedPoles + excludedVaults;
