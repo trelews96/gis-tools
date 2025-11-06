@@ -29,6 +29,17 @@
         }
         
         const mapView = utils.getMapView();
+        // Store initial filters on load
+        const initialLayerFilters = new Map();
+        try {
+            mapView.map.allLayers.filter(l => l.type === "feature").forEach(layer => {
+                // Store the layer ID and its current definitionExpression
+                initialLayerFilters.set(layer.id, layer.definitionExpression);
+            });
+            console.log('WO Dashboard: Stored initial filters for', initialLayerFilters.size, 'layers.');
+        } catch (e) {
+            console.error('WO Dashboard: Failed to store initial filters.', e);
+        }
         
         // Target layers configuration with weights
         const targetLayers = [
@@ -2606,41 +2617,54 @@ window.clearMapFilters = clearMapFilters;
 loadPurchaseOrders();
         
         // Cleanup function
-       function cleanup() {
-    // Clear active layer filter
-    activeLayerFilter = null;
-    
-    // Clear map filters
-    try {
-                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
-                allFL.forEach(layer => {
-                    if (layer.definitionExpression) {
-                        layer.definitionExpression = "";
-                    }
-                });
-            } catch (error) {
-                console.warn("Error clearing filters during cleanup:", error);
-            }
-            
-            // Clean up global functions
-            if (window.selectWOForDrilldown) {
-                delete window.selectWOForDrilldown;
-            }
-            
-            // Remove styles
-            if (styles && styles.parentNode) {
-                styles.parentNode.removeChild(styles);
-            }
-            
-            toolBox.remove();
-            console.log('WO Dashboard Tool cleaned up');
-            }
-            if (window.filterMapByLayer) {
-                delete window.filterMapByLayer;
-            }
-            if (window.clearMapFilters) {
-                delete window.clearMapFilters;
-        }
+      // Cleanup function
+ 		function cleanup() {
+ 		    // Clear active layer filter
+ 		    activeLayerFilter = null;
+ 		
+ 		    // Restore map filters to their initial state
+ 		    try {
+ 		        const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+ 		        allFL.forEach(layer => {
+ 		            // Check if we have a stored filter for this layer
+ 		            if (initialLayerFilters.has(layer.id)) {
+ 		                const originalFilter = initialLayerFilters.get(layer.id);
+ 		                // Only update if the filter is different, to avoid unnecessary re-fetches
+ 		                if (layer.definitionExpression !== originalFilter) {
+ 		                    layer.definitionExpression = originalFilter;
+ 		                }
+ 		            } else {
+ 		                // If we never stored a filter (e.g., layer added mid-session),
+ 		                // it's safest to clear it.
+ 		                if (layer.definitionExpression) {
+ 		                    layer.definitionExpression = "";
+ 		                }
+ 		            }
+ 		        });
+ 		        console.log('WO Dashboard: Restored initial layer filters.');
+ 		    } catch (error) {
+ 		        console.warn("Error restoring filters during cleanup:", error);
+ 		    }
+ 		
+ 		    // Clean up global functions
+ 		    if (window.selectWOForDrilldown) {
+ 		        delete window.selectWOForDrilldown;
+ 		    }
+ 		    if (window.filterMapByLayer) {
+ 		        delete window.filterMapByLayer;
+ 		    }
+ 		    if (window.clearMapFilters) {
+ 		        delete window.clearMapFilters;
+ 		    }
+ 		
+ 		    // Remove styles
+ 		    if (styles && styles.parentNode) {
+ 		        styles.parentNode.removeChild(styles);
+ 		    }
+ 		
+ 		    toolBox.remove();
+ 		    console.log('WO Dashboard Tool cleaned up');
+ 		}
         
         // Initialize
         loadPurchaseOrders();
