@@ -101,8 +101,6 @@
                         layer.labelingInfo = originalLabelingInfo;
                         layer.labelsVisible = false;
                     }
-                    
-                    // Don't change layer visibility - leave as is
                 }
             }
             
@@ -368,6 +366,14 @@
             for (const fiber of fibers) {
                 if (!fiber.geometry) continue;
                 
+                // Skip fibers with workflow_status = 'NA'
+                if (fiber.attributes.workflow_status === 'NA') {
+                    if (window.fiberDebug) {
+                        console.log('Skipping fiber with workflow_status=NA:', fiber.attributes.gis_id || fiber.attributes.objectid);
+                    }
+                    continue;
+                }
+                
                 const minDistance = getMinimumFiberDistance(location, fiber);
                 
                 if (minDistance <= tolerance) {
@@ -621,7 +627,7 @@
             if (poleLayer) {
                 promises.push(poleLayer.queryFeatures({
                     where: workOrderFilter,
-                    outFields: ["objectid", "gis_id", "globalid"],
+                    outFields: ["objectid", "gis_id", "globalid", "workflow_status"],
                     returnGeometry: true
                 }));
             } else {
@@ -631,7 +637,7 @@
             if (vaultLayer) {
                 promises.push(vaultLayer.queryFeatures({
                     where: workOrderFilter,
-                    outFields: ["objectid", "gis_id", "globalid"],
+                    outFields: ["objectid", "gis_id", "globalid", "workflow_status"],
                     returnGeometry: true
                 }));
             } else {
@@ -640,7 +646,7 @@
             
             promises.push(fiberLayer.queryFeatures({
                 where: workOrderFilter,
-                outFields: ["objectid", "gis_id", "globalid"],
+                outFields: ["objectid", "gis_id", "globalid", "workflow_status"],
                 returnGeometry: true
             }));
             
@@ -652,28 +658,48 @@
             
             try {
                 const results = await Promise.all(promises);
-                const poles = results[0].features;
-                const vaults = results[1].features;
-                const fibers = results[2].features;
+                const allPoles = results[0].features;
+                const allVaults = results[1].features;
+                const allFibers = results[2].features;
                 const slacks = results[3].features;
                 
-                updateStatus(`Found: ${poles.length} poles, ${vaults.length} vaults, ${fibers.length} fibers, ${slacks.length} slack loops`);
+                // Filter out poles with workflow_status = 'NA'
+                const poles = allPoles.filter(p => p.attributes.workflow_status !== 'NA');
+                const excludedPoles = allPoles.length - poles.length;
+                
+                // Filter out vaults with workflow_status = 'NA'
+                const vaults = allVaults.filter(v => v.attributes.workflow_status !== 'NA');
+                const excludedVaults = allVaults.length - vaults.length;
+                
+                // Filter out fibers with workflow_status = 'NA'
+                const fibers = allFibers.filter(f => f.attributes.workflow_status !== 'NA');
+                const excludedFibers = allFibers.length - fibers.length;
+                
+                const excludedLocations = excludedPoles + excludedVaults;
+                
+                let statusMessage = `Found: ${poles.length} poles`;
+                if (excludedPoles > 0) statusMessage += ` (${excludedPoles} excluded)`;
+                statusMessage += `, ${vaults.length} vaults`;
+                if (excludedVaults > 0) statusMessage += ` (${excludedVaults} excluded)`;
+                statusMessage += `, ${fibers.length} fibers`;
+                if (excludedFibers > 0) statusMessage += ` (${excludedFibers} excluded)`;
+                statusMessage += `, ${slacks.length} slack loops`;
+                
+                updateStatus(statusMessage);
                 
                 if (debugMode) {
-                    console.log("Fiber geometries sample:", fibers.slice(0, 3).map(f => ({
-                        id: f.attributes.gis_id || f.attributes.objectid,
-                        geometryType: f.geometry ? f.geometry.type : 'No geometry',
-                        hasPaths: f.geometry && f.geometry.paths ? `Yes (${f.geometry.paths.length})` : 'No',
-                        hasRings: f.geometry && f.geometry.rings ? `Yes (${f.geometry.rings.length})` : 'No',
-                        hasExtent: f.geometry && f.geometry.extent ? 'Yes' : 'No'
-                    })));
+                    console.log("Analysis starting with filtered data:");
+                    console.log("  Poles:", poles.length, "Excluded:", excludedPoles);
+                    console.log("  Vaults:", vaults.length, "Excluded:", excludedVaults);
+                    console.log("  Fibers:", fibers.length, "Excluded:", excludedFibers);
+                    console.log("  Total locations excluded with status=NA:", excludedLocations);
                 }
                 
                 const allLocations = poles.concat(vaults);
                 
                 if (allLocations.length === 0) {
-                    updateResults('<p style="color:red;font-size:10px;">No poles or vaults found for this work order.</p>');
-                    updateStatus("Analysis complete - no locations found");
+                    updateResults('<p style="color:red;font-size:10px;">No active poles or vaults found for this work order (all may have status=NA).</p>');
+                    updateStatus("Analysis complete - no active locations found");
                     return;
                 }
                 
@@ -789,8 +815,16 @@
                 
                 const totalIssues = problems.length + missingSlackLoops.length;
                 let formattedResults = '<h4 style="margin:8px 0 4px 0;font-size:11px;">Analysis Summary:</h4>';
-                formattedResults += `<p style="font-size:10px;margin:2px 0;">Locations: ${allLocations.length} (${poles.length} poles, ${vaults.length} vaults)</p>`;
-                formattedResults += `<p style="font-size:10px;margin:2px 0;">Fiber Cables: ${fibers.length}</p>`;
+                
+                // Show location counts with exclusions
+                let locationSummary = `<p style="font-size:10px;margin:2px 0;">Locations: ${allLocations.length} (${poles.length} poles`;
+                if (excludedPoles > 0) locationSummary += `, ${excludedPoles} excluded`;
+                locationSummary += `; ${vaults.length} vaults`;
+                if (excludedVaults > 0) locationSummary += `, ${excludedVaults} excluded`;
+                locationSummary += `)</p>`;
+                formattedResults += locationSummary;
+                
+                formattedResults += `<p style="font-size:10px;margin:2px 0;">Fiber Cables: ${fibers.length}${excludedFibers > 0 ? ` (${excludedFibers} excluded with status=NA)` : ''}</p>`;
                 formattedResults += `<p style="font-size:10px;margin:2px 0;">Slack Loops: ${slacks.length}</p>`;
                 formattedResults += `<p style="font-size:10px;margin:2px 0;">Tolerances: Fiber ${fiberTolerance}m, Slack Loop ${slackTolerance}m</p>`;
                 
@@ -852,7 +886,7 @@
                 configureSlackLoopLabeling(slackLayer, selectedWorkOrder);
                 
                 if (totalIssues === 0) {
-                    formattedResults += '<p style="color:green;font-size:10px;margin:8px 0;">✓ No issues found! All locations with fibers have properly configured slack loops.</p>';
+                    formattedResults += '<p style="color:green;font-size:10px;margin:8px 0;">✓ No issues found! All active locations with fibers have properly configured slack loops.</p>';
                 }
                 
                 if (totalIssues > 0) {
@@ -881,8 +915,6 @@
                         layer.labelingInfo = originalLabelingInfo;
                         layer.labelsVisible = false;
                     }
-                    
-                    // Don't change layer visibility on cleanup
                 }
             }
             
