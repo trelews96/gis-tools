@@ -343,7 +343,21 @@
             }
         }
 
-        async function checkIsolatedVaults() {
+       async function checkIsolatedVaults() {
+            // Load the geometryEngine module
+            let geometryEngine;
+            try {
+                [geometryEngine] = await new Promise((resolve, reject) => {
+                    require(["esri/geometry/geometryEngine"], (engine) => {
+                        resolve([engine]);
+                    }, (err) => reject(err));
+                });
+            } catch (err) {
+                updateStatus("Error: Could not load 'esri/geometry/geometryEngine'.", 'error');
+                console.error("Error loading geometryEngine:", err);
+                return;
+            }
+
             try {
                 updateStatus("Loading layers...");
                 isolatedVaults = [];
@@ -384,18 +398,79 @@
                     return;
                 }
                 await vaultLayer.load();
+                const vaultOidField = vaultLayer.objectIdField;
 
-                // Query *filtered* vault features
-                updateStatus("Querying vault features...");
-                const vaultResult = await vaultLayer.queryFeatures({
-                    where: filterWhereClause, // <<< FIX: Apply filters to the vault query
-                    outFields: ["objectid", "gis_id", "globalid", "purchase_order_id", "workorder_id"],
-                    returnGeometry: true
+                // --- NEW EFFICIENT LOGIC (Exclusion Method) ---
+
+                // 1. Get all *filtered* fiber line geometries
+                updateStatus("Querying filtered fiber lines...");
+                const fiberResult = await fiberLayer.queryFeatures({
+                    where: filterWhereClause,
+                    returnGeometry: true,
+                    outFields: [] // We only need the geometry
                 });
 
+                let finalIsolationQuery;
+
+                if (fiberResult.features.length === 0) {
+                    // No fibers match the filter. Therefore, *all* vaults matching the filter are isolated.
+                    updateStatus("No fiber lines found with filters. Finding all matching vaults...", 'warning');
+                    
+                    finalIsolationQuery = {
+                        where: filterWhereClause,
+                        outFields: ["objectid", "gis_id", "globalid", "purchase_order_id", "workorder_id"],
+                        returnGeometry: true
+                    };
+
+                } else {
+                    // 2. Unify fiber lines into one geometry
+                    updateStatus(`Unifying ${fiberResult.features.length} fiber lines...`);
+                    const fiberGeometries = fiberResult.features.map(f => f.geometry);
+                    const unifiedFiberGeometry = geometryEngine.union(fiberGeometries);
+
+                    if (!unifiedFiberGeometry) {
+                         updateStatus("Error: Could not unify fiber geometries.", 'error');
+                         return;
+                    }
+
+                    // 3. Query 1: Find all vaults that *INTERSECT* the buffer
+                    updateStatus(`Finding vaults *near* fiber lines...`);
+                    const intersectQuery = {
+                        where: filterWhereClause, // Apply filters to vaults
+                        geometry: unifiedFiberGeometry,
+                        distance: distance,
+                        units: "feet",
+                        spatialRelationship: "intersects", // Find vaults *inside* the buffer
+                        outFields: [vaultOidField],      // We ONLY need their IDs
+                        returnGeometry: false
+                    };
+                    
+                    const intersectResult = await vaultLayer.queryFeatures(intersectQuery);
+                    const intersectingObjectIds = intersectResult.features.map(f => f.attributes[vaultOidField]);
+
+                    // 4. Query 2: Find all vaults that are *NOT IN* the intersecting list
+                    updateStatus(`Finding isolated vaults...`);
+                    let finalWhereClause = filterWhereClause;
+
+                    if (intersectingObjectIds.length > 0) {
+                        // This is the key: find vaults that are NOT in the "good" list
+                        finalWhereClause += ` AND ${vaultOidField} NOT IN (${intersectingObjectIds.join(',')})`;
+                    }
+                    // If intersectingObjectIds.length is 0, the base where clause is correct
+                    // (all filtered vaults are isolated)
+
+                    finalIsolationQuery = {
+                        where: finalWhereClause,
+                        outFields: ["objectid", "gis_id", "globalid", "purchase_order_id", "workorder_id"],
+                        returnGeometry: true
+                    };
+                }
+
+                // 5. Run the single, final query for isolated vaults
+                const vaultResult = await vaultLayer.queryFeatures(finalIsolationQuery);
+                
                 if (vaultResult.features.length === 0) {
-                    // Updated status message for clarity
-                    updateStatus("No vault features found with the selected filters.", 'warning');
+                    updateStatus("No isolated vaults found with the selected filters.", 'success');
                     summarySection.style.display = 'none';
                     navigationSection.style.display = 'none';
                     resultsSection.style.display = 'none';
@@ -403,51 +478,25 @@
                     return;
                 }
 
-                updateStatus(`Analyzing ${vaultResult.features.length} vaults...`);
-
-                // Check each vault
-                let processedCount = 0;
-                for (const vault of vaultResult.features) {
-                    processedCount++;
-                    if (processedCount % 50 === 0) {
-                        updateStatus(`Analyzing vault ${processedCount} of ${vaultResult.features.length}...`);
-                    }
-
-                    if (!vault.geometry) continue;
-
-                    // Query for any fiber lines within the distance
-                    const fiberQuery = {
-                        geometry: vault.geometry,
-                        distance: distance,
-                        units: "feet",
-                        spatialRelationship: "intersects", // Find any fiber that intersects the buffer
-                        where: filterWhereClause, // Apply the same filters to the fiber lines
-                        returnGeometry: false,
-                        returnCountOnly: true // We only care if any exist
-                    };
-
-                    const fiberCountResult = await fiberLayer.queryFeatureCount(fiberQuery);
-
-                    // If count is 0, no fiber lines are within the distance
-                    if (fiberCountResult === 0) {
-                        isolatedVaults.push({
-                            objectId: vault.attributes.objectid,
-                            gisId: vault.attributes.gis_id || "N/A",
-                            globalId: vault.attributes.globalid || "N/A",
-                            purchaseOrderId: vault.attributes.purchase_order_id || "",
-                            workOrderId: vault.attributes.workorder_id || "",
-                            geometry: vault.geometry,
-                            x: vault.geometry.x.toFixed(2),
-                            y: vault.geometry.y.toFixed(2)
-                        });
-                    }
-                }
+                // 6. Process the results (this is all client-side now)
+                isolatedVaults = vaultResult.features.map(vault => ({
+                    objectId: vault.attributes.objectid,
+                    gisId: vault.attributes.gis_id || "N/A",
+                    globalId: vault.attributes.globalid || "N/A",
+                    purchaseOrderId: vault.attributes.purchase_order_id || "",
+                    workOrderId: vault.attributes.workorder_id || "",
+                    geometry: vault.geometry,
+                    x: vault.geometry.x.toFixed(2),
+                    y: vault.geometry.y.toFixed(2)
+                }));
+                
+                // --- END NEW LOGIC ---
 
                 // Display results
                 displayResults();
 
                 if (isolatedVaults.length === 0) {
-                    updateStatus(`✅ All ${vaultResult.features.length} vaults are near fiber lines.`, 'success');
+                    updateStatus(`✅ All matching vaults are near fiber lines.`, 'success');
                 } else {
                     updateStatus(`Found ${isolatedVaults.length} isolated vaults.`, 'warning');
                 }
@@ -457,7 +506,6 @@
                 updateStatus("Error: " + (error.message || error), 'error');
             }
         }
-
         function displayResults() {
             if (isolatedVaults.length === 0) {
                 summarySection.style.display = 'none';
