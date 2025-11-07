@@ -353,8 +353,8 @@
                 const selectedPurchaseOrder = purchaseOrderSelect.value;
                 const selectedWorkOrder = workOrderSelect.value;
 
-                // Build where clause for the *fiber* layer
-                let fiberWhereClause = "1=1";
+                // Build where clause based on filters
+                let filterWhereClause = "1=1";
                 const filters = [];
 
                 if (selectedPurchaseOrder) {
@@ -366,7 +366,7 @@
                 }
 
                 if (filters.length > 0) {
-                    fiberWhereClause = filters.join(" AND ");
+                    filterWhereClause = filters.join(" AND ");
                 }
 
                 // Get fiber layer
@@ -385,16 +385,17 @@
                 }
                 await vaultLayer.load();
 
-                // Query all vault features
+                // Query *filtered* vault features
                 updateStatus("Querying vault features...");
                 const vaultResult = await vaultLayer.queryFeatures({
-                    where: "1=1", // Check all vaults
+                    where: filterWhereClause, // <<< FIX: Apply filters to the vault query
                     outFields: ["objectid", "gis_id", "globalid", "purchase_order_id", "workorder_id"],
                     returnGeometry: true
                 });
 
                 if (vaultResult.features.length === 0) {
-                    updateStatus("No vault features found.", 'warning');
+                    // Updated status message for clarity
+                    updateStatus("No vault features found with the selected filters.", 'warning');
                     summarySection.style.display = 'none';
                     navigationSection.style.display = 'none';
                     resultsSection.style.display = 'none';
@@ -420,7 +421,7 @@
                         distance: distance,
                         units: "feet",
                         spatialRelationship: "intersects", // Find any fiber that intersects the buffer
-                        where: fiberWhereClause, // Apply the PO/WO filters to the fiber lines
+                        where: filterWhereClause, // Apply the same filters to the fiber lines
                         returnGeometry: false,
                         returnCountOnly: true // We only care if any exist
                     };
