@@ -367,21 +367,35 @@
                 const selectedPurchaseOrder = purchaseOrderSelect.value;
                 const selectedWorkOrder = workOrderSelect.value;
 
-                // Build where clause based on filters
-                let filterWhereClause = "1=1";
-                const filters = [];
+                // --- MODIFICATION: Create two separate filter clauses ---
+
+                // Build where clause for FIBER (PO and WO)
+                let fiberFilterWhereClause = "1=1";
+                const fiberFilters = [];
 
                 if (selectedPurchaseOrder) {
-                    filters.push(`purchase_order_id = '${selectedPurchaseOrder}'`);
+                    fiberFilters.push(`purchase_order_id = '${selectedPurchaseOrder}'`);
                 }
 
                 if (selectedWorkOrder) {
-                    filters.push(`workorder_id = '${selectedWorkOrder}'`);
+                    fiberFilters.push(`workorder_id = '${selectedWorkOrder}'`);
                 }
 
-                if (filters.length > 0) {
-                    filterWhereClause = filters.join(" AND ");
+                if (fiberFilters.length > 0) {
+                    fiberFilterWhereClause = fiberFilters.join(" AND ");
                 }
+
+                // Build where clause for VAULTS (PO, WO, and workflow_stage)
+                let vaultFilterWhereClause = fiberFilterWhereClause; // Start with PO/WO
+                const vaultOnlyFilter = "workflow_stage = 'OSP_CONST'";
+
+                if (vaultFilterWhereClause === "1=1") {
+                    vaultFilterWhereClause = vaultOnlyFilter;
+                } else {
+                    vaultFilterWhereClause += ` AND ${vaultOnlyFilter}`;
+                }
+                // --- END MODIFICATION ---
+
 
                 // Get fiber layer
                 const fiberLayer = mapView.map.allLayers.find(l => l.layerId === FIBER_LAYER_ID);
@@ -405,7 +419,7 @@
                 // 1. Get all *filtered* fiber line geometries
                 updateStatus("Querying filtered fiber lines...");
                 const fiberResult = await fiberLayer.queryFeatures({
-                    where: filterWhereClause,
+                    where: fiberFilterWhereClause, // <-- Use fiber-specific filter
                     returnGeometry: true,
                     outFields: [] // We only need the geometry
                 });
@@ -413,11 +427,11 @@
                 let finalIsolationQuery;
 
                 if (fiberResult.features.length === 0) {
-                    // No fibers match the filter. Therefore, *all* vaults matching the filter are isolated.
+                    // No fibers match the filter. Therefore, *all* vaults matching the vault filter are isolated.
                     updateStatus("No fiber lines found with filters. Finding all matching vaults...", 'warning');
                     
                     finalIsolationQuery = {
-                        where: filterWhereClause,
+                        where: vaultFilterWhereClause, // <-- Use vault-specific filter
                         outFields: ["objectid", "gis_id", "globalid", "purchase_order_id", "workorder_id"],
                         returnGeometry: true
                     };
@@ -436,7 +450,7 @@
                     // 3. Query 1: Find all vaults that *INTERSECT* the buffer
                     updateStatus(`Finding vaults *near* fiber lines...`);
                     const intersectQuery = {
-                        where: filterWhereClause, // Apply filters to vaults
+                        where: vaultFilterWhereClause, // <-- Use vault-specific filter
                         geometry: unifiedFiberGeometry,
                         distance: distance,
                         units: "feet",
@@ -450,7 +464,7 @@
 
                     // 4. Query 2: Find all vaults that are *NOT IN* the intersecting list
                     updateStatus(`Finding isolated vaults...`);
-                    let finalWhereClause = filterWhereClause;
+                    let finalWhereClause = vaultFilterWhereClause; // <-- Start with vault-specific filter
 
                     if (intersectingObjectIds.length > 0) {
                         // This is the key: find vaults that are NOT in the "good" list
