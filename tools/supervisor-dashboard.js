@@ -43,6 +43,8 @@
         let supervisorData = null;
         let isProcessing = false;
         let dateRangeMode = 'weekly'; // 'daily' or 'weekly'
+        let selectedWorkOrders = [];
+        let allWorkOrders = [];
         
         // Styles
         const styles = document.createElement('style');
@@ -90,6 +92,14 @@
             }
             .supervisor-row:hover {
                 background: #f5f5f5;
+            }
+            .dropdown-option {
+                padding: 6px;
+                cursor: pointer;
+                border-bottom: 1px solid #eee;
+            }
+            .dropdown-option:hover {
+                background-color: #e3f2fd !important;
             }
         `;
         document.head.appendChild(styles);
@@ -144,6 +154,22 @@
             </div>
             
             <div style="background:#f8f9fa;padding:10px;border-radius:4px;margin-bottom:12px;">
+                <label style="font-weight:bold;margin-bottom:6px;display:block;">🎯 Filters (Optional)</label>
+                
+                <label style="display:block;margin-bottom:4px;">Work Order:</label>
+                <div style="position:relative;margin-bottom:8px;">
+                    <div id="workOrderDropdown" style="width:100%;border:1px solid #ccc;padding:4px;background:#fff;cursor:pointer;min-height:20px;">
+                        <span id="workOrderPlaceholder" style="color:#999;"><span class="spinner"></span>Loading...</span>
+                    </div>
+                    <div id="workOrderOptions" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #ccc;border-top:none;max-height:150px;overflow-y:auto;z-index:1000;">
+                        <div style="padding:4px;background:#f5f5f5;border-bottom:1px solid #ddd;display:flex;gap:4px;">
+                            <button id="selectAllWO" style="flex:1;padding:4px;font-size:11px;">All</button>
+                            <button id="clearAllWO" style="flex:1;padding:4px;font-size:11px;">Clear</button>
+                        </div>
+                        <div id="workOrderOptionsList"></div>
+                    </div>
+                </div>
+                
                 <label style="font-weight:bold;margin-bottom:6px;display:block;">📅 Date Range</label>
                 
                 <div style="display:flex;gap:8px;margin-bottom:8px;">
@@ -175,8 +201,11 @@
                 </div>
                 
                 <label style="cursor:pointer;display:block;margin-bottom:8px;">
-                    <input type="checkbox" id="includeAttachments"> Include Photo Compliance (slower, queries attachments)
+                    <input type="checkbox" id="includeAttachments"> Include Photo Compliance (slower - queries all attachments)
                 </label>
+                <div style="font-size:10px;color:#666;margin-bottom:8px;padding-left:20px;">
+                    Note: Querying attachments can take 10-30 seconds per layer depending on feature count.
+                </div>
                 
                 <button id="loadDataBtn" style="width:100%;padding:8px;font-size:12px;background:#3367d6;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:bold;">
                     🔄 Load Supervisor Data
@@ -244,6 +273,125 @@
         const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
         $("#startDate").value = formatDateForInput(thirtyDaysAgo);
         $("#endDate").value = formatDateForInput(today);
+        
+        // Load work orders
+        async function loadWorkOrders() {
+            try {
+                const allFL = mapView.map.allLayers.filter(l => l.type === "feature");
+                const ugLayer = allFL.find(l => l.layerId === 42050);
+                
+                if (!ugLayer) {
+                    $("#workOrderPlaceholder").innerHTML = "Underground Span layer not found";
+                    return;
+                }
+                
+                await ugLayer.load();
+                const uniqueQuery = await ugLayer.queryFeatures({
+                    where: "workorder_id IS NOT NULL AND workorder_id <> ''",
+                    outFields: ["workorder_id"],
+                    returnGeometry: false,
+                    returnDistinctValues: true
+                });
+                
+                const uniqueValues = [...new Set(
+                    uniqueQuery.features
+                        .map(f => f.attributes.workorder_id)
+                        .filter(v => v && v.toString().trim())
+                )].sort();
+                
+                allWorkOrders = uniqueValues.map(value => ({
+                    code: value,
+                    name: value
+                }));
+                
+                if (!allWorkOrders.length) {
+                    $("#workOrderPlaceholder").innerHTML = "No work orders found";
+                    return;
+                }
+                
+                const optionsHtml = allWorkOrders.map(wo => `
+                    <div class="workorder-option dropdown-option" data-value="${wo.code.toString().replace(/"/g, '&quot;')}" 
+                         style="padding:6px;cursor:pointer;border-bottom:1px solid #eee;">
+                        <input type="checkbox" style="margin-right:6px;"> ${wo.name}
+                    </div>
+                `).join('');
+                
+                $("#workOrderOptionsList").innerHTML = optionsHtml;
+                $("#workOrderPlaceholder").innerHTML = "All Work Orders";
+                
+                $("#selectAllWO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedWorkOrders = allWorkOrders.map(wo => wo.code.toString());
+                    $("#workOrderOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+                    updateWorkOrderDropdownDisplay();
+                };
+                
+                $("#clearAllWO").onclick = (e) => {
+                    e.stopPropagation();
+                    selectedWorkOrders = [];
+                    $("#workOrderOptionsList").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+                    updateWorkOrderDropdownDisplay();
+                };
+                
+                $("#workOrderDropdown").onclick = () => {
+                    $("#workOrderOptions").style.display = $("#workOrderOptions").style.display === 'none' ? 'block' : 'none';
+                };
+                
+                $("#workOrderOptionsList").addEventListener('click', (e) => {
+                    if (e.target.classList.contains('workorder-option') || e.target.type === 'checkbox') {
+                        const option = e.target.classList.contains('workorder-option') ? e.target : e.target.parentElement;
+                        const checkbox = option.querySelector('input[type="checkbox"]');
+                        const value = option.dataset.value;
+                        
+                        checkbox.checked = !checkbox.checked;
+                        
+                        if (checkbox.checked) {
+                            if (!selectedWorkOrders.includes(value)) {
+                                selectedWorkOrders.push(value);
+                            }
+                        } else {
+                            selectedWorkOrders = selectedWorkOrders.filter(w => w !== value);
+                        }
+                        
+                        updateWorkOrderDropdownDisplay();
+                        e.stopPropagation();
+                    }
+                });
+                
+            } catch (error) {
+                console.error("Error loading work orders:", error);
+                $("#workOrderPlaceholder").innerHTML = "Error loading";
+            }
+        }
+        
+        function updateWorkOrderDropdownDisplay() {
+            const placeholder = $("#workOrderPlaceholder");
+            const total = allWorkOrders.length;
+            const selected = selectedWorkOrders.length;
+            
+            if (selected === 0 || selected === total) {
+                placeholder.innerHTML = "All Work Orders";
+                placeholder.style.color = "#333";
+            } else if (selected === 1) {
+                const selectedWO = allWorkOrders.find(w => w.code.toString() === selectedWorkOrders[0]);
+                placeholder.innerHTML = selectedWO ? selectedWO.name : selectedWorkOrders[0];
+                placeholder.style.color = "#333";
+            } else {
+                placeholder.innerHTML = `${selected} of ${total} selected`;
+                placeholder.style.color = "#333";
+            }
+        }
+        
+        // Build work order filter clause
+        function buildWorkOrderFilter() {
+            if (selectedWorkOrders.length > 0 && selectedWorkOrders.length < allWorkOrders.length) {
+                const woClause = selectedWorkOrders
+                    .map(wo => `workorder_id='${wo.toString().replace(/'/g, "''")}'`)
+                    .join(' OR ');
+                return `(${woClause})`;
+            }
+            return "1=1";
+        }
         
         // Date preset handlers
         toolBox.querySelectorAll('.date-preset').forEach(btn => {
@@ -347,39 +495,43 @@
                 includeAttachments: includeAttachments
             };
             
-            // Build date clause - use simpler date format
-            let dateClause = "";
+            // Build work order filter
+            const workOrderFilter = buildWorkOrderFilter();
+            
+            // Build date clauses for different date fields
+            let installationDateClause = "";
+            let createdDateClause = "";
+            
             if (!isAllTime && startDate && endDate) {
-                // Convert to epoch milliseconds for compatibility
-                const startDate_obj = new Date(startDate + 'T00:00:00');
-                const endDate_obj = new Date(endDate + 'T23:59:59');
-                const startMs = startDate_obj.getTime();
-                const endMs = endDate_obj.getTime();
-                dateClause = ` AND installation_date >= ${startMs} AND installation_date <= ${endMs}`;
+                // Use date 'YYYY-MM-DD' format which is more compatible
+                installationDateClause = ` AND installation_date >= date '${startDate}' AND installation_date <= date '${endDate}'`;
+                createdDateClause = ` AND created_date >= date '${startDate}' AND created_date <= date '${endDate}'`;
             }
             
-            console.log('Date clause:', dateClause);
+            console.log('Work order filter:', workOrderFilter);
+            console.log('Installation date clause:', installationDateClause);
+            console.log('Created date clause:', createdDateClause);
             console.log('Include attachments:', includeAttachments);
             
             // Get supervisor domain maps
             const supervisorDomainMap = await getSupervisorDomain(allFL);
             console.log('Found supervisors in domain:', supervisorDomainMap.size);
             
-            // 1. Load Underground Span data
+            // 1. Load Underground Span data (uses installation_date)
             updateStatus("Loading underground span data...", "processing");
-            await loadUndergroundSpanData(allFL, data, dateClause, supervisorDomainMap, includeAttachments);
+            await loadUndergroundSpanData(allFL, data, workOrderFilter, installationDateClause, supervisorDomainMap, includeAttachments);
             
-            // 2. Load Vault data
+            // 2. Load Vault data (uses installation_date)
             updateStatus("Loading vault data...", "processing");
-            await loadVaultData(allFL, data, dateClause, supervisorDomainMap, includeAttachments);
+            await loadVaultData(allFL, data, workOrderFilter, installationDateClause, supervisorDomainMap, includeAttachments);
             
-            // 3. Load Pothole data
+            // 3. Load Pothole data (uses created_date)
             updateStatus("Loading pothole data...", "processing");
-            await loadPotholeData(allFL, data, dateClause, supervisorDomainMap, includeAttachments);
+            await loadPotholeData(allFL, data, workOrderFilter, createdDateClause, supervisorDomainMap, includeAttachments);
             
-            // 4. Load Gig data
+            // 4. Load Gig data (uses created_date)
             updateStatus("Loading gig data...", "processing");
-            await loadGigData(allFL, data, dateClause, supervisorDomainMap);
+            await loadGigData(allFL, data, workOrderFilter, createdDateClause, supervisorDomainMap);
             
             // Calculate aggregated metrics
             calculateAggregatedMetrics(data);
@@ -434,7 +586,7 @@
         }
         
         // Load Underground Span data
-        async function loadUndergroundSpanData(allFL, data, dateClause, supervisorDomainMap, includeAttachments) {
+        async function loadUndergroundSpanData(allFL, data, workOrderFilter, dateClause, supervisorDomainMap, includeAttachments) {
             const layer = allFL.find(l => l.layerId === targetLayers.undergroundSpan.layerId);
             if (!layer) {
                 console.warn('Underground Span layer not found');
@@ -468,7 +620,7 @@
                 return;
             }
             
-            const whereClause = `supervisor IS NOT NULL${dateClause}`;
+            const whereClause = `${workOrderFilter} AND supervisor IS NOT NULL${dateClause}`;
             console.log('Underground Span where clause:', whereClause);
             
             try {
@@ -480,25 +632,21 @@
                 
                 console.log('Underground Span query returned', query.features.length, 'features');
             
-            // Query attachments only if requested
+            // Query attachments only if requested - query all at once (no batching)
             const attachmentsByFeature = new Map();
             if (includeAttachments && layer.capabilities?.operations?.supportsQueryAttachments) {
                 try {
-                    console.log('Querying attachments for Underground Span...');
+                    updateStatus("Querying Underground Span attachments...", "processing");
+                    console.log('Querying attachments for Underground Span (all at once)...');
                     const objectIds = query.features.map(f => f.attributes.objectid);
                     
-                    // Batch attachment queries in chunks of 100 to avoid timeout
-                    const batchSize = 100;
-                    for (let i = 0; i < objectIds.length; i += batchSize) {
-                        const batch = objectIds.slice(i, i + batchSize);
-                        const attachmentQuery = await layer.queryAttachments({
-                            objectIds: batch,
-                            returnMetadata: false
-                        });
-                        
-                        for (const [oid, attachments] of Object.entries(attachmentQuery)) {
-                            attachmentsByFeature.set(parseInt(oid), attachments.length);
-                        }
+                    const attachmentQuery = await layer.queryAttachments({
+                        objectIds: objectIds,
+                        returnMetadata: false
+                    });
+                    
+                    for (const [oid, attachments] of Object.entries(attachmentQuery)) {
+                        attachmentsByFeature.set(parseInt(oid), attachments.length);
                     }
                     console.log('Attachments queried for', attachmentsByFeature.size, 'features');
                 } catch (err) {
@@ -557,7 +705,7 @@
         }
         
         // Load Vault data
-        async function loadVaultData(allFL, data, dateClause, supervisorDomainMap, includeAttachments) {
+        async function loadVaultData(allFL, data, workOrderFilter, dateClause, supervisorDomainMap, includeAttachments) {
             const layer = allFL.find(l => l.layerId === targetLayers.vault.layerId);
             if (!layer) {
                 console.warn('Vault layer not found');
@@ -584,7 +732,7 @@
                 });
             }
             
-            const whereClause = `supervisor IS NOT NULL${dateClause}`;
+            const whereClause = `${workOrderFilter} AND supervisor IS NOT NULL${dateClause}`;
             console.log('Vault where clause:', whereClause);
             
             try {
@@ -596,25 +744,21 @@
                 
                 console.log('Vault query returned', query.features.length, 'features');
             
-            // Query attachments only if requested
+            // Query attachments only if requested - query all at once (no batching)
             const attachmentsByFeature = new Map();
             if (includeAttachments && layer.capabilities?.operations?.supportsQueryAttachments) {
                 try {
-                    console.log('Querying attachments for Vault...');
+                    updateStatus("Querying Vault attachments...", "processing");
+                    console.log('Querying attachments for Vault (all at once)...');
                     const objectIds = query.features.map(f => f.attributes.objectid);
                     
-                    // Batch attachment queries in chunks of 100 to avoid timeout
-                    const batchSize = 100;
-                    for (let i = 0; i < objectIds.length; i += batchSize) {
-                        const batch = objectIds.slice(i, i + batchSize);
-                        const attachmentQuery = await layer.queryAttachments({
-                            objectIds: batch,
-                            returnMetadata: false
-                        });
-                        
-                        for (const [oid, attachments] of Object.entries(attachmentQuery)) {
-                            attachmentsByFeature.set(parseInt(oid), attachments.length);
-                        }
+                    const attachmentQuery = await layer.queryAttachments({
+                        objectIds: objectIds,
+                        returnMetadata: false
+                    });
+                    
+                    for (const [oid, attachments] of Object.entries(attachmentQuery)) {
+                        attachmentsByFeature.set(parseInt(oid), attachments.length);
                     }
                     console.log('Attachments queried for', attachmentsByFeature.size, 'features');
                 } catch (err) {
@@ -672,7 +816,7 @@
         }
         
         // Load Pothole data
-        async function loadPotholeData(allFL, data, dateClause, supervisorDomainMap, includeAttachments) {
+        async function loadPotholeData(allFL, data, workOrderFilter, createdDateClause, supervisorDomainMap, includeAttachments) {
             const layer = allFL.find(l => l.layerId === targetLayers.pothole.layerId);
             if (!layer) {
                 console.warn('Pothole layer not found');
@@ -699,13 +843,7 @@
                 });
             }
             
-            // Use created_date for pothole instead of installation_date
-            let potholeDateClause = "";
-            if (dateClause) {
-                potholeDateClause = dateClause.replace(/installation_date/g, 'created_date');
-            }
-            
-            const whereClause = `supervisor IS NOT NULL${potholeDateClause}`;
+            const whereClause = `${workOrderFilter} AND supervisor IS NOT NULL${createdDateClause}`;
             console.log('Pothole where clause:', whereClause);
             
             try {
@@ -717,25 +855,21 @@
                 
                 console.log('Pothole query returned', query.features.length, 'features');
             
-            // Query attachments only if requested
+            // Query attachments only if requested - query all at once (no batching)
             const attachmentsByFeature = new Map();
             if (includeAttachments && layer.capabilities?.operations?.supportsQueryAttachments) {
                 try {
-                    console.log('Querying attachments for Pothole...');
+                    updateStatus("Querying Pothole attachments...", "processing");
+                    console.log('Querying attachments for Pothole (all at once)...');
                     const objectIds = query.features.map(f => f.attributes.objectid);
                     
-                    // Batch attachment queries in chunks of 100 to avoid timeout
-                    const batchSize = 100;
-                    for (let i = 0; i < objectIds.length; i += batchSize) {
-                        const batch = objectIds.slice(i, i + batchSize);
-                        const attachmentQuery = await layer.queryAttachments({
-                            objectIds: batch,
-                            returnMetadata: false
-                        });
-                        
-                        for (const [oid, attachments] of Object.entries(attachmentQuery)) {
-                            attachmentsByFeature.set(parseInt(oid), attachments.length);
-                        }
+                    const attachmentQuery = await layer.queryAttachments({
+                        objectIds: objectIds,
+                        returnMetadata: false
+                    });
+                    
+                    for (const [oid, attachments] of Object.entries(attachmentQuery)) {
+                        attachmentsByFeature.set(parseInt(oid), attachments.length);
                     }
                     console.log('Attachments queried for', attachmentsByFeature.size, 'features');
                 } catch (err) {
@@ -793,7 +927,7 @@
         }
         
         // Load Gig data
-        async function loadGigData(allFL, data, dateClause, supervisorDomainMap) {
+        async function loadGigData(allFL, data, workOrderFilter, createdDateClause, supervisorDomainMap) {
             const layer = allFL.find(l => l.layerId === targetLayers.gig.layerId);
             if (!layer) {
                 console.warn('Gig layer not found');
@@ -803,7 +937,7 @@
             await layer.load();
             console.log('Gig layer loaded, fields:', layer.fields.map(f => f.name));
             
-            const whereClause = `supervisor IS NOT NULL${dateClause}`;
+            const whereClause = `${workOrderFilter} AND supervisor IS NOT NULL${createdDateClause}`;
             console.log('Gig where clause:', whereClause);
             
             try {
@@ -1230,6 +1364,16 @@
         $("#closeTool").onclick = () => {
             window.gisToolHost.closeTool('supervisor-dashboard');
         };
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!toolBox.contains(e.target)) {
+                $("#workOrderOptions").style.display = 'none';
+            }
+        });
+        
+        // Initialize
+        loadWorkOrders();
         
         // Cleanup function
         function cleanup() {
