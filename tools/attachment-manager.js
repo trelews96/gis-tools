@@ -51,6 +51,7 @@
         let selectedFeatures = [];
         let selectedSingleFeature = null;
         let clickHandler = null;
+        let popupWatcher = null;
         let filesToUpload = [];
         let currentTargetLayerId = TARGET_LAYERS[0].id;
         let sketchViewModel = null;
@@ -114,6 +115,7 @@
             <div id="singleControls" style="display:none;">
                 <div style="margin-bottom:12px;color:#666;font-style:italic;">
                     Click on a <span id="layerHint">info point</span> feature to select it
+                    <div style="margin-top:4px;font-size:11px;color:#999;">💡 Tip: If multiple features exist at one location, use the map popup to select the desired feature</div>
                 </div>
                 
                 <div id="selectedFeatureInfo" style="margin-bottom:12px;padding:8px;background:#f5f5f5;border:1px solid #ddd;display:none;">
@@ -332,6 +334,10 @@
                             clickHandler.remove();
                             clickHandler = null;
                         }
+                        if (popupWatcher) {
+                            popupWatcher.remove();
+                            popupWatcher = null;
+                        }
                     } else {
                         $("#batchControls").style.display = "none";
                         $("#singleControls").style.display = "block";
@@ -508,7 +514,83 @@
             updateStatus(`Manual selection enabled. Click on ${getCurrentLayerInfo().name.toLowerCase()} features to select them.`);
         }
         
+        async function selectFeatureFromPopup(feature) {
+            try {
+                if (!feature || !feature.layer || feature.layer.layerId !== currentTargetLayerId) {
+                    return;
+                }
+                
+                updateStatus("Loading feature from popup...");
+                const layer = await getTargetLayer();
+                const objectId = feature.attributes[layer.objectIdField];
+                
+                // Query the feature to get complete attributes
+                const queryResult = await layer.queryFeatures({
+                    objectIds: [objectId],
+                    outFields: ['*'],
+                    returnGeometry: true
+                });
+                
+                if (queryResult.features.length === 0) {
+                    updateStatus("Could not load feature details.");
+                    return;
+                }
+                
+                const fullFeature = queryResult.features[0];
+                clearSingleSelection();
+                
+                selectedSingleFeature = {
+                    attributes: fullFeature.attributes,
+                    layer: layer,
+                    geometry: fullFeature.geometry
+                };
+                
+                const highlightGraphic = {
+                    geometry: fullFeature.geometry,
+                    symbol: {
+                        type: "simple-marker",
+                        color: [0, 255, 0, 0.8],
+                        size: 14,
+                        outline: {
+                            color: [0, 150, 0, 1],
+                            width: 3
+                        }
+                    }
+                };
+                mapView.graphics.add(highlightGraphic);
+                
+                const gisId = fullFeature.attributes.gis_id || fullFeature.attributes.GIS_ID || objectId;
+                
+                $("#featureDetails").innerHTML = `
+                    <strong>Layer:</strong> ${getCurrentLayerInfo().name}<br>
+                    <strong>GIS ID:</strong> ${gisId}<br>
+                    <strong>Object ID:</strong> ${objectId}
+                `;
+                $("#selectedFeatureInfo").style.display = "block";
+                $("#downloadSingleBtn").style.display = "inline-block";
+                $("#clearSingleBtn").style.display = "inline-block";
+                $("#uploadArea").style.display = "block";
+                
+                updateStatus("Feature selected from popup. You can now download or upload attachments.");
+            } catch (error) {
+                console.error("Error selecting feature from popup:", error);
+                updateStatus("Error: " + error.message);
+            }
+        }
+        
         function enableSingleSelection() {
+            // Watch for popup changes
+            if (popupWatcher) {
+                popupWatcher.remove();
+            }
+            
+            popupWatcher = mapView.popup.watch("selectedFeature", (newFeature) => {
+                if (newFeature && newFeature.layer && newFeature.layer.layerId === currentTargetLayerId) {
+                    selectFeatureFromPopup(newFeature);
+                }
+            });
+            
+            // Also enable click selection
             if (clickHandler) {
                 clickHandler.remove();
             }
@@ -523,16 +605,32 @@
                     
                     if (targetResults.length > 0) {
                         const graphic = targetResults[0].graphic;
+                        const layer = await getTargetLayer();
+                        const objectId = graphic.attributes[layer.objectIdField];
+                        
+                        // Query the feature to get complete attributes
+                        const queryResult = await layer.queryFeatures({
+                            objectIds: [objectId],
+                            outFields: ['*'],
+                            returnGeometry: true
+                        });
+                        
+                        if (queryResult.features.length === 0) {
+                            updateStatus("Could not load feature details.");
+                            return;
+                        }
+                        
+                        const fullFeature = queryResult.features[0];
                         clearSingleSelection();
                         
                         selectedSingleFeature = {
-                            attributes: graphic.attributes,
-                            layer: graphic.layer,
-                            geometry: graphic.geometry
+                            attributes: fullFeature.attributes,
+                            layer: layer,
+                            geometry: fullFeature.geometry
                         };
                         
                         const highlightGraphic = {
-                            geometry: graphic.geometry,
+                            geometry: fullFeature.geometry,
                             symbol: {
                                 type: "simple-marker",
                                 color: [0, 255, 0, 0.8],
@@ -545,8 +643,7 @@
                         };
                         mapView.graphics.add(highlightGraphic);
                         
-                        const objectId = graphic.attributes[graphic.layer.objectIdField];
-                        const gisId = graphic.attributes.gis_id || graphic.attributes.GIS_ID || objectId;
+                        const gisId = fullFeature.attributes.gis_id || fullFeature.attributes.GIS_ID || objectId;
                         
                         $("#featureDetails").innerHTML = `
                             <strong>Layer:</strong> ${getCurrentLayerInfo().name}<br>
@@ -568,7 +665,7 @@
                 }
             });
             
-            updateStatus(`Single mode enabled. Click on a ${getCurrentLayerInfo().name.toLowerCase()} feature to select it.`);
+            updateStatus(`Single mode enabled. Click on a ${getCurrentLayerInfo().name.toLowerCase()} feature or use the map popup to select.`);
         }
         
         function clearSingleSelection() {
@@ -1005,6 +1102,10 @@
             if (clickHandler) {
                 clickHandler.remove();
                 clickHandler = null;
+            }
+            if (popupWatcher) {
+                popupWatcher.remove();
+                popupWatcher = null;
             }
             if (sketchViewModel) {
                 sketchViewModel.destroy();
