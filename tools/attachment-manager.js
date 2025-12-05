@@ -24,13 +24,24 @@
         
         const mapView = utils.getMapView();
         
-        // Target layers configuration
+        // Target layers configuration - EXPANDED
         const TARGET_LAYERS = [
+            {id: 21050, name: "Info Point"},
+            {id: 22100, name: "GIG"},
+            {id: 22200, name: "Make Ready"},
+            {id: 23100, name: "Adder Line"},
+            {id: 23150, name: "Restoration Polygon"},
+            {id: 23250, name: "Pothole"},
+            {id: 41050, name: "Fiber Cable"},
             {id: 41150, name: "Splice Closure"},
-            {id: 42100, name: "Vault"}, 
+            {id: 41200, name: "Fiber Equipment"},
             {id: 41250, name: "Slack Loop"},
-            {id: 43150, name: "Pole"},
             {id: 42050, name: "Underground Span"},
+            {id: 42100, name: "Vault"},
+            {id: 43050, name: "Aerial Span"},
+            {id: 43150, name: "Pole"},
+            {id: 43200, name: "Riser"},
+            {id: 43250, name: "Anchor"},
             {id: 45000, name: "Equipment"}
         ];
         
@@ -102,7 +113,7 @@
             
             <div id="singleControls" style="display:none;">
                 <div style="margin-bottom:12px;color:#666;font-style:italic;">
-                    Click on a <span id="layerHint">splice closure</span> feature to select it
+                    Click on a <span id="layerHint">info point</span> feature to select it
                 </div>
                 
                 <div id="selectedFeatureInfo" style="margin-bottom:12px;padding:8px;background:#f5f5f5;border:1px solid #ddd;display:none;">
