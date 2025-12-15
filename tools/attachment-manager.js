@@ -1,5 +1,5 @@
 // tools/attachment-manager.js - Complete conversion from bookmarklet format
-// Feature Attachment Manager with upload/download capabilities
+// Feature Attachment Manager with upload/download capabilities and EXIF watermarking
 
 (function() {
     try {
@@ -105,6 +105,20 @@
                     <div><input type="radio" id="zipFile" name="downloadFormat" value="zip"><label for="zipFile" style="margin-left:4px;">Single ZIP File</label></div>
                 </div>
                 
+                <div style="margin-bottom:12px;">
+                    <label style="display:flex;align-items:center;cursor:pointer;">
+                        <input type="checkbox" id="watermarkImages" style="margin-right:8px;">
+                        <span>Add Metadata Watermark to Images</span>
+                    </label>
+                    <div style="font-size:10px;color:#666;margin-left:24px;margin-top:4px;">Adds timestamp, address, and GIS ID to image corner</div>
+                    <div style="margin-left:24px;margin-top:4px;">
+                        <label style="display:flex;align-items:center;cursor:pointer;">
+                            <input type="checkbox" id="includeStreetAddress" style="margin-right:8px;" checked>
+                            <span style="font-size:11px;">Include street address</span>
+                        </label>
+                    </div>
+                </div>
+                
                 <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
                     <button id="downloadBtn">Download All Attachments</button>
                     <button id="deselectBtn" style="display:none;">Deselect All</button>
@@ -116,6 +130,20 @@
                 <div style="margin-bottom:12px;color:#666;font-style:italic;">
                     Click on a <span id="layerHint">info point</span> feature to select it
                     <div style="margin-top:4px;font-size:11px;color:#999;">💡 Tip: If multiple features exist at one location, use the map popup to select the desired feature</div>
+                </div>
+                
+                <div style="margin-bottom:12px;">
+                    <label style="display:flex;align-items:center;cursor:pointer;">
+                        <input type="checkbox" id="watermarkImagesSingle" style="margin-right:8px;">
+                        <span>Add Metadata Watermark to Images</span>
+                    </label>
+                    <div style="font-size:10px;color:#666;margin-left:24px;margin-top:4px;">Adds timestamp, address, and GIS ID to image corner</div>
+                    <div style="margin-left:24px;margin-top:4px;">
+                        <label style="display:flex;align-items:center;cursor:pointer;">
+                            <input type="checkbox" id="includeStreetAddressSingle" style="margin-right:8px;" checked>
+                            <span style="font-size:11px;">Include street address</span>
+                        </label>
+                    </div>
                 </div>
                 
                 <div id="selectedFeatureInfo" style="margin-bottom:12px;padding:8px;background:#f5f5f5;border:1px solid #ddd;display:none;">
@@ -153,6 +181,326 @@
         
         function updateStatus(message) {
             status.textContent = message;
+        }
+        
+        // Reverse geocode coordinates to address
+        async function reverseGeocode(latitude, longitude, includeStreetAddress = true) {
+            try {
+                const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?f=json&location=${longitude},${latitude}&langCode=EN`;
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    console.warn('Reverse geocoding failed:', response.status);
+                    return null;
+                }
+                
+                const data = await response.json();
+                
+                if (data.address) {
+                    const addr = data.address;
+                    const parts = [];
+                    
+                    // Street address (if available and requested)
+                    if (includeStreetAddress && addr.Address) {
+                        parts.push(addr.Address);
+                    }
+                    
+                    // City, State ZIP
+                    const cityStateZip = [];
+                    if (addr.City) cityStateZip.push(addr.City);
+                    if (addr.Region) cityStateZip.push(addr.Region);
+                    if (addr.Postal) cityStateZip.push(addr.Postal);
+                    
+                    if (cityStateZip.length > 0) {
+                        parts.push(cityStateZip.join(', '));
+                    }
+                    
+                    // Return formatted address
+                    console.log('Geocoded address:', parts);
+                    return {
+                        fullAddress: parts.join('\n'),
+                        streetAddress: addr.Address || null,
+                        city: addr.City || null,
+                        state: addr.Region || null,
+                        zip: addr.Postal || null,
+                        country: addr.CountryCode || null
+                    };
+                }
+                
+                return null;
+            } catch (error) {
+                console.error('Reverse geocoding error:', error);
+                return null;
+            }
+        }
+        
+        // Load EXIF.js library
+        function loadExifLibrary() {
+            return new Promise((resolve, reject) => {
+                if (window.EXIF) {
+                    resolve(window.EXIF);
+                    return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/exif-js';
+                script.onload = () => resolve(window.EXIF);
+                script.onerror = () => reject(new Error('Failed to load EXIF library'));
+                document.head.appendChild(script);
+            });
+        }
+        
+        // Extract EXIF data from image blob
+        async function extractExifData(imageBlob, includeStreetAddress = true) {
+            try {
+                const EXIF = await loadExifLibrary();
+                
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    const url = URL.createObjectURL(imageBlob);
+                    
+                    img.onload = async function() {
+                        EXIF.getData(img, async function() {
+                            const exifData = {
+                                timestamp: null,
+                                location: null,
+                                camera: null,
+                                rawExif: EXIF.getAllTags(this)
+                            };
+                            
+                            // Log all EXIF data for debugging
+                            console.log('EXIF Data:', exifData.rawExif);
+                            
+                            // Extract timestamp
+                            const dateTimeOriginal = EXIF.getTag(this, 'DateTimeOriginal');
+                            const dateTime = EXIF.getTag(this, 'DateTime');
+                            const dateTimeStr = dateTimeOriginal || dateTime;
+                            
+                            if (dateTimeStr) {
+                                // EXIF format: "2025:10:31 12:00:25"
+                                const parts = dateTimeStr.split(' ');
+                                if (parts.length === 2) {
+                                    const datePart = parts[0].replace(/:/g, '-');
+                                    const timePart = parts[1];
+                                    const date = new Date(`${datePart}T${timePart}`);
+                                    
+                                    if (!isNaN(date.getTime())) {
+                                        const options = { 
+                                            year: 'numeric', 
+                                            month: 'short', 
+                                            day: 'numeric',
+                                            hour: 'numeric',
+                                            minute: '2-digit',
+                                            second: '2-digit',
+                                            hour12: true
+                                        };
+                                        exifData.timestamp = date.toLocaleString('en-US', options);
+                                    }
+                                }
+                            }
+                            
+                            // Extract GPS coordinates
+                            const lat = EXIF.getTag(this, 'GPSLatitude');
+                            const latRef = EXIF.getTag(this, 'GPSLatitudeRef');
+                            const lon = EXIF.getTag(this, 'GPSLongitude');
+                            const lonRef = EXIF.getTag(this, 'GPSLongitudeRef');
+                            
+                            if (lat && lon) {
+                                const latitude = convertDMSToDD(lat, latRef);
+                                const longitude = convertDMSToDD(lon, lonRef);
+                                
+                                // Try to reverse geocode to get address
+                                try {
+                                    const addressData = await reverseGeocode(latitude, longitude, includeStreetAddress);
+                                    if (addressData) {
+                                        exifData.location = addressData.fullAddress;
+                                        exifData.addressData = addressData;
+                                    } else {
+                                        // Fallback to coordinates if geocoding fails
+                                        exifData.location = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+                                    }
+                                } catch (geoError) {
+                                    console.warn('Geocoding failed, using coordinates:', geoError);
+                                    exifData.location = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+                                }
+                            }
+                            
+                            // Don't extract camera info - not needed per user request
+                            
+                            URL.revokeObjectURL(url);
+                            resolve(exifData);
+                        });
+                    };
+                    
+                    img.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        resolve({ timestamp: null, location: null, camera: null });
+                    };
+                    
+                    img.src = url;
+                });
+            } catch (error) {
+                console.error('Error extracting EXIF:', error);
+                return { timestamp: null, location: null, camera: null };
+            }
+        }
+        
+        // Convert GPS coordinates from DMS to Decimal Degrees
+        function convertDMSToDD(dms, ref) {
+            if (!dms || !Array.isArray(dms) || dms.length < 3) return 0;
+            
+            const degrees = dms[0];
+            const minutes = dms[1];
+            const seconds = dms[2];
+            
+            let dd = degrees + (minutes / 60) + (seconds / 3600);
+            
+            if (ref === 'S' || ref === 'W') {
+                dd = dd * -1;
+            }
+            
+            return dd;
+        }
+        
+        // Helper functions for fallback metadata extraction
+        function formatTimestamp(attachment) {
+            // Try different timestamp fields that might be available
+            const timestamp = attachment.createdDate || 
+                            attachment.editDate || 
+                            attachment.uploadDate;
+            
+            if (!timestamp) return null;
+            
+            const date = new Date(timestamp);
+            if (isNaN(date.getTime())) return null;
+            
+            // Format like: "Oct 31, 2025 at 12:00:25 AM"
+            const options = { 
+                year: 'numeric', 
+                month: 'short', 
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            };
+            
+            return date.toLocaleString('en-US', options);
+        }
+        
+        function extractLocation(feature) {
+            if (!feature || !feature.geometry) return null;
+            
+            // Try to get address or location info from attributes
+            const attrs = feature.attributes;
+            
+            // Check for common address fields
+            const address = attrs.address || attrs.Address || 
+                          attrs.location || attrs.Location ||
+                          attrs.site_address || attrs.SITE_ADDRESS;
+            
+            if (address) return address;
+            
+            // If no address, format coordinates
+            if (feature.geometry.type === 'point') {
+                const x = feature.geometry.longitude || feature.geometry.x;
+                const y = feature.geometry.latitude || feature.geometry.y;
+                
+                if (x && y) {
+                    return `${y.toFixed(6)}, ${x.toFixed(6)}`;
+                }
+            }
+            
+            return null;
+        }
+        
+        // Image watermarking function
+        async function watermarkImage(imageBlob, metadata, exifData = null) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const url = URL.createObjectURL(imageBlob);
+                
+                img.onload = () => {
+                    try {
+                        // Create canvas
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        
+                        // Draw original image
+                        ctx.drawImage(img, 0, 0);
+                        
+                        // Prefer EXIF data over feature metadata
+                        const lines = [];
+                        
+                        // Timestamp - prefer EXIF
+                        const timestamp = (exifData && exifData.timestamp) || metadata.timestamp;
+                        if (timestamp) lines.push(timestamp);
+                        
+                        // Location/Address - prefer EXIF GPS with reverse geocoding
+                        if (exifData && exifData.location) {
+                            // EXIF location might be multi-line address
+                            const locationLines = exifData.location.split('\n');
+                            lines.push(...locationLines);
+                        } else if (metadata.location) {
+                            lines.push(metadata.location);
+                        }
+                        
+                        // Add GIS ID only (no layer name or camera per user request)
+                        if (metadata.gisId) lines.push(`GIS ID: ${metadata.gisId}`);
+                        
+                        if (lines.length > 0) {
+                            // Calculate font size based on image dimensions
+                            const baseFontSize = Math.max(24, Math.floor(img.height / 40));
+                            const fontSize = baseFontSize;
+                            const lineHeight = fontSize * 1.3;
+                            const padding = fontSize * 0.8;
+                            
+                            // Position in top-right corner
+                            const x = img.width - padding;
+                            const startY = padding + fontSize;
+                            
+                            // Set text style
+                            ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+                            ctx.textAlign = 'right';
+                            ctx.textBaseline = 'top';
+                            
+                            // Draw each line with shadow for readability
+                            lines.forEach((line, index) => {
+                                const y = startY + (index * lineHeight);
+                                
+                                // Draw shadow/outline for better visibility
+                                ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+                                ctx.lineWidth = fontSize / 8;
+                                ctx.strokeText(line, x, y);
+                                
+                                // Draw white text
+                                ctx.fillStyle = 'white';
+                                ctx.fillText(line, x, y);
+                            });
+                        }
+                        
+                        // Convert to blob
+                        canvas.toBlob((blob) => {
+                            URL.revokeObjectURL(url);
+                            resolve(blob);
+                        }, 'image/jpeg', 0.95);
+                        
+                    } catch (error) {
+                        URL.revokeObjectURL(url);
+                        reject(error);
+                    }
+                };
+                
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    reject(new Error('Failed to load image'));
+                };
+                
+                img.src = url;
+            });
         }
         
         // ZIP file creation utilities
@@ -838,12 +1186,44 @@
                             for (const attachment of attachments) {
                                 try {
                                     updateStatus(`Downloading: ${attachment.name} (${downloadedCount + 1}/${totalAttachments})...`);
+                                    
+                                    // Log full attachment metadata for debugging
+                                    console.log('Attachment metadata:', attachment);
+                                    
                                     const response = await fetch(attachment.url);
                                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                                     
-                                    const blob = await response.blob();
+                                    let blob = await response.blob();
                                     const gisId = feature.attributes.gis_id || feature.attributes.GIS_ID || objectId;
                                     const fileName = `${getCurrentLayerInfo().name.replace(/\s+/g, '')}_GIS_${gisId}_${attachment.name}`;
+                                    
+                                    // Check if watermarking is enabled and file is an image
+                                    const shouldWatermark = $("#watermarkImages") && $("#watermarkImages").checked;
+                                    const isImage = attachment.contentType && attachment.contentType.startsWith('image/');
+                                    
+                                    if (shouldWatermark && isImage) {
+                                        try {
+                                            updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                            
+                                            // Check if street address should be included
+                                            const includeStreetAddress = $("#includeStreetAddress") && $("#includeStreetAddress").checked;
+                                            
+                                            // Extract EXIF data from the image
+                                            const exifData = await extractExifData(blob, includeStreetAddress);
+                                            
+                                            // Extract metadata for watermark (as fallback)
+                                            const metadata = {
+                                                timestamp: formatTimestamp(attachment),
+                                                location: extractLocation(feature),
+                                                gisId: gisId,
+                                                layerName: getCurrentLayerInfo().name
+                                            };
+                                            
+                                            blob = await watermarkImage(blob, metadata, exifData);
+                                        } catch (watermarkError) {
+                                            console.warn('Watermarking failed, using original:', watermarkError);
+                                        }
+                                    }
                                     
                                     if (downloadFormat === 'zip') {
                                         const arrayBuffer = await blob.arrayBuffer();
@@ -965,12 +1345,45 @@
                 for (const attachment of attachments) {
                     try {
                         updateStatus(`Downloading: ${attachment.name} (${downloadedCount + 1}/${attachments.length})...`);
+                        
+                        // Log full attachment metadata for debugging
+                        console.log('Attachment metadata:', attachment);
+                        
                         const response = await fetch(attachment.url);
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         
-                        const blob = await response.blob();
-                        const url = URL.createObjectURL(blob);
+                        let blob = await response.blob();
                         const gisId = selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || objectId;
+                        
+                        // Check if watermarking is enabled and file is an image
+                        const shouldWatermark = $("#watermarkImagesSingle") && $("#watermarkImagesSingle").checked;
+                        const isImage = attachment.contentType && attachment.contentType.startsWith('image/');
+                        
+                        if (shouldWatermark && isImage) {
+                            try {
+                                updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                
+                                // Check if street address should be included
+                                const includeStreetAddress = $("#includeStreetAddressSingle") && $("#includeStreetAddressSingle").checked;
+                                
+                                // Extract EXIF data from the image
+                                const exifData = await extractExifData(blob, includeStreetAddress);
+                                
+                                // Extract metadata for watermark (as fallback)
+                                const metadata = {
+                                    timestamp: formatTimestamp(attachment),
+                                    location: extractLocation(selectedSingleFeature),
+                                    gisId: gisId,
+                                    layerName: getCurrentLayerInfo().name
+                                };
+                                
+                                blob = await watermarkImage(blob, metadata, exifData);
+                            } catch (watermarkError) {
+                                console.warn('Watermarking failed, using original:', watermarkError);
+                            }
+                        }
+                        
+                        const url = URL.createObjectURL(blob);
                         
                         const a = document.createElement("a");
                         a.href = url;
@@ -1153,4 +1566,4 @@
         console.error('Error loading Attachment Manager:', error);
         alert("Error creating Attachment Manager: " + (error.message || error));
     }
-})()
+})();
