@@ -111,6 +111,7 @@
                         <span>Add Metadata Watermark to Images</span>
                     </label>
                     <div style="font-size:10px;color:#666;margin-left:24px;margin-top:4px;">Adds timestamp, address, and GIS ID to image corner</div>
+                    <div style="font-size:10px;color:#999;margin-left:24px;margin-top:2px;">⚠️ Automatically skips images that already have watermarks</div>
                     <div style="margin-left:24px;margin-top:4px;">
                         <label style="display:flex;align-items:center;cursor:pointer;">
                             <input type="checkbox" id="includeStreetAddress" style="margin-right:8px;" checked>
@@ -138,6 +139,7 @@
                         <span>Add Metadata Watermark to Images</span>
                     </label>
                     <div style="font-size:10px;color:#666;margin-left:24px;margin-top:4px;">Adds timestamp, address, and GIS ID to image corner</div>
+                    <div style="font-size:10px;color:#999;margin-left:24px;margin-top:2px;">⚠️ Automatically skips images that already have watermarks</div>
                     <div style="margin-left:24px;margin-top:4px;">
                         <label style="display:flex;align-items:center;cursor:pointer;">
                             <input type="checkbox" id="includeStreetAddressSingle" style="margin-right:8px;" checked>
@@ -250,6 +252,257 @@
             });
         }
         
+        // Load piexif library for writing EXIF data
+        function loadPiexifLibrary() {
+            return new Promise((resolve, reject) => {
+                if (window.piexif) {
+                    resolve(window.piexif);
+                    return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/piexifjs/piexif.min.js';
+                script.onload = () => resolve(window.piexif);
+                script.onerror = () => reject(new Error('Failed to load piexif library'));
+                document.head.appendChild(script);
+            });
+        }
+        
+        // Check if image already has our watermark
+        async function hasExistingWatermark(imageBlob) {
+            try {
+                console.log('🔍 Checking for existing watermarks...');
+                
+                // First check for our EXIF marker
+                const hasOurMarker = await checkForOurMarker(imageBlob);
+                if (hasOurMarker) {
+                    console.log('  ✓ Found our watermark marker in EXIF');
+                    return true;
+                }
+                
+                // Check for other watermark apps in EXIF
+                const hasOtherAppMarker = await checkForOtherWatermarkApps(imageBlob);
+                if (hasOtherAppMarker) {
+                    console.log('  ✓ Found watermark app signature in EXIF');
+                    return true;
+                }
+                
+                // Finally, do visual analysis of the corner
+                const hasVisualWatermark = await detectVisualWatermark(imageBlob);
+                if (hasVisualWatermark) {
+                    console.log('  ✓ Detected visual watermark in corner region');
+                    return true;
+                }
+                
+                console.log('  ✗ No watermark detected, will add watermark');
+                return false;
+                
+            } catch (error) {
+                console.warn('Could not check for existing watermark:', error);
+                return false;
+            }
+        }
+        
+        // Check for our specific EXIF marker
+        async function checkForOurMarker(imageBlob) {
+            try {
+                const EXIF = await loadExifLibrary();
+                
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    const url = URL.createObjectURL(imageBlob);
+                    
+                    img.onload = function() {
+                        EXIF.getData(img, function() {
+                            const userComment = EXIF.getTag(this, 'UserComment');
+                            const hasMarker = userComment && userComment.includes('GIS_WATERMARKED_v1');
+                            URL.revokeObjectURL(url);
+                            resolve(hasMarker);
+                        });
+                    };
+                    
+                    img.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        resolve(false);
+                    };
+                    
+                    img.src = url;
+                });
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // Check EXIF for common watermark apps
+        async function checkForOtherWatermarkApps(imageBlob) {
+            try {
+                const EXIF = await loadExifLibrary();
+                
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    const url = URL.createObjectURL(imageBlob);
+                    
+                    img.onload = function() {
+                        EXIF.getData(img, function() {
+                            // Check Software field for watermark apps
+                            const software = EXIF.getTag(this, 'Software');
+                            const userComment = EXIF.getTag(this, 'UserComment');
+                            const imageDescription = EXIF.getTag(this, 'ImageDescription');
+                            
+                            // List of known watermark apps
+                            const watermarkApps = [
+                                'timestamp', 'timestampcamera', 'timestamp basic', 'timestamp camera basic',
+                                'watermark', 'photowatermark', 'iwatermark', 'photo watermark',
+                                'visual watermark', 'camerafi', 'timestamp camera', 'photo stamp',
+                                'add watermark', 'ezy watermark', 'salt camera', 'timestamp it'
+                            ];
+                            
+                            // Check if any field contains watermark app names
+                            const fields = [software, userComment, imageDescription]
+                                .filter(f => f)
+                                .map(f => String(f).toLowerCase());
+                            
+                            const hasWatermarkApp = watermarkApps.some(app => 
+                                fields.some(field => field.includes(app))
+                            );
+                            
+                            if (hasWatermarkApp) {
+                                const detectedApp = watermarkApps.find(app => 
+                                    fields.some(field => field.includes(app))
+                                );
+                                console.log(`  ✓ Detected watermark app: "${detectedApp}"`);
+                            }
+                            
+                            URL.revokeObjectURL(url);
+                            resolve(hasWatermarkApp);
+                        });
+                    };
+                    
+                    img.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        resolve(false);
+                    };
+                    
+                    img.src = url;
+                });
+            } catch (error) {
+                return false;
+            }
+        }
+        
+        // Visual detection - analyze top-right corner for text/watermarks
+        async function detectVisualWatermark(imageBlob) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                const url = URL.createObjectURL(imageBlob);
+                
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Sample a region in the top-right corner (where watermarks typically are)
+                        const sampleWidth = Math.min(400, Math.floor(img.width * 0.3));
+                        const sampleHeight = Math.min(300, Math.floor(img.height * 0.2));
+                        
+                        canvas.width = sampleWidth;
+                        canvas.height = sampleHeight;
+                        
+                        // Draw the corner region
+                        ctx.drawImage(
+                            img,
+                            img.width - sampleWidth, 0, // source x, y
+                            sampleWidth, sampleHeight,   // source width, height
+                            0, 0,                        // dest x, y
+                            sampleWidth, sampleHeight    // dest width, height
+                        );
+                        
+                        // Get pixel data
+                        const imageData = ctx.getImageData(0, 0, sampleWidth, sampleHeight);
+                        const data = imageData.data;
+                        
+                        // Analyze for high contrast patterns typical of text watermarks
+                        let highContrastPixels = 0;
+                        let whitePixels = 0;
+                        let blackPixels = 0;
+                        let totalBrightness = 0;
+                        const totalPixels = (sampleWidth * sampleHeight);
+                        
+                        for (let i = 0; i < data.length; i += 4) {
+                            const r = data[i];
+                            const g = data[i + 1];
+                            const b = data[i + 2];
+                            
+                            totalBrightness += (r + g + b) / 3;
+                            
+                            // Check for very white pixels (typical of watermark text)
+                            if (r > 240 && g > 240 && b > 240) {
+                                whitePixels++;
+                            }
+                            
+                            // Check for very dark pixels (typical of watermark outline/shadow)
+                            if (r < 50 && g < 50 && b < 50) {
+                                blackPixels++;
+                            }
+                            
+                            // Look for edge detection (high contrast between adjacent pixels)
+                            if (i < data.length - 4) {
+                                const nextR = data[i + 4];
+                                const nextG = data[i + 5];
+                                const nextB = data[i + 6];
+                                
+                                const diff = Math.abs(r - nextR) + Math.abs(g - nextG) + Math.abs(b - nextB);
+                                if (diff > 200) { // High contrast edge
+                                    highContrastPixels++;
+                                }
+                            }
+                        }
+                        
+                        const whitePercent = (whitePixels / totalPixels) * 100;
+                        const blackPercent = (blackPixels / totalPixels) * 100;
+                        const contrastPercent = (highContrastPixels / totalPixels) * 100;
+                        const avgBrightness = totalBrightness / totalPixels;
+                        
+                        console.log(`  📊 Corner analysis - White: ${whitePercent.toFixed(1)}%, Black: ${blackPercent.toFixed(1)}%, Contrast: ${contrastPercent.toFixed(1)}%, Avg Brightness: ${avgBrightness.toFixed(0)}`);
+                        
+                        // Safety check: if the corner is very uniform (like blank sky), don't flag as watermark
+                        const isUniform = contrastPercent < 2 && (avgBrightness > 200 || avgBrightness < 50);
+                        
+                        if (isUniform) {
+                            console.log('  ℹ️ Corner appears uniform (likely blank sky/background), not a watermark');
+                        }
+                        
+                        // Heuristics: If there's a significant amount of white text with dark outlines
+                        // and high contrast edges, it's likely a watermark
+                        const hasWatermark = !isUniform && (
+                            (whitePercent > 3 && blackPercent > 1.5 && contrastPercent > 5) || // Strong indicators
+                            (whitePercent > 5 && contrastPercent > 8) || // Very white with contrast
+                            (blackPercent > 3 && whitePercent > 2 && contrastPercent > 6) // Dark outline with white text
+                        );
+                        
+                        if (hasWatermark) {
+                            console.log('  ✓ Visual patterns indicate watermark present');
+                        }
+                        
+                        URL.revokeObjectURL(url);
+                        resolve(hasWatermark);
+                        
+                    } catch (error) {
+                        console.error('Visual detection error:', error);
+                        URL.revokeObjectURL(url);
+                        resolve(false);
+                    }
+                };
+                
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    resolve(false);
+                };
+                
+                img.src = url;
+            });
+        }
+        
         // Extract EXIF data from image blob
         async function extractExifData(imageBlob, includeStreetAddress = true) {
             try {
@@ -314,7 +567,7 @@
                                     const addressData = await reverseGeocode(latitude, longitude, includeStreetAddress);
                                     if (addressData) {
                                         exifData.location = addressData.fullAddress;
-                                        exifData.addressData = addressData;
+                                        exifData.addressData = addressData; // Store full address data for formatting
                                     } else {
                                         // Fallback to coordinates if geocoding fails
                                         exifData.location = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
@@ -416,90 +669,183 @@
         
         // Image watermarking function
         async function watermarkImage(imageBlob, metadata, exifData = null) {
-            return new Promise((resolve, reject) => {
-                const img = new Image();
-                const url = URL.createObjectURL(imageBlob);
-                
-                img.onload = () => {
-                    try {
-                        // Create canvas
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        
-                        canvas.width = img.width;
-                        canvas.height = img.height;
-                        
-                        // Draw original image
-                        ctx.drawImage(img, 0, 0);
-                        
-                        // Prefer EXIF data over feature metadata
-                        const lines = [];
-                        
-                        // Timestamp - prefer EXIF
-                        const timestamp = (exifData && exifData.timestamp) || metadata.timestamp;
-                        if (timestamp) lines.push(timestamp);
-                        
-                        // Location/Address - prefer EXIF GPS with reverse geocoding
-                        if (exifData && exifData.location) {
-                            // EXIF location might be multi-line address
-                            const locationLines = exifData.location.split('\n');
-                            lines.push(...locationLines);
-                        } else if (metadata.location) {
-                            lines.push(metadata.location);
-                        }
-                        
-                        // Add GIS ID only (no layer name or camera per user request)
-                        if (metadata.gisId) lines.push(`GIS ID: ${metadata.gisId}`);
-                        
-                        if (lines.length > 0) {
-                            // Calculate font size based on image dimensions
-                            const baseFontSize = Math.max(24, Math.floor(img.height / 40));
-                            const fontSize = baseFontSize;
-                            const lineHeight = fontSize * 1.3;
-                            const padding = fontSize * 0.8;
+            return new Promise(async (resolve, reject) => {
+                try {
+                    const img = new Image();
+                    const url = URL.createObjectURL(imageBlob);
+                    
+                    img.onload = async () => {
+                        try {
+                            // Create canvas
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
                             
-                            // Position in top-right corner
-                            const x = img.width - padding;
-                            const startY = padding + fontSize;
+                            canvas.width = img.width;
+                            canvas.height = img.height;
                             
-                            // Set text style
-                            ctx.font = `bold ${fontSize}px Arial, sans-serif`;
-                            ctx.textAlign = 'right';
-                            ctx.textBaseline = 'top';
+                            // Draw original image
+                            ctx.drawImage(img, 0, 0);
                             
-                            // Draw each line with shadow for readability
-                            lines.forEach((line, index) => {
-                                const y = startY + (index * lineHeight);
+                            // Prepare watermark text lines (matching example format)
+                            const lines = [];
+                            
+                            // Line 1: Timestamp
+                            const timestamp = (exifData && exifData.timestamp) || metadata.timestamp;
+                            if (timestamp) {
+                                // Format like example: "Oct 31, 2025 at 12:00:25 AM"
+                                lines.push(timestamp);
+                            }
+                            
+                            // Lines 2+: Address (each part on separate line like example)
+                            if (exifData && exifData.addressData) {
+                                // Street address (if included)
+                                if (exifData.addressData.streetAddress) {
+                                    lines.push(exifData.addressData.streetAddress);
+                                }
+                                // City, State ZIP on one line
+                                const cityStateZip = [];
+                                if (exifData.addressData.city) cityStateZip.push(exifData.addressData.city);
+                                if (exifData.addressData.state) cityStateZip.push(exifData.addressData.state);
+                                if (exifData.addressData.zip) cityStateZip.push(exifData.addressData.zip);
+                                if (cityStateZip.length > 0) {
+                                    lines.push(cityStateZip.join(', '));
+                                }
+                            } else if (exifData && exifData.location) {
+                                // Use formatted location string
+                                const locationLines = exifData.location.split('\n');
+                                lines.push(...locationLines);
+                            } else if (metadata.location) {
+                                lines.push(metadata.location);
+                            }
+                            
+                            // Last line: GIS ID (no label, just the value like example)
+                            if (metadata.gisId) {
+                                lines.push(`GIS ${metadata.gisId}`);
+                            }
+                            
+                            if (lines.length > 0) {
+                                // Calculate font size based on image dimensions (matching example proportions)
+                                const baseFontSize = Math.max(28, Math.floor(img.height / 35));
+                                const fontSize = baseFontSize;
+                                const lineHeight = fontSize * 1.25;
+                                const padding = fontSize * 1.2;
                                 
-                                // Draw shadow/outline for better visibility
-                                ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-                                ctx.lineWidth = fontSize / 8;
-                                ctx.strokeText(line, x, y);
+                                // Position in top-right corner
+                                const x = img.width - padding;
+                                const startY = padding;
                                 
-                                // Draw white text
-                                ctx.fillStyle = 'white';
-                                ctx.fillText(line, x, y);
-                            });
-                        }
-                        
-                        // Convert to blob
-                        canvas.toBlob((blob) => {
+                                // Set text style (bold, like example)
+                                ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+                                ctx.textAlign = 'right';
+                                ctx.textBaseline = 'top';
+                                
+                                // Draw each line with black outline and white fill
+                                lines.forEach((line, index) => {
+                                    const y = startY + (index * lineHeight);
+                                    
+                                    // Draw black outline (thicker for better visibility)
+                                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+                                    ctx.lineWidth = Math.max(3, fontSize / 10);
+                                    ctx.strokeText(line, x, y);
+                                    
+                                    // Draw white text
+                                    ctx.fillStyle = 'white';
+                                    ctx.fillText(line, x, y);
+                                });
+                            }
+                            
+                            // Convert to blob
+                            canvas.toBlob(async (canvasBlob) => {
+                                try {
+                                    // Try to add watermark marker to EXIF
+                                    const finalBlob = await addWatermarkMarkerToExif(canvasBlob, imageBlob);
+                                    URL.revokeObjectURL(url);
+                                    resolve(finalBlob);
+                                } catch (exifError) {
+                                    console.warn('Could not add watermark marker to EXIF:', exifError);
+                                    URL.revokeObjectURL(url);
+                                    resolve(canvasBlob);
+                                }
+                            }, 'image/jpeg', 0.95);
+                            
+                        } catch (error) {
                             URL.revokeObjectURL(url);
-                            resolve(blob);
-                        }, 'image/jpeg', 0.95);
-                        
-                    } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    
+                    img.onerror = () => {
                         URL.revokeObjectURL(url);
-                        reject(error);
-                    }
-                };
+                        reject(new Error('Failed to load image'));
+                    };
+                    
+                    img.src = url;
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }
+        
+        // Add watermark marker to EXIF data
+        async function addWatermarkMarkerToExif(watermarkedBlob, originalBlob) {
+            try {
+                const piexif = await loadPiexifLibrary();
                 
-                img.onerror = () => {
-                    URL.revokeObjectURL(url);
-                    reject(new Error('Failed to load image'));
-                };
+                // Convert blobs to data URLs
+                const originalDataUrl = await blobToDataUrl(originalBlob);
+                const watermarkedDataUrl = await blobToDataUrl(watermarkedBlob);
                 
-                img.src = url;
+                // Try to get existing EXIF from original
+                let exifObj;
+                try {
+                    exifObj = piexif.load(originalDataUrl);
+                } catch (e) {
+                    // No EXIF data, create new
+                    exifObj = { "0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}, "thumbnail": null };
+                }
+                
+                // Add our watermark marker to UserComment
+                if (!exifObj["Exif"]) exifObj["Exif"] = {};
+                exifObj["Exif"][piexif.ExifIFD.UserComment] = "GIS_WATERMARKED_v1";
+                
+                // Insert EXIF into watermarked image
+                const exifBytes = piexif.dump(exifObj);
+                const newDataUrl = piexif.insert(exifBytes, watermarkedDataUrl);
+                
+                // Convert back to blob
+                const newBlob = await dataUrlToBlob(newDataUrl);
+                
+                console.log('  ✓ Added watermark signature to image EXIF');
+                return newBlob;
+                
+            } catch (error) {
+                console.warn('Failed to add EXIF marker:', error);
+                return watermarkedBlob; // Return watermarked image without EXIF marker
+            }
+        }
+        
+        // Helper: Blob to Data URL
+        function blobToDataUrl(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+        
+        // Helper: Data URL to Blob
+        function dataUrlToBlob(dataUrl) {
+            return new Promise((resolve) => {
+                const arr = dataUrl.split(',');
+                const mime = arr[0].match(/:(.*?);/)[1];
+                const bstr = atob(arr[1]);
+                let n = bstr.length;
+                const u8arr = new Uint8Array(n);
+                while (n--) {
+                    u8arr[n] = bstr.charCodeAt(n);
+                }
+                resolve(new Blob([u8arr], { type: mime }));
             });
         }
         
@@ -1203,23 +1549,31 @@
                                     
                                     if (shouldWatermark && isImage) {
                                         try {
-                                            updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                            // First check if image already has our watermark
+                                            const alreadyWatermarked = await hasExistingWatermark(blob);
                                             
-                                            // Check if street address should be included
-                                            const includeStreetAddress = $("#includeStreetAddress") && $("#includeStreetAddress").checked;
-                                            
-                                            // Extract EXIF data from the image
-                                            const exifData = await extractExifData(blob, includeStreetAddress);
-                                            
-                                            // Extract metadata for watermark (as fallback)
-                                            const metadata = {
-                                                timestamp: formatTimestamp(attachment),
-                                                location: extractLocation(feature),
-                                                gisId: gisId,
-                                                layerName: getCurrentLayerInfo().name
-                                            };
-                                            
-                                            blob = await watermarkImage(blob, metadata, exifData);
+                                            if (alreadyWatermarked) {
+                                                console.log(`⏭️ Skipping ${attachment.name} - watermark detected`);
+                                                updateStatus(`Skipping ${attachment.name} - watermark detected`);
+                                            } else {
+                                                updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                                
+                                                // Check if street address should be included
+                                                const includeStreetAddress = $("#includeStreetAddress") && $("#includeStreetAddress").checked;
+                                                
+                                                // Extract EXIF data from the image
+                                                const exifData = await extractExifData(blob, includeStreetAddress);
+                                                
+                                                // Extract metadata for watermark (as fallback)
+                                                const metadata = {
+                                                    timestamp: formatTimestamp(attachment),
+                                                    location: extractLocation(feature),
+                                                    gisId: gisId,
+                                                    layerName: getCurrentLayerInfo().name
+                                                };
+                                                
+                                                blob = await watermarkImage(blob, metadata, exifData);
+                                            }
                                         } catch (watermarkError) {
                                             console.warn('Watermarking failed, using original:', watermarkError);
                                         }
@@ -1361,23 +1715,31 @@
                         
                         if (shouldWatermark && isImage) {
                             try {
-                                updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                // First check if image already has our watermark
+                                const alreadyWatermarked = await hasExistingWatermark(blob);
                                 
-                                // Check if street address should be included
-                                const includeStreetAddress = $("#includeStreetAddressSingle") && $("#includeStreetAddressSingle").checked;
-                                
-                                // Extract EXIF data from the image
-                                const exifData = await extractExifData(blob, includeStreetAddress);
-                                
-                                // Extract metadata for watermark (as fallback)
-                                const metadata = {
-                                    timestamp: formatTimestamp(attachment),
-                                    location: extractLocation(selectedSingleFeature),
-                                    gisId: gisId,
-                                    layerName: getCurrentLayerInfo().name
-                                };
-                                
-                                blob = await watermarkImage(blob, metadata, exifData);
+                                if (alreadyWatermarked) {
+                                    console.log(`⏭️ Skipping ${attachment.name} - watermark detected`);
+                                    updateStatus(`Skipping ${attachment.name} - watermark detected`);
+                                } else {
+                                    updateStatus(`Extracting EXIF and watermarking: ${attachment.name}...`);
+                                    
+                                    // Check if street address should be included
+                                    const includeStreetAddress = $("#includeStreetAddressSingle") && $("#includeStreetAddressSingle").checked;
+                                    
+                                    // Extract EXIF data from the image
+                                    const exifData = await extractExifData(blob, includeStreetAddress);
+                                    
+                                    // Extract metadata for watermark (as fallback)
+                                    const metadata = {
+                                        timestamp: formatTimestamp(attachment),
+                                        location: extractLocation(selectedSingleFeature),
+                                        gisId: gisId,
+                                        layerName: getCurrentLayerInfo().name
+                                    };
+                                    
+                                    blob = await watermarkImage(blob, metadata, exifData);
+                                }
                             } catch (watermarkError) {
                                 console.warn('Watermarking failed, using original:', watermarkError);
                             }
