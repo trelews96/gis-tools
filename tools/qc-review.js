@@ -1094,25 +1094,28 @@
                 updateStatus("Processing QC decision...");
                 $("#submitQcBtn").disabled = true;
                 
-                // Determine GIG status and workflow status based on decision
-                let gigStatus, newWorkflowStatus, gigPointsToCreate;
-                
-                if (decisionValue === 'pass') {
-                    gigStatus = 'PASS';
-                    newWorkflowStatus = 'QCCMPLT';
-                    gigPointsToCreate = [{ gigType: null, gigStatus: 'PASS' }];
-                } else if (decisionValue === 'fail') {
-                    gigStatus = 'OPEN';
-                    newWorkflowStatus = 'QCINPROG';
-                    gigPointsToCreate = selectedIssueTypes.map(it => ({ 
-                        gigType: it.code, 
-                        gigStatus: 'OPEN' 
-                    }));
-                } else if (decisionValue === 'missing_photo') {
-                    gigStatus = 'MISSING_PHOTO';
-                    newWorkflowStatus = 'QCCMPLT';
-                    gigPointsToCreate = [{ gigType: null, gigStatus: 'MISSING_PHOTO' }];
-                }
+             // Determine GIG status and workflow status based on decision
+let gigStatus, newWorkflowStatus, gigPointsToCreate, shouldUpdateFeature;
+
+if (decisionValue === 'pass') {
+    gigStatus = 'PASS';
+    newWorkflowStatus = 'QCCMPLT';
+    gigPointsToCreate = [{ gigType: null, gigStatus: 'PASS' }];
+    shouldUpdateFeature = true;
+} else if (decisionValue === 'fail') {
+    gigStatus = 'OPEN';
+    newWorkflowStatus = 'QCINPROG';
+    gigPointsToCreate = selectedIssueTypes.map(it => ({ 
+        gigType: it.code, 
+        gigStatus: 'OPEN' 
+    }));
+    shouldUpdateFeature = true;
+} else if (decisionValue === 'missing_photo') {
+    gigStatus = 'MISSING_PHOTO';
+    newWorkflowStatus = null; // Not used since we skip update
+    gigPointsToCreate = [{ gigType: null, gigStatus: 'MISSING_PHOTO' }];
+    shouldUpdateFeature = false; // Skip feature update
+}
                 
                 // Show progress
                 updateStatus(`Creating ${gigPointsToCreate.length} GIG point(s)...`);
@@ -1156,37 +1159,41 @@
                     throw new Error(`Failed to create ${gigFailCount} GIG point(s): ${errors}`);
                 }
                 
-                // Update feature workflow_status
-                updateStatus("Updating feature workflow status...");
-                
-                const oidField = item.layer.objectIdField;
-                const oid = item.feature.attributes[oidField];
-                
-                const updateFeature = {
-                    attributes: {
-                        [oidField]: oid,
-                        workflow_status: newWorkflowStatus
-                    }
-                };
-                
-                const featureResult = await item.layer.applyEdits({
-                    updateFeatures: [updateFeature]
-                });
-                
-                if (featureResult.updateFeatureResults && featureResult.updateFeatureResults.length > 0) {
-                    const updateResult = featureResult.updateFeatureResults[0];
-                    
-                    const isSuccess = updateResult.success === true || 
-                                    (updateResult.success === undefined && 
-                                     updateResult.error === null && 
-                                     (updateResult.objectId || updateResult.globalId));
-                    
-                    if (!isSuccess) {
-                        throw new Error(updateResult.error?.message || 'Feature update failed');
-                    }
-                } else {
-                    throw new Error('No feature update results returned');
-                }
+               // Update feature workflow_status (skip for missing photo)
+if (shouldUpdateFeature) {
+    updateStatus("Updating feature workflow status...");
+    
+    const oidField = item.layer.objectIdField;
+    const oid = item.feature.attributes[oidField];
+    
+    const updateFeature = {
+        attributes: {
+            [oidField]: oid,
+            workflow_status: newWorkflowStatus
+        }
+    };
+    
+    const featureResult = await item.layer.applyEdits({
+        updateFeatures: [updateFeature]
+    });
+    
+    if (featureResult.updateFeatureResults && featureResult.updateFeatureResults.length > 0) {
+        const updateResult = featureResult.updateFeatureResults[0];
+        
+        const isSuccess = updateResult.success === true || 
+                        (updateResult.success === undefined && 
+                         updateResult.error === null && 
+                         (updateResult.objectId || updateResult.globalId));
+        
+        if (!isSuccess) {
+            throw new Error(updateResult.error?.message || 'Feature update failed');
+        }
+    } else {
+        throw new Error('No feature update results returned');
+    }
+} else {
+    updateStatus("Skipping feature update (Missing Photo - feature remains CMPLT)");
+}
                 
                 // Log the successful QC action
                 const logEntry = {
