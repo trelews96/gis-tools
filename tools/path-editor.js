@@ -59,29 +59,28 @@
             <!-- Phase 1: Selection -->
             <div id="selectionPhase">
                 <div style="margin-bottom:12px;color:#666;font-size:11px;">
-                    Choose a selection method to select features for editing.
+                    Select a mode below. Single Click is active by default.
                 </div>
                 
                 <!-- Selection Mode -->
                 <div style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
                     <div style="font-weight:bold;margin-bottom:6px;">Selection Mode:</div>
                     <label style="display:block;margin-bottom:4px;cursor:pointer;">
-                        <input type="radio" name="selectionMode" value="polygon" checked>
-                        <strong>Polygon</strong> - Draw an area to select all features within
+                        <input type="radio" name="selectionMode" value="single" checked>
+                        <strong>Single Click</strong> - Click to select all nearby features
                     </label>
                     <label style="display:block;margin-bottom:4px;cursor:pointer;">
                         <input type="radio" name="selectionMode" value="line">
                         <strong>Line Path</strong> - Draw a polyline path (features ordered by direction)
                     </label>
                     <label style="display:block;cursor:pointer;">
-                        <input type="radio" name="selectionMode" value="single">
-                        <strong>Single Click</strong> - Click to select all nearby features
+                        <input type="radio" name="selectionMode" value="polygon">
+                        <strong>Polygon</strong> - Draw an area to select all features within
                     </label>
                 </div>
                 
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button id="startSelectionBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Selection</button>
-                    <button id="clearSelectionBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;" disabled>Clear Selection</button>
+                    <button id="clearSelectionBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;" disabled>Clear Selection</button>
                 </div>
                 
                 <div id="selectionResults" style="margin-bottom:12px;"></div>
@@ -98,7 +97,8 @@
                 
                 <!-- Saved Configurations -->
                 <div style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
-                    <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Load Saved Configuration:</div>
+                    <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Saved Configurations:</div>
+                    <div style="font-size:10px;color:#666;margin-bottom:4px;">Last used configuration will auto-load</div>
                     <select id="savedConfigSelect" style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;margin-bottom:4px;">
                         <option value="">-- Select a saved configuration --</option>
                     </select>
@@ -223,6 +223,8 @@
                 case 'configuration':
                     $("#configurationPhase").style.display = "block";
                     loadSavedConfigurationsList();
+                    // Auto-load last used configuration
+                    autoLoadLastConfiguration();
                     break;
                 case 'summary':
                     $("#summaryPhase").style.display = "block";
@@ -283,12 +285,10 @@
         function enablePolygonDrawing() {
             if (!sketchViewModel) {
                 initializeSketchViewModel(() => {
-                    $("#startSelectionBtn").disabled = true;
                     sketchViewModel.create('polygon');
                     updateStatus("Draw a polygon by clicking points. Double-click to finish.");
                 });
             } else {
-                $("#startSelectionBtn").disabled = true;
                 sketchViewModel.create('polygon');
                 updateStatus("Draw a polygon by clicking points. Double-click to finish.");
             }
@@ -297,19 +297,16 @@
         function enableLineDrawing() {
             if (!sketchViewModel) {
                 initializeSketchViewModel(() => {
-                    $("#startSelectionBtn").disabled = true;
                     sketchViewModel.create('polyline');
                     updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
                 });
             } else {
-                $("#startSelectionBtn").disabled = true;
                 sketchViewModel.create('polyline');
                 updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
             }
         }
         
         function enableSingleFeatureSelection() {
-            $("#startSelectionBtn").disabled = true;
             updateStatus("Click on the map to select all nearby features.");
             
             if (mapClickHandler) {
@@ -395,7 +392,6 @@
                     if (selectedFeaturesByLayer.size > 0) {
                         displaySelectionResults();
                         $("#clearSelectionBtn").disabled = false;
-                        $("#startSelectionBtn").disabled = false;
                         
                         // Remove click handler after selection
                         if (mapClickHandler) {
@@ -409,7 +405,6 @@
                     
                 } catch (error) {
                     updateStatus("Error selecting features: " + error.message);
-                    $("#startSelectionBtn").disabled = false;
                 }
             });
         }
@@ -447,7 +442,6 @@
                             }
                             
                             $("#clearSelectionBtn").disabled = false;
-                            $("#startSelectionBtn").disabled = false;
                         }
                     });
                     
@@ -1085,6 +1079,16 @@
             const bulkEditEnabled = $("#bulkEditMode").checked;
             sessionStartTime = new Date();
             editLog = [];
+            
+            // Save the currently selected config as last used (if one is selected)
+            try {
+                const select = $("#savedConfigSelect");
+                if (select.value) {
+                    localStorage.setItem('pathEditorLastConfig', select.value);
+                }
+            } catch (e) {
+                console.warn('Could not save last used config:', e);
+            }
             
             if (bulkEditEnabled) {
                 startBulkEdit();
@@ -1910,23 +1914,42 @@
             });
         }
         
-        function loadConfiguration() {
-            const select = $("#savedConfigSelect");
-            const configId = select.value;
-            
-            if (!configId) {
-                alert('Please select a configuration to load.');
-                return;
+        function autoLoadLastConfiguration() {
+            try {
+                const lastConfigId = localStorage.getItem('pathEditorLastConfig');
+                
+                if (!lastConfigId) {
+                    return; // No last config saved
+                }
+                
+                const savedConfigs = getSavedConfigurations();
+                const config = savedConfigs[lastConfigId];
+                
+                if (!config) {
+                    return; // Last config no longer exists
+                }
+                
+                // Check if we have layer configuration sections available
+                const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+                if (!sections || sections.length === 0) {
+                    return; // No layers to configure yet
+                }
+                
+                // Set the dropdown to show this config
+                const select = $("#savedConfigSelect");
+                select.value = lastConfigId;
+                
+                // Apply the configuration
+                applyConfigurationToUI(config);
+                
+                updateStatus(`Auto-loaded configuration: "${config.name}"`);
+                
+            } catch (e) {
+                console.warn('Could not auto-load last configuration:', e);
             }
-            
-            const savedConfigs = getSavedConfigurations();
-            const config = savedConfigs[configId];
-            
-            if (!config) {
-                alert('Configuration not found.');
-                return;
-            }
-            
+        }
+        
+        function applyConfigurationToUI(config) {
             const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
             
             if (!sections || sections.length === 0) {
@@ -2028,6 +2051,33 @@
             } else {
                 updateStatus(`Configuration "${config.name}" loaded successfully! Applied to ${appliedCount} layer(s).`);
             }
+        }
+        
+        function loadConfiguration() {
+            const select = $("#savedConfigSelect");
+            const configId = select.value;
+            
+            if (!configId) {
+                alert('Please select a configuration to load.');
+                return;
+            }
+            
+            const savedConfigs = getSavedConfigurations();
+            const config = savedConfigs[configId];
+            
+            if (!config) {
+                alert('Configuration not found.');
+                return;
+            }
+            
+            // Save this as the last used configuration
+            try {
+                localStorage.setItem('pathEditorLastConfig', configId);
+            } catch (e) {
+                console.warn('Could not save last used config:', e);
+            }
+            
+            applyConfigurationToUI(config);
         }
         
         function deleteConfiguration() {
@@ -2215,7 +2265,28 @@
         }
         
         // Event listeners
-        $("#startSelectionBtn").onclick = startSelection;
+        // Selection mode radio buttons
+        document.querySelectorAll('input[name="selectionMode"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                // Clear any existing selection first
+                if (selectionGraphic) {
+                    mapView.graphics.remove(selectionGraphic);
+                    selectionGraphic = null;
+                }
+                if (mapClickHandler) {
+                    mapClickHandler.remove();
+                    mapClickHandler = null;
+                }
+                selectedFeaturesByLayer.clear();
+                $("#selectionResults").innerHTML = "";
+                $("#configureLayersBtn").style.display = "none";
+                $("#clearSelectionBtn").disabled = true;
+                
+                // Start the new selection mode
+                startSelection();
+            });
+        });
+        
         $("#clearSelectionBtn").onclick = clearSelection;
         $("#configureLayersBtn").onclick = showLayerConfiguration;
         $("#saveConfigBtn").onclick = saveConfiguration;
@@ -2241,7 +2312,9 @@
         
         // Initialize
         setPhase('selection');
-        updateStatus("Ready. Choose a selection method: Polygon, Line Path, or Single Click.");
+        
+        // Auto-start with single click mode (default)
+        startSelection();
         
         // Register tool with host
         window.gisToolHost.activeTools.set('path-editor', {
