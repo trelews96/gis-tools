@@ -1,13 +1,13 @@
-// tools/generic-sequential-editor.js - Configurable Sequential Feature Editor
-// Allows user to select layers and fields to edit in a sequential workflow
+// tools/path-editor.js - Sequential Feature Editor with Multiple Selection Modes
+// Supports polygon, line path (ordered), and single feature selection
 
 (function() {
     try {
-        if (window.gisToolHost.activeTools.has('generic-sequential-editor')) {
+        if (window.gisToolHost.activeTools.has('path-editor')) {
             return;
         }
         
-        const existingToolbox = document.getElementById('genericSequentialEditorToolbox');
+        const existingToolbox = document.getElementById('pathEditorToolbox');
         if (existingToolbox) {
             existingToolbox.remove();
         }
@@ -22,19 +22,21 @@
         
         // Tool state
         let sketchViewModel = null;
-        let polygonGraphic = null;
-        let selectedFeaturesByLayer = new Map(); // layerId -> features[]
-        let layerConfigs = []; // User's configuration per layer
-        let currentEditingQueue = []; // Flattened queue of {layer, feature, fields, options}
+        let selectionGraphic = null;
+        let selectedFeaturesByLayer = new Map();
+        let layerConfigs = [];
+        let currentEditingQueue = [];
         let currentIndex = 0;
         let currentPhase = 'selection';
         let highlightGraphics = [];
         let editLog = [];
         let sessionStartTime = null;
+        let selectionMode = 'polygon';
+        let mapClickHandler = null;
         
         // Create tool UI
         const toolBox = document.createElement("div");
-        toolBox.id = "genericSequentialEditorToolbox";
+        toolBox.id = "pathEditorToolbox";
         toolBox.style.cssText = `
             position: fixed;
             top: 80px;
@@ -52,17 +54,34 @@
         `;
         
         toolBox.innerHTML = `
-            <div style="font-weight:bold;margin-bottom:12px;font-size:14px;">🔧 Sequential Feature Editor</div>
+            <div style="font-weight:bold;margin-bottom:12px;font-size:14px;">🔧 Path Editor Tool</div>
             
-            <!-- Phase 1: Polygon Selection -->
+            <!-- Phase 1: Selection -->
             <div id="selectionPhase">
                 <div style="margin-bottom:12px;color:#666;font-size:11px;">
-                    Draw a polygon to select features, then configure which layers and fields to edit.
+                    Choose a selection method to select features for editing.
+                </div>
+                
+                <!-- Selection Mode -->
+                <div style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
+                    <div style="font-weight:bold;margin-bottom:6px;">Selection Mode:</div>
+                    <label style="display:block;margin-bottom:4px;cursor:pointer;">
+                        <input type="radio" name="selectionMode" value="polygon" checked>
+                        <strong>Polygon</strong> - Draw an area to select all features within
+                    </label>
+                    <label style="display:block;margin-bottom:4px;cursor:pointer;">
+                        <input type="radio" name="selectionMode" value="line">
+                        <strong>Line Path</strong> - Draw a polyline path (features ordered by direction)
+                    </label>
+                    <label style="display:block;cursor:pointer;">
+                        <input type="radio" name="selectionMode" value="single">
+                        <strong>Single Click</strong> - Click to select all nearby features
+                    </label>
                 </div>
                 
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button id="drawPolygonBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Draw Selection Polygon</button>
-                    <button id="clearPolygonBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;" disabled>Clear Polygon</button>
+                    <button id="startSelectionBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Selection</button>
+                    <button id="clearSelectionBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;" disabled>Clear Selection</button>
                 </div>
                 
                 <div id="selectionResults" style="margin-bottom:12px;"></div>
@@ -161,15 +180,15 @@
             </div>
             
             <!-- Phase 5: Complete -->
-<div id="completePhase" style="display:none;">
-    <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
-    <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
-    
-    <div id="editSummary" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
-    
-    <button id="exportReportBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">📄 Export Summary Report</button>
-    <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
-</div>
+            <div id="completePhase" style="display:none;">
+                <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
+                <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
+                
+                <div id="editSummary" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
+                
+                <button id="exportReportBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">📄 Export Summary Report</button>
+                <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
+            </div>
             
             <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:8px;">
                 <button id="closeTool" style="width:100%;padding:6px;background:#d32f2f;color:white;border:none;border-radius:3px;cursor:pointer;">Close Tool</button>
@@ -226,12 +245,10 @@
             });
             highlightGraphics = [];
             
-            // Also do aggressive cleanup of any lingering graphics that might match highlight patterns
             const graphicsToRemove = [];
             mapView.graphics.forEach(graphic => {
                 if (graphic.symbol) {
                     const symbol = graphic.symbol;
-                    // Match our highlight patterns
                     if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
                         (symbol.type === "simple-line" && symbol.width >= 8) ||
                         (symbol.type === "simple-fill" && (symbol.color[3] >= 0.3 || (symbol.outline && symbol.outline.width >= 4)))) {
@@ -244,55 +261,198 @@
                 try { mapView.graphics.remove(graphic); } catch(e) {}
             });
             
-            // Close popup if open
             if (mapView.popup) {
                 mapView.popup.close();
             }
         }
         
-        function enablePolygonDrawing() {
-            clearPolygonSelection();
+        function startSelection() {
+            const selectedMode = document.querySelector('input[name="selectionMode"]:checked').value;
+            selectionMode = selectedMode;
+            clearSelection();
             
+            if (selectedMode === 'polygon') {
+                enablePolygonDrawing();
+            } else if (selectedMode === 'line') {
+                enableLineDrawing();
+            } else if (selectedMode === 'single') {
+                enableSingleFeatureSelection();
+            }
+        }
+        
+        function enablePolygonDrawing() {
             if (!sketchViewModel) {
-                if (window.require) {
-                    window.require(['esri/widgets/Sketch/SketchViewModel'], (SketchViewModel) => {
-                        sketchViewModel = new SketchViewModel({
-                            view: mapView,
-                            layer: mapView.graphics,
-                            polygonSymbol: {
-                                type: 'simple-fill',
-                                color: [255, 255, 0, 0.3],
-                                outline: {
-                                    color: [255, 0, 0, 1],
-                                    width: 2
-                                }
-                            }
-                        });
-                        
-                        sketchViewModel.on('create', (event) => {
-                            if (event.state === 'complete') {
-                                polygonGraphic = event.graphic;
-                                selectFeaturesInPolygon(polygonGraphic.geometry);
-                                $("#clearPolygonBtn").disabled = false;
-                                $("#drawPolygonBtn").disabled = false;
-                            }
-                        });
-                        
-                        startPolygonDrawing();
-                    });
-                } else {
-                    updateStatus('Unable to load polygon drawing tools.');
-                }
+                initializeSketchViewModel(() => {
+                    $("#startSelectionBtn").disabled = true;
+                    sketchViewModel.create('polygon');
+                    updateStatus("Draw a polygon by clicking points. Double-click to finish.");
+                });
             } else {
-                startPolygonDrawing();
+                $("#startSelectionBtn").disabled = true;
+                sketchViewModel.create('polygon');
+                updateStatus("Draw a polygon by clicking points. Double-click to finish.");
+            }
+        }
+        
+        function enableLineDrawing() {
+            if (!sketchViewModel) {
+                initializeSketchViewModel(() => {
+                    $("#startSelectionBtn").disabled = true;
+                    sketchViewModel.create('polyline');
+                    updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
+                });
+            } else {
+                $("#startSelectionBtn").disabled = true;
+                sketchViewModel.create('polyline');
+                updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
+            }
+        }
+        
+        function enableSingleFeatureSelection() {
+            $("#startSelectionBtn").disabled = true;
+            updateStatus("Click on the map to select all nearby features.");
+            
+            if (mapClickHandler) {
+                mapClickHandler.remove();
+                mapClickHandler = null;
             }
             
-            function startPolygonDrawing() {
-                if (sketchViewModel) {
-                    $("#drawPolygonBtn").disabled = true;
-                    sketchViewModel.create('polygon');
-                    updateStatus("Draw a polygon on the map. Double-click to finish.");
+            mapClickHandler = mapView.on('click', async (event) => {
+                try {
+                    updateStatus("Selecting features near click point...");
+                    
+                    // Create a small buffer around the click point for selection tolerance
+                    // Use screen pixels to calculate buffer distance
+                    const screenPoint = mapView.toScreen(event.mapPoint);
+                    const tolerance = 10; // pixels
+                    const point1 = mapView.toMap({ x: screenPoint.x, y: screenPoint.y });
+                    const point2 = mapView.toMap({ x: screenPoint.x + tolerance, y: screenPoint.y });
+                    
+                    let bufferDistance = 0;
+                    if (window.geometryEngine) {
+                        bufferDistance = window.geometryEngine.distance(point1, point2, 'meters');
+                    } else {
+                        // Load geometryEngine if not available
+                        await new Promise((resolve) => {
+                            window.require(['esri/geometry/geometryEngine'], (ge) => {
+                                window.geometryEngine = ge;
+                                bufferDistance = ge.distance(point1, point2, 'meters');
+                                resolve();
+                            });
+                        });
+                    }
+                    
+                    // Create buffer geometry around click point
+                    const bufferGeometry = window.geometryEngine.buffer(event.mapPoint, bufferDistance, 'meters');
+                    
+                    // Show the click point
+                    selectionGraphic = {
+                        geometry: event.mapPoint,
+                        symbol: {
+                            type: "simple-marker",
+                            color: [255, 0, 0, 0.8],
+                            size: 12,
+                            outline: { color: [255, 255, 255, 1], width: 2 }
+                        }
+                    };
+                    mapView.graphics.add(selectionGraphic);
+                    
+                    // Query all visible feature layers
+                    selectedFeaturesByLayer.clear();
+                    const allFL = mapView.map.allLayers.filter(l => 
+                        l.type === "feature" && l.visible
+                    );
+                    
+                    const queries = allFL.map(async (layer) => {
+                        try {
+                            await layer.load();
+                            
+                            const result = await layer.queryFeatures({
+                                geometry: bufferGeometry,
+                                spatialRelationship: 'intersects',
+                                returnGeometry: true,
+                                outFields: ['*']
+                            });
+                            
+                            if (result.features.length > 0) {
+                                selectedFeaturesByLayer.set(layer.layerId, {
+                                    layer: layer,
+                                    features: result.features
+                                });
+                            }
+                        } catch (e) {
+                            console.error('Error querying layer:', layer.title, e);
+                        }
+                    });
+                    
+                    await Promise.all(queries);
+                    
+                    if (selectedFeaturesByLayer.size > 0) {
+                        displaySelectionResults();
+                        $("#clearSelectionBtn").disabled = false;
+                        $("#startSelectionBtn").disabled = false;
+                        
+                        // Remove click handler after selection
+                        if (mapClickHandler) {
+                            mapClickHandler.remove();
+                            mapClickHandler = null;
+                        }
+                    } else {
+                        updateStatus("No features found near click location. Try again or click elsewhere.");
+                        // Keep the click handler active for another try
+                    }
+                    
+                } catch (error) {
+                    updateStatus("Error selecting features: " + error.message);
+                    $("#startSelectionBtn").disabled = false;
                 }
+            });
+        }
+        
+        function initializeSketchViewModel(callback) {
+            if (window.require) {
+                window.require(['esri/widgets/Sketch/SketchViewModel'], (SketchViewModel) => {
+                    sketchViewModel = new SketchViewModel({
+                        view: mapView,
+                        layer: mapView.graphics,
+                        polygonSymbol: {
+                            type: 'simple-fill',
+                            color: [255, 255, 0, 0.3],
+                            outline: {
+                                color: [255, 0, 0, 1],
+                                width: 2
+                            }
+                        },
+                        polylineSymbol: {
+                            type: 'simple-line',
+                            color: [255, 0, 0, 1],
+                            width: 3,
+                            style: 'solid'
+                        }
+                    });
+                    
+                    sketchViewModel.on('create', (event) => {
+                        if (event.state === 'complete') {
+                            selectionGraphic = event.graphic;
+                            
+                            if (selectionMode === 'polygon') {
+                                selectFeaturesInPolygon(selectionGraphic.geometry);
+                            } else if (selectionMode === 'line') {
+                                selectFeaturesAlongLine(selectionGraphic.geometry);
+                            }
+                            
+                            $("#clearSelectionBtn").disabled = false;
+                            $("#startSelectionBtn").disabled = false;
+                        }
+                    });
+                    
+                    // Call the callback if provided
+                    if (callback) {
+                        callback();
+                    }
+                });
+            } else {
+                updateStatus('Unable to load selection drawing tools.');
             }
         }
         
@@ -336,6 +496,141 @@
             }
         }
         
+        async function selectFeaturesAlongLine(line) {
+            try {
+                updateStatus("Selecting features along line path...");
+                selectedFeaturesByLayer.clear();
+                
+                const allFL = mapView.map.allLayers.filter(l => 
+                    l.type === "feature" && l.visible
+                );
+                
+                if (!window.geometryEngine) {
+                    await new Promise((resolve) => {
+                        window.require(['esri/geometry/geometryEngine'], (ge) => {
+                            window.geometryEngine = ge;
+                            resolve();
+                        });
+                    });
+                }
+                
+                // Create a buffer around the line for selection
+                // Calculate appropriate buffer distance based on map scale
+                const mapWidth = mapView.extent.width;
+                const screenWidth = mapView.width;
+                const metersPerPixel = mapWidth / screenWidth;
+                const bufferPixels = 20; // 20 pixel buffer on each side
+                const bufferDistance = metersPerPixel * bufferPixels;
+                
+                const bufferedGeometry = window.geometryEngine.buffer(line, bufferDistance, 'meters');
+                
+                updateStatus(`Selecting features within ${Math.round(bufferDistance)}m of line path...`);
+                
+                const queries = allFL.map(async (layer) => {
+                    try {
+                        await layer.load();
+                        
+                        // Query using the buffered geometry
+                        const result = await layer.queryFeatures({
+                            geometry: bufferedGeometry,
+                            spatialRelationship: 'intersects',
+                            returnGeometry: true,
+                            outFields: ['*']
+                        });
+                        
+                        if (result.features.length > 0) {
+                            const featuresWithDistance = result.features.map(feature => {
+                                let distance = 0;
+                                
+                                try {
+                                    let point;
+                                    if (feature.geometry.type === 'point') {
+                                        point = feature.geometry;
+                                    } else if (feature.geometry.type === 'polygon' && feature.geometry.centroid) {
+                                        point = feature.geometry.centroid;
+                                    } else if (feature.geometry.type === 'polyline') {
+                                        if (feature.geometry.paths && feature.geometry.paths[0]) {
+                                            const path = feature.geometry.paths[0];
+                                            const midIndex = Math.floor(path.length / 2);
+                                            point = {
+                                                type: 'point',
+                                                x: path[midIndex][0],
+                                                y: path[midIndex][1],
+                                                spatialReference: feature.geometry.spatialReference
+                                            };
+                                        }
+                                    }
+                                    
+                                    if (point && window.geometryEngine) {
+                                        // Find the closest point on the ORIGINAL line (not buffer) to this feature
+                                        const nearestCoordinate = window.geometryEngine.nearestCoordinate(line, point);
+                                        
+                                        if (nearestCoordinate && nearestCoordinate.coordinate) {
+                                            if (nearestCoordinate.vertexIndex !== undefined) {
+                                                let cumulativeDistance = 0;
+                                                for (let i = 0; i < nearestCoordinate.vertexIndex; i++) {
+                                                    const p1 = {
+                                                        type: 'point',
+                                                        x: line.paths[0][i][0],
+                                                        y: line.paths[0][i][1],
+                                                        spatialReference: line.spatialReference
+                                                    };
+                                                    const p2 = {
+                                                        type: 'point',
+                                                        x: line.paths[0][i + 1][0],
+                                                        y: line.paths[0][i + 1][1],
+                                                        spatialReference: line.spatialReference
+                                                    };
+                                                    cumulativeDistance += window.geometryEngine.distance(p1, p2, 'meters');
+                                                }
+                                                
+                                                const lastVertex = {
+                                                    type: 'point',
+                                                    x: line.paths[0][nearestCoordinate.vertexIndex][0],
+                                                    y: line.paths[0][nearestCoordinate.vertexIndex][1],
+                                                    spatialReference: line.spatialReference
+                                                };
+                                                cumulativeDistance += window.geometryEngine.distance(lastVertex, nearestCoordinate.coordinate, 'meters');
+                                                
+                                                distance = cumulativeDistance;
+                                            }
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.warn('Error calculating distance for feature:', e);
+                                }
+                                
+                                return {
+                                    feature: feature,
+                                    distanceAlongLine: distance
+                                };
+                            });
+                            
+                            featuresWithDistance.sort((a, b) => a.distanceAlongLine - b.distanceAlongLine);
+                            
+                            const sortedFeatures = featuresWithDistance.map(item => item.feature);
+                            
+                            selectedFeaturesByLayer.set(layer.layerId, {
+                                layer: layer,
+                                features: sortedFeatures,
+                                orderedByLine: true
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error querying layer:', e);
+                    }
+                });
+                
+                await Promise.all(queries);
+                
+                displaySelectionResults();
+                updateStatus(`Found features along line path (${Math.round(bufferDistance)}m buffer) in ${selectedFeaturesByLayer.size} layers.`);
+                
+            } catch (error) {
+                updateStatus("Error selecting features: " + error.message);
+            }
+        }
+        
         function displaySelectionResults() {
             let html = '<div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">';
             html += '<strong>Features Found:</strong><br>';
@@ -345,7 +640,11 @@
                 $("#configureLayersBtn").style.display = "none";
             } else {
                 selectedFeaturesByLayer.forEach((data, layerId) => {
-                    html += `${data.layer.title}: ${data.features.length}<br>`;
+                    html += `${data.layer.title}: ${data.features.length}`;
+                    if (data.orderedByLine) {
+                        html += ' <span style="color:#17a2b8;font-size:10px;">↗ ordered by path</span>';
+                    }
+                    html += '<br>';
                 });
                 $("#configureLayersBtn").style.display = "block";
             }
@@ -355,17 +654,23 @@
             updateStatus(`Found features in ${selectedFeaturesByLayer.size} layers.`);
         }
         
-        function clearPolygonSelection() {
-            if (polygonGraphic) {
-                mapView.graphics.remove(polygonGraphic);
-                polygonGraphic = null;
+        function clearSelection() {
+            if (selectionGraphic) {
+                mapView.graphics.remove(selectionGraphic);
+                selectionGraphic = null;
             }
+            
+            if (mapClickHandler) {
+                mapClickHandler.remove();
+                mapClickHandler = null;
+            }
+            
             clearHighlights();
-            $("#clearPolygonBtn").disabled = true;
+            $("#clearSelectionBtn").disabled = true;
             selectedFeaturesByLayer.clear();
             $("#selectionResults").innerHTML = "";
             $("#configureLayersBtn").style.display = "none";
-            updateStatus("Polygon selection cleared.");
+            updateStatus("Selection cleared.");
         }
         
         async function showLayerConfiguration() {
@@ -394,7 +699,6 @@
             section.dataset.layerId = layer.layerId;
             section.dataset.order = order;
             
-            // Header
             const header = document.createElement('div');
             header.style.cssText = `
                 padding: 8px;
@@ -423,7 +727,6 @@
             header.appendChild(label);
             header.appendChild(expandIcon);
             
-            // Config body (collapsed by default)
             const body = document.createElement('div');
             body.style.cssText = `
                 padding: 8px;
@@ -431,7 +734,6 @@
                 background: #fff;
             `;
             
-            // Mode selection
             const modeDiv = document.createElement('div');
             modeDiv.style.marginBottom = '8px';
             modeDiv.innerHTML = `
@@ -446,12 +748,10 @@
                 </label>
             `;
             
-            // Field selection container
             const fieldsDiv = document.createElement('div');
             fieldsDiv.id = `fields_${layer.layerId}`;
             fieldsDiv.style.marginTop = '8px';
             
-            // Load fields
             await layer.load();
             const editableFields = layer.fields.filter(f => f.editable && f.type !== 'oid' && f.type !== 'global-id');
             
@@ -484,7 +784,6 @@
                 fieldsDiv.innerHTML = '<div style="color:#999;font-size:11px;">No editable fields available</div>';
             }
             
-            // Options
             const optionsDiv = document.createElement('div');
             optionsDiv.style.marginTop = '8px';
             optionsDiv.innerHTML = `
@@ -499,7 +798,6 @@
                 </label>
             `;
             
-            // Filter section
             const filterDiv = document.createElement('div');
             filterDiv.style.cssText = 'margin-top:8px;padding:8px;background:#e8f4f8;border:1px solid #b3d9e6;border-radius:3px;';
             filterDiv.innerHTML = `
@@ -523,14 +821,12 @@
                 </div>
             `;
             
-            // Toggle filter inputs
             const filterCheckbox = filterDiv.querySelector(`#enableFilter_${layer.layerId}`);
             const filterInputs = filterDiv.querySelector(`#filterInputs_${layer.layerId}`);
             filterCheckbox.onchange = () => {
                 filterInputs.style.display = filterCheckbox.checked ? 'block' : 'none';
             };
             
-            // Test filter button
             const testBtn = filterDiv.querySelector('.testFilterBtn');
             const testResult = filterDiv.querySelector('.filterTestResult');
             testBtn.onclick = async () => {
@@ -541,17 +837,14 @@
                     return;
                 }
                 
-                // Clean up any escaped quotes that might have been introduced
                 whereClause = whereClause.replace(/\\"/g, '"').replace(/\\'/g, "'");
                 
                 testResult.textContent = 'Testing...';
                 testResult.style.color = '#666';
                 
                 try {
-                    // Ensure layer is loaded
                     await layer.load();
                     
-                    // Get the data for this layer
                     const data = selectedFeaturesByLayer.get(layer.layerId);
                     
                     if (!data || !data.features) {
@@ -560,16 +853,14 @@
                         return;
                     }
                     
-                    // Test query with both geometry and where clause
                     let queryParams = {
                         where: whereClause,
                         returnGeometry: false,
                         returnCountOnly: true
                     };
                     
-                    // Add polygon geometry if available
-                    if (polygonGraphic && polygonGraphic.geometry) {
-                        queryParams.geometry = polygonGraphic.geometry;
+                    if (selectionGraphic && selectionGraphic.geometry) {
+                        queryParams.geometry = selectionGraphic.geometry;
                         queryParams.spatialRelationship = 'intersects';
                     }
                     
@@ -585,7 +876,6 @@
                 }
             };
             
-            // Order controls
             const orderDiv = document.createElement('div');
             orderDiv.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #dee2e6;';
             orderDiv.innerHTML = `
@@ -606,7 +896,6 @@
             section.appendChild(header);
             section.appendChild(body);
             
-            // Toggle expand/collapse
             header.onclick = (e) => {
                 if (e.target !== checkbox) {
                     const isExpanded = body.style.display === 'block';
@@ -615,7 +904,6 @@
                 }
             };
             
-            // Auto-expand when checked
             checkbox.onchange = () => {
                 if (checkbox.checked) {
                     body.style.display = 'block';
@@ -623,7 +911,6 @@
                 }
             };
             
-            // Toggle fields visibility based on mode
             const modeRadios = modeDiv.querySelectorAll('input[type="radio"]');
             modeRadios.forEach(radio => {
                 radio.onchange = () => {
@@ -679,7 +966,6 @@
                         filterWhere: ''
                     };
                     
-                    // Check for filter
                     const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
                     if (filterEnabled && filterEnabled.checked) {
                         const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
@@ -704,10 +990,8 @@
                 }
             });
             
-            // Sort by order
             layerConfigs.sort((a, b) => a.order - b.order);
             
-            // Apply filters and rebuild feature lists
             applyFiltersToConfigs().then(() => {
                 displaySummary();
             });
@@ -717,30 +1001,25 @@
             for (let config of layerConfigs) {
                 if (config.filterEnabled && config.filterWhere) {
                     try {
-                        // Clean up any escaped quotes
                         const cleanWhere = config.filterWhere.replace(/\\"/g, '"').replace(/\\'/g, "'");
                         
-                        // Query with BOTH polygon geometry AND where clause
                         const queryParams = {
                             where: cleanWhere,
                             returnGeometry: true,
                             outFields: ['*']
                         };
                         
-                        // Add polygon geometry to constrain to selection area
-                        if (polygonGraphic && polygonGraphic.geometry) {
-                            queryParams.geometry = polygonGraphic.geometry;
+                        if (selectionGraphic && selectionGraphic.geometry) {
+                            queryParams.geometry = selectionGraphic.geometry;
                             queryParams.spatialRelationship = 'intersects';
                         }
                         
                         const filteredResult = await config.layer.queryFeatures(queryParams);
                         
-                        // Replace features with filtered set
                         config.features = filteredResult.features;
                         config.filterApplied = true;
                         
                     } catch (error) {
-                        // If filter fails, keep original features but note the error
                         config.filterError = error.message;
                         config.filterApplied = false;
                     }
@@ -751,7 +1030,6 @@
         }
         
         function displaySummary() {
-            // Display summary
             let html = '';
             if (layerConfigs.length === 0) {
                 html = '<em style="color:#dc3545;">No layers selected. Please select at least one layer to process.</em>';
@@ -799,18 +1077,15 @@
         }
         
         function startEditing() {
-            // Check if bulk edit mode is enabled
             const bulkEditEnabled = $("#bulkEditMode").checked;
-            // Initialize session tracking
-    sessionStartTime = new Date();
-    editLog = [];
+            sessionStartTime = new Date();
+            editLog = [];
             
             if (bulkEditEnabled) {
                 startBulkEdit();
                 return;
             }
             
-            // Build flat queue for sequential editing
             currentEditingQueue = [];
             
             layerConfigs.forEach(config => {
@@ -831,7 +1106,6 @@
             showCurrentFeature();
         }
         
-        // Bulk Edit Functions
         let currentBulkLayerIndex = 0;
         
         function startBulkEdit() {
@@ -841,7 +1115,6 @@
         }
         
         function showBulkEditForm() {
-            // Filter to only layers with edit mode
             const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
             
             if (editLayers.length === 0) {
@@ -851,7 +1124,6 @@
             }
             
             if (currentBulkLayerIndex >= editLayers.length) {
-                // All bulk edits complete
                 setPhase('complete');
                 updateStatus('All bulk edits applied successfully!');
                 return;
@@ -859,7 +1131,6 @@
             
             const config = editLayers[currentBulkLayerIndex];
             
-            // Show layer selector
             const selectorHTML = `
                 <div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
                     <strong>Layer ${currentBulkLayerIndex + 1} of ${editLayers.length}:</strong> ${config.layer.title}<br>
@@ -868,7 +1139,6 @@
             `;
             $("#bulkEditLayerSelector").innerHTML = selectorHTML;
             
-            // Build form for this layer's fields
             const formContainer = $("#bulkEditFormContainer");
             formContainer.innerHTML = '<div style="font-weight:bold;margin-bottom:8px;">Set values to apply to all features:</div>';
             
@@ -877,7 +1147,6 @@
                 formContainer.appendChild(input);
             });
             
-            // Update preview button text
             $("#applyBulkEditBtn").textContent = `Apply to ${config.features.length} Features`;
             $("#bulkEditResults").innerHTML = '';
             $("#bulkEditPreview").style.display = 'none';
@@ -889,24 +1158,19 @@
             const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
             const config = editLayers[currentBulkLayerIndex];
             
-            // Collect values from form
             const bulkValues = {};
             let hasValues = false;
             
             const formContainer = $("#bulkEditFormContainer");
             
-            // Handle both regular inputs and searchable dropdowns
             formContainer.querySelectorAll('[data-field-name]').forEach(element => {
                 const fieldName = element.dataset.fieldName;
                 const fieldType = element.dataset.fieldType;
                 
-                // Check if this is a searchable dropdown container or regular input
                 let value;
                 if (element.dataset.selectedCode !== undefined) {
-                    // Searchable dropdown - use the selected code
                     value = element.dataset.selectedCode;
                 } else {
-                    // Regular input
                     value = element.value;
                 }
                 
@@ -930,7 +1194,6 @@
                 return;
             }
             
-            // Confirm
             const fieldNames = Object.keys(bulkValues).join(', ');
             if (!confirm(`Apply these values to ${config.features.length} features?\n\nFields: ${fieldNames}`)) {
                 return;
@@ -940,7 +1203,6 @@
             $("#applyBulkEditBtn").disabled = true;
             
             try {
-                // Build update features array
                 const updateFeatures = config.features.map(feature => {
                     const oidField = getObjectIdField(feature);
                     const oid = feature.attributes[oidField];
@@ -953,7 +1215,6 @@
                     };
                 });
                 
-                // Apply edits in batches
                 const batchSize = 100;
                 let successCount = 0;
                 let errorCount = 0;
@@ -967,59 +1228,54 @@
                     });
                     
                     if (result.updateFeatureResults) {
-    result.updateFeatureResults.forEach((res, idx) => {
-        const isSuccess = res.success === true || 
-                        (res.success === undefined && 
-                         res.error === null && 
-                         (res.objectId || res.globalId));
-        
-        const featureOID = batch[idx].attributes[getObjectIdField(config.features[0])];
-        
-        if (isSuccess) {
-            successCount++;
-            
-            // Log successful bulk edit
-            const logEntry = {
-                timestamp: new Date(),
-                action: 'bulk_update',
-                layerName: config.layer.title,
-                featureOID: featureOID,
-                changes: {},
-                success: true
-            };
-            
-            // Record changes
-            Object.keys(bulkValues).forEach(fieldName => {
-                const field = config.fields.find(f => f.name === fieldName);
-                logEntry.changes[fieldName] = {
-                    fieldAlias: field ? (field.alias || field.name) : fieldName,
-                    newValue: bulkValues[fieldName]
-                };
-            });
-            
-            editLog.push(logEntry);
-        } else {
-            errorCount++;
-            errors.push(`Feature ${featureOID}: ${res.error?.message || 'Unknown error'}`);
-            
-            // Log failed edit
-            editLog.push({
-                timestamp: new Date(),
-                action: 'bulk_update',
-                layerName: config.layer.title,
-                featureOID: featureOID,
-                success: false,
-                error: res.error?.message || 'Unknown error'
-            });
-        }
-    });
-}
+                        result.updateFeatureResults.forEach((res, idx) => {
+                            const isSuccess = res.success === true || 
+                                            (res.success === undefined && 
+                                             res.error === null && 
+                                             (res.objectId || res.globalId));
+                            
+                            const featureOID = batch[idx].attributes[getObjectIdField(config.features[0])];
+                            
+                            if (isSuccess) {
+                                successCount++;
+                                
+                                const logEntry = {
+                                    timestamp: new Date(),
+                                    action: 'bulk_update',
+                                    layerName: config.layer.title,
+                                    featureOID: featureOID,
+                                    changes: {},
+                                    success: true
+                                };
+                                
+                                Object.keys(bulkValues).forEach(fieldName => {
+                                    const field = config.fields.find(f => f.name === fieldName);
+                                    logEntry.changes[fieldName] = {
+                                        fieldAlias: field ? (field.alias || field.name) : fieldName,
+                                        newValue: bulkValues[fieldName]
+                                    };
+                                });
+                                
+                                editLog.push(logEntry);
+                            } else {
+                                errorCount++;
+                                errors.push(`Feature ${featureOID}: ${res.error?.message || 'Unknown error'}`);
+                                
+                                editLog.push({
+                                    timestamp: new Date(),
+                                    action: 'bulk_update',
+                                    layerName: config.layer.title,
+                                    featureOID: featureOID,
+                                    success: false,
+                                    error: res.error?.message || 'Unknown error'
+                                });
+                            }
+                        });
+                    }
                     
-                    // Update progress
                     updateStatus(`Processed ${Math.min(i + batchSize, updateFeatures.length)} of ${updateFeatures.length}...`);
                 }
                 
-                // Show results
                 let resultsHTML = `
                     <div style="padding:8px;background:#d4edda;border:1px solid #c3e6cb;border-radius:3px;margin-bottom:8px;">
                         <strong>✓ Bulk Edit Complete</strong><br>
@@ -1040,7 +1296,6 @@
                 
                 $("#bulkEditResults").innerHTML = resultsHTML;
                 
-                // Move to next layer after a delay
                 if (currentBulkLayerIndex < editLayers.length - 1) {
                     updateStatus('Bulk edit applied. Moving to next layer...');
                     setTimeout(() => {
@@ -1065,27 +1320,23 @@
                 $("#applyBulkEditBtn").disabled = false;
             }
         }
+        
         function showCurrentFeature() {
             if (currentIndex >= currentEditingQueue.length) {
-    setPhase('complete');
-    clearHighlights();
-    
-    // Display summary
-    displayEditSummary();
-    
-    updateStatus("All features processed!");
-    return;
-}
+                setPhase('complete');
+                clearHighlights();
+                displayEditSummary();
+                updateStatus("All features processed!");
+                return;
+            }
             
             const item = currentEditingQueue[currentIndex];
             
-            // Update progress
             $("#editingProgress").innerHTML = `
                 <strong>Progress:</strong> ${currentIndex + 1} of ${currentEditingQueue.length}<br>
                 <strong>Layer:</strong> ${item.layer.title}
             `;
             
-            // Update feature info
             const oidField = getObjectIdField(item.feature);
             const oid = item.feature.attributes[oidField];
             
@@ -1095,7 +1346,6 @@
                 Mode: ${item.mode === 'edit' ? 'Editing' : 'View Only'}
             `;
             
-            // Build form
             const formContainer = $("#editFormContainer");
             formContainer.innerHTML = '';
             
@@ -1108,11 +1358,9 @@
                 formContainer.innerHTML = '<div style="color:#666;font-style:italic;">View only - no fields to edit</div>';
             }
             
-            // Update buttons
             $("#prevBtn").disabled = currentIndex === 0;
             $("#skipBtn").style.display = item.allowSkip ? 'block' : 'none';
             
-            // Highlight feature
             highlightFeature(item.feature, item.showPopup);
             
             updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentIndex + 1} of ${currentEditingQueue.length}`);
@@ -1141,11 +1389,9 @@
             let input;
             
             if (field.domain && field.domain.type === 'coded-value') {
-                // Create searchable dropdown for coded values
                 const dropdownContainer = document.createElement('div');
                 dropdownContainer.style.position = 'relative';
                 
-                // Search input
                 const searchInput = document.createElement('input');
                 searchInput.type = 'text';
                 searchInput.placeholder = 'Search or select...';
@@ -1153,7 +1399,6 @@
                 searchInput.dataset.fieldName = field.name;
                 searchInput.dataset.fieldType = field.type;
                 
-                // Dropdown list
                 const dropdownList = document.createElement('div');
                 dropdownList.style.cssText = `
                     position:absolute;
@@ -1170,16 +1415,13 @@
                     box-shadow:0 2px 4px rgba(0,0,0,0.2);
                 `;
                 
-                // Store all options
                 const options = field.domain.codedValues.map(cv => ({
                     code: cv.code,
                     name: cv.name
                 }));
                 
-                // Add empty option
                 options.unshift({ code: '', name: '-- Select --' });
                 
-                // Function to render filtered options
                 function renderOptions(filterText = '') {
                     dropdownList.innerHTML = '';
                     const filter = filterText.toLowerCase();
@@ -1202,7 +1444,6 @@
                             optDiv.textContent = opt.name;
                             optDiv.dataset.code = opt.code;
                             
-                            // Hover effect
                             optDiv.onmouseenter = () => {
                                 optDiv.style.background = '#e3f2fd';
                             };
@@ -1210,7 +1451,6 @@
                                 optDiv.style.background = '#fff';
                             };
                             
-                            // Click handler
                             optDiv.onclick = () => {
                                 searchInput.value = opt.name;
                                 searchInput.dataset.selectedCode = opt.code;
@@ -1222,28 +1462,23 @@
                     }
                 }
                 
-                // Show dropdown on focus
                 searchInput.onfocus = () => {
                     renderOptions(searchInput.value);
                     dropdownList.style.display = 'block';
                 };
                 
-                // Filter as user types
                 searchInput.oninput = () => {
                     renderOptions(searchInput.value);
                     dropdownList.style.display = 'block';
-                    searchInput.dataset.selectedCode = ''; // Clear selection when typing
+                    searchInput.dataset.selectedCode = '';
                 };
                 
-                // Hide dropdown when clicking outside
                 searchInput.onblur = () => {
-                    // Delay to allow option click to register
                     setTimeout(() => {
                         dropdownList.style.display = 'none';
                     }, 200);
                 };
                 
-                // Set current value if exists
                 if (currentValue !== null && currentValue !== undefined) {
                     const matchingOption = options.find(opt => opt.code === currentValue);
                     if (matchingOption) {
@@ -1252,7 +1487,6 @@
                     }
                 }
                 
-                // Override getValue to return the selected code
                 searchInput.getValue = () => searchInput.dataset.selectedCode || '';
                 
                 dropdownContainer.appendChild(searchInput);
@@ -1451,21 +1685,16 @@
                     [oidField]: oid
                 };
                 
-                // Collect values from form
                 const formContainer = $("#editFormContainer");
                 
-                // Handle both regular inputs and searchable dropdowns
                 formContainer.querySelectorAll('[data-field-name]').forEach(element => {
                     const fieldName = element.dataset.fieldName;
                     const fieldType = element.dataset.fieldType;
                     
-                    // Check if this is a searchable dropdown container or regular input
                     let value;
                     if (element.dataset.selectedCode !== undefined) {
-                        // Searchable dropdown - use the selected code
                         value = element.dataset.selectedCode;
                     } else {
-                        // Regular input
                         value = element.value;
                     }
                     
@@ -1498,35 +1727,33 @@
                                      updateResult.error === null && 
                                      (updateResult.objectId || updateResult.globalId));
                     
-                   if (isSuccess) {
-    // Log the successful edit
-    const logEntry = {
-        timestamp: new Date(),
-        action: 'update',
-        layerName: item.layer.title,
-        featureOID: oid,
-        changes: {},
-        success: true
-    };
-    
-    // Record what fields were changed
-    Object.keys(updateAttributes).forEach(key => {
-        if (key !== oidField) {
-            const field = item.fields.find(f => f.name === key);
-            logEntry.changes[key] = {
-                fieldAlias: field ? (field.alias || field.name) : key,
-                oldValue: item.feature.attributes[key],
-                newValue: updateAttributes[key]
-            };
-        }
-    });
-    
-    editLog.push(logEntry);
-    
-    updateStatus("Feature updated successfully!");
-    currentIndex++;
-    setTimeout(() => showCurrentFeature(), 500);
-} else {
+                    if (isSuccess) {
+                        const logEntry = {
+                            timestamp: new Date(),
+                            action: 'update',
+                            layerName: item.layer.title,
+                            featureOID: oid,
+                            changes: {},
+                            success: true
+                        };
+                        
+                        Object.keys(updateAttributes).forEach(key => {
+                            if (key !== oidField) {
+                                const field = item.fields.find(f => f.name === key);
+                                logEntry.changes[key] = {
+                                    fieldAlias: field ? (field.alias || field.name) : key,
+                                    oldValue: item.feature.attributes[key],
+                                    newValue: updateAttributes[key]
+                                };
+                            }
+                        });
+                        
+                        editLog.push(logEntry);
+                        
+                        updateStatus("Feature updated successfully!");
+                        currentIndex++;
+                        setTimeout(() => showCurrentFeature(), 500);
+                    } else {
                         let errorMessage = "Unknown error";
                         if (updateResult.error && updateResult.error.message) {
                             errorMessage = updateResult.error.message;
@@ -1544,22 +1771,21 @@
         }
         
         function skipFeature() {
-    const item = currentEditingQueue[currentIndex];
-    const oidField = getObjectIdField(item.feature);
-    const oid = item.feature.attributes[oidField];
-    
-    // Log the skip
-    editLog.push({
-        timestamp: new Date(),
-        action: 'skip',
-        layerName: item.layer.title,
-        featureOID: oid,
-        success: true
-    });
-    
-    currentIndex++;
-    showCurrentFeature();
-}
+            const item = currentEditingQueue[currentIndex];
+            const oidField = getObjectIdField(item.feature);
+            const oid = item.feature.attributes[oidField];
+            
+            editLog.push({
+                timestamp: new Date(),
+                action: 'skip',
+                layerName: item.layer.title,
+                featureOID: oid,
+                success: true
+            });
+            
+            currentIndex++;
+            showCurrentFeature();
+        }
         
         function prevFeature() {
             if (currentIndex > 0) {
@@ -1576,18 +1802,14 @@
             editLog = [];
             sessionStartTime = null;
             
-            // Clear all graphics including highlights and polygon
             clearHighlights();
-            clearPolygonSelection();
+            clearSelection();
             
-            // Reset to selection phase
             setPhase('selection');
-            updateStatus("Ready to start over. Draw a polygon to select features.");
+            updateStatus("Ready to start over. Choose a selection method and select features.");
         }
         
-        // Configuration Save/Load Functions
         function saveConfiguration() {
-            // Build config from current UI state
             const config = {
                 layers: []
             };
@@ -1613,7 +1835,6 @@
                         filterWhere: ''
                     };
                     
-                    // Save filter settings
                     const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
                     if (filterEnabled && filterEnabled.checked) {
                         const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
@@ -1637,14 +1858,12 @@
                 return;
             }
             
-            // Prompt for name
             const configName = prompt('Enter a name for this configuration:', 'My Configuration');
             if (!configName) return;
             
             config.name = configName;
             config.savedAt = new Date().toISOString();
             
-            // Save to localStorage
             const savedConfigs = getSavedConfigurations();
             const configId = 'config_' + Date.now();
             savedConfigs[configId] = config;
@@ -1687,140 +1906,124 @@
         }
         
         function loadConfiguration() {
-    const select = $("#savedConfigSelect");
-    const configId = select.value;
-    
-    if (!configId) {
-        alert('Please select a configuration to load.');
-        return;
-    }
-    
-    const savedConfigs = getSavedConfigurations();
-    const config = savedConfigs[configId];
-    
-    if (!config) {
-        alert('Configuration not found.');
-        return;
-    }
-    
-    // Get all sections and validate they exist
-    const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
-    
-    if (!sections || sections.length === 0) {
-        alert('No layer configuration sections found. Please select features first.');
-        return;
-    }
-    
-    let appliedCount = 0;
-    let skippedCount = 0;
-    const skippedLayers = [];
-    
-    // Apply configuration to each section
-    sections.forEach(section => {
-        const layerId = parseInt(section.dataset.layerId);
-        
-        // Find matching config for this layer
-        const layerConfig = config.layers.find(lc => lc.layerId === layerId);
-        
-        if (layerConfig) {
-            // Try to find the checkbox with multiple fallback strategies
-            let checkbox = section.querySelector(`#layer_${layerId}_enabled`);
+            const select = $("#savedConfigSelect");
+            const configId = select.value;
             
-            // Fallback: try finding by input type and checking dataset
-            if (!checkbox) {
-                const inputs = section.querySelectorAll('input[type="checkbox"]');
-                checkbox = Array.from(inputs).find(input => 
-                    input.id === `layer_${layerId}_enabled`
-                );
+            if (!configId) {
+                alert('Please select a configuration to load.');
+                return;
             }
             
-            if (!checkbox) {
-                console.warn(`Checkbox not found for layer ${layerId} (${layerConfig.layerTitle})`);
-                skippedCount++;
-                skippedLayers.push(layerConfig.layerTitle);
-                return; // Skip this layer
+            const savedConfigs = getSavedConfigurations();
+            const config = savedConfigs[configId];
+            
+            if (!config) {
+                alert('Configuration not found.');
+                return;
             }
             
-            // Enable this layer
-            checkbox.checked = true;
+            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
             
-            // Expand the section - find body with more robust query
-            const body = section.querySelector('div[style*="padding"]') || 
-                         section.querySelector('div:nth-child(2)');
-            
-            if (body) {
-                body.style.display = 'block';
-                const expandIcon = section.querySelector('span[style*="font-size"]');
-                if (expandIcon) expandIcon.textContent = '▲';
+            if (!sections || sections.length === 0) {
+                alert('No layer configuration sections found. Please select features first.');
+                return;
             }
             
-            // Set mode
-            const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
-            if (modeRadio) {
-                modeRadio.checked = true;
+            let appliedCount = 0;
+            let skippedCount = 0;
+            const skippedLayers = [];
+            
+            sections.forEach(section => {
+                const layerId = parseInt(section.dataset.layerId);
                 
-                // Toggle fields visibility
-                const fieldsDiv = section.querySelector(`#fields_${layerId}`);
-                if (fieldsDiv) {
-                    fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
-                }
-            }
-            
-            // Set order
-            section.dataset.order = layerConfig.order;
-            const orderInput = section.querySelector('.orderInput');
-            if (orderInput) orderInput.value = layerConfig.order;
-            
-            // Set options
-            const popupCheck = section.querySelector(`#popup_${layerId}`);
-            if (popupCheck) popupCheck.checked = layerConfig.showPopup;
-            
-            const skipCheck = section.querySelector(`#allowskip_${layerId}`);
-            if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
-            
-            // Set filter settings
-            if (layerConfig.filterEnabled) {
-                const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
-                if (filterEnabledCheck) {
-                    filterEnabledCheck.checked = true;
+                const layerConfig = config.layers.find(lc => lc.layerId === layerId);
+                
+                if (layerConfig) {
+                    let checkbox = section.querySelector(`#layer_${layerId}_enabled`);
                     
-                    const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
-                    if (filterInputs) {
-                        filterInputs.style.display = 'block';
+                    if (!checkbox) {
+                        const inputs = section.querySelectorAll('input[type="checkbox"]');
+                        checkbox = Array.from(inputs).find(input => 
+                            input.id === `layer_${layerId}_enabled`
+                        );
                     }
                     
-                    const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
-                    if (filterWhere && layerConfig.filterWhere) {
-                        filterWhere.value = layerConfig.filterWhere;
+                    if (!checkbox) {
+                        console.warn(`Checkbox not found for layer ${layerId} (${layerConfig.layerTitle})`);
+                        skippedCount++;
+                        skippedLayers.push(layerConfig.layerTitle);
+                        return;
                     }
+                    
+                    checkbox.checked = true;
+                    
+                    const body = section.querySelector('div[style*="padding"]') || 
+                                 section.querySelector('div:nth-child(2)');
+                    
+                    if (body) {
+                        body.style.display = 'block';
+                        const expandIcon = section.querySelector('span[style*="font-size"]');
+                        if (expandIcon) expandIcon.textContent = '▲';
+                    }
+                    
+                    const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
+                    if (modeRadio) {
+                        modeRadio.checked = true;
+                        
+                        const fieldsDiv = section.querySelector(`#fields_${layerId}`);
+                        if (fieldsDiv) {
+                            fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
+                        }
+                    }
+                    
+                    section.dataset.order = layerConfig.order;
+                    const orderInput = section.querySelector('.orderInput');
+                    if (orderInput) orderInput.value = layerConfig.order;
+                    
+                    const popupCheck = section.querySelector(`#popup_${layerId}`);
+                    if (popupCheck) popupCheck.checked = layerConfig.showPopup;
+                    
+                    const skipCheck = section.querySelector(`#allowskip_${layerId}`);
+                    if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
+                    
+                    if (layerConfig.filterEnabled) {
+                        const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
+                        if (filterEnabledCheck) {
+                            filterEnabledCheck.checked = true;
+                            
+                            const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
+                            if (filterInputs) {
+                                filterInputs.style.display = 'block';
+                            }
+                            
+                            const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
+                            if (filterWhere && layerConfig.filterWhere) {
+                                filterWhere.value = layerConfig.filterWhere;
+                            }
+                        }
+                    }
+                    
+                    if (layerConfig.mode === 'edit' && layerConfig.fields && layerConfig.fields.length > 0) {
+                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
+                        fieldChecks.forEach(check => {
+                            if (check.dataset.fieldName && layerConfig.fields.includes(check.dataset.fieldName)) {
+                                check.checked = true;
+                            }
+                        });
+                    }
+                    
+                    appliedCount++;
                 }
-            }
+            });
             
-            // Set fields
-            if (layerConfig.mode === 'edit' && layerConfig.fields && layerConfig.fields.length > 0) {
-                const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
-                fieldChecks.forEach(check => {
-                    if (check.dataset.fieldName && layerConfig.fields.includes(check.dataset.fieldName)) {
-                        check.checked = true;
-                    }
-                });
+            if (appliedCount === 0) {
+                alert(`Configuration "${config.name}" could not be applied. None of the saved layers are in your current selection.`);
+            } else if (skippedCount > 0) {
+                updateStatus(`Configuration "${config.name}" partially loaded (${appliedCount} applied, ${skippedCount} skipped: ${skippedLayers.join(', ')})`);
+            } else {
+                updateStatus(`Configuration "${config.name}" loaded successfully! Applied to ${appliedCount} layer(s).`);
             }
-            
-            appliedCount++;
-        } else {
-            // This layer is in the selection but not in the saved config - that's fine, just skip it
         }
-    });
-    
-    // Provide feedback
-    if (appliedCount === 0) {
-        alert(`Configuration "${config.name}" could not be applied. None of the saved layers are in your current selection.`);
-    } else if (skippedCount > 0) {
-        updateStatus(`Configuration "${config.name}" partially loaded (${appliedCount} applied, ${skippedCount} skipped: ${skippedLayers.join(', ')})`);
-    } else {
-        updateStatus(`Configuration "${config.name}" loaded successfully! Applied to ${appliedCount} layer(s).`);
-    }
-}
         
         function deleteConfiguration() {
             const select = $("#savedConfigSelect");
@@ -1853,160 +2056,162 @@
                 alert('Error deleting configuration: ' + e.message);
             }
         }
+        
         function displayEditSummary() {
-    const summary = $("#editSummary");
-    
-    const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
-    const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
-    const skipped = editLog.filter(e => e.action === 'skip').length;
-    const failed = editLog.filter(e => !e.success).length;
-    
-    const duration = sessionStartTime ? Math.round((new Date() - sessionStartTime) / 1000) : 0;
-    const minutes = Math.floor(duration / 60);
-    const seconds = duration % 60;
-    
-    summary.innerHTML = `
-        <strong>Session Summary:</strong><br>
-        Total Edits: ${totalEdits}<br>
-        Successful: ${successfulEdits}<br>
-        ${skipped > 0 ? `Skipped: ${skipped}<br>` : ''}
-        ${failed > 0 ? `Failed: ${failed}<br>` : ''}
-        Duration: ${minutes}m ${seconds}s
-    `;
-}
-
-function exportSummaryReport() {
-    if (editLog.length === 0) {
-        alert('No edits to export. The edit log is empty.');
-        return;
-    }
-    
-    const sessionEnd = new Date();
-    const duration = sessionStartTime ? Math.round((sessionEnd - sessionStartTime) / 1000) : 0;
-    
-    // Build report
-    let report = '='.repeat(80) + '\n';
-    report += 'SEQUENTIAL FEATURE EDITOR - EDIT SUMMARY REPORT\n';
-    report += '='.repeat(80) + '\n\n';
-    
-    report += 'SESSION INFORMATION\n';
-    report += '-'.repeat(80) + '\n';
-    report += `Start Time: ${sessionStartTime ? sessionStartTime.toLocaleString() : 'Unknown'}\n`;
-    report += `End Time: ${sessionEnd.toLocaleString()}\n`;
-    report += `Duration: ${Math.floor(duration / 60)}m ${duration % 60}s\n\n`;
-    
-    // Summary statistics
-    const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
-    const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
-    const skipped = editLog.filter(e => e.action === 'skip').length;
-    const failed = editLog.filter(e => !e.success).length;
-    
-    report += 'SUMMARY STATISTICS\n';
-    report += '-'.repeat(80) + '\n';
-    report += `Total Edits Attempted: ${totalEdits}\n`;
-    report += `Successful Edits: ${successfulEdits}\n`;
-    report += `Skipped Features: ${skipped}\n`;
-    report += `Failed Edits: ${failed}\n`;
-    report += `Success Rate: ${totalEdits > 0 ? Math.round((successfulEdits / totalEdits) * 100) : 0}%\n\n`;
-    
-    // By layer breakdown
-    const layerStats = {};
-    editLog.forEach(entry => {
-        if (!layerStats[entry.layerName]) {
-            layerStats[entry.layerName] = {
-                updates: 0,
-                skips: 0,
-                failures: 0
-            };
+            const summary = $("#editSummary");
+            
+            const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
+            const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
+            const skipped = editLog.filter(e => e.action === 'skip').length;
+            const failed = editLog.filter(e => !e.success).length;
+            
+            const duration = sessionStartTime ? Math.round((new Date() - sessionStartTime) / 1000) : 0;
+            const minutes = Math.floor(duration / 60);
+            const seconds = duration % 60;
+            
+            summary.innerHTML = `
+                <strong>Session Summary:</strong><br>
+                Total Edits: ${totalEdits}<br>
+                Successful: ${successfulEdits}<br>
+                ${skipped > 0 ? `Skipped: ${skipped}<br>` : ''}
+                ${failed > 0 ? `Failed: ${failed}<br>` : ''}
+                Duration: ${minutes}m ${seconds}s
+            `;
         }
         
-        if (entry.action === 'update' || entry.action === 'bulk_update') {
-            if (entry.success) {
-                layerStats[entry.layerName].updates++;
-            } else {
-                layerStats[entry.layerName].failures++;
+        function exportSummaryReport() {
+            if (editLog.length === 0) {
+                alert('No edits to export. The edit log is empty.');
+                return;
             }
-        } else if (entry.action === 'skip') {
-            layerStats[entry.layerName].skips++;
-        }
-    });
-    
-    report += 'BY LAYER\n';
-    report += '-'.repeat(80) + '\n';
-    Object.keys(layerStats).forEach(layerName => {
-        const stats = layerStats[layerName];
-        report += `${layerName}:\n`;
-        report += `  Updated: ${stats.updates}\n`;
-        if (stats.skips > 0) report += `  Skipped: ${stats.skips}\n`;
-        if (stats.failures > 0) report += `  Failed: ${stats.failures}\n`;
-    });
-    report += '\n';
-    
-    // Detailed log
-    report += 'DETAILED EDIT LOG\n';
-    report += '='.repeat(80) + '\n\n';
-    
-    editLog.forEach((entry, idx) => {
-        report += `[${idx + 1}] ${entry.timestamp.toLocaleTimeString()}\n`;
-        report += `Layer: ${entry.layerName}\n`;
-        report += `Feature OID: ${entry.featureOID}\n`;
-        report += `Action: ${entry.action.toUpperCase()}\n`;
-        report += `Status: ${entry.success ? 'SUCCESS' : 'FAILED'}\n`;
-        
-        if (entry.changes && Object.keys(entry.changes).length > 0) {
-            report += 'Changes:\n';
-            Object.keys(entry.changes).forEach(fieldName => {
-                const change = entry.changes[fieldName];
-                if (change.oldValue !== undefined) {
-                    report += `  ${change.fieldAlias}: ${change.oldValue} → ${change.newValue}\n`;
-                } else {
-                    report += `  ${change.fieldAlias}: ${change.newValue}\n`;
+            
+            const sessionEnd = new Date();
+            const duration = sessionStartTime ? Math.round((sessionEnd - sessionStartTime) / 1000) : 0;
+            
+            let report = '='.repeat(80) + '\n';
+            report += 'PATH EDITOR - EDIT SUMMARY REPORT\n';
+            report += '='.repeat(80) + '\n\n';
+            
+            report += 'SESSION INFORMATION\n';
+            report += '-'.repeat(80) + '\n';
+            report += `Start Time: ${sessionStartTime ? sessionStartTime.toLocaleString() : 'Unknown'}\n`;
+            report += `End Time: ${sessionEnd.toLocaleString()}\n`;
+            report += `Duration: ${Math.floor(duration / 60)}m ${duration % 60}s\n\n`;
+            
+            const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
+            const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
+            const skipped = editLog.filter(e => e.action === 'skip').length;
+            const failed = editLog.filter(e => !e.success).length;
+            
+            report += 'SUMMARY STATISTICS\n';
+            report += '-'.repeat(80) + '\n';
+            report += `Total Edits Attempted: ${totalEdits}\n`;
+            report += `Successful Edits: ${successfulEdits}\n`;
+            report += `Skipped Features: ${skipped}\n`;
+            report += `Failed Edits: ${failed}\n`;
+            report += `Success Rate: ${totalEdits > 0 ? Math.round((successfulEdits / totalEdits) * 100) : 0}%\n\n`;
+            
+            const layerStats = {};
+            editLog.forEach(entry => {
+                if (!layerStats[entry.layerName]) {
+                    layerStats[entry.layerName] = {
+                        updates: 0,
+                        skips: 0,
+                        failures: 0
+                    };
+                }
+                
+                if (entry.action === 'update' || entry.action === 'bulk_update') {
+                    if (entry.success) {
+                        layerStats[entry.layerName].updates++;
+                    } else {
+                        layerStats[entry.layerName].failures++;
+                    }
+                } else if (entry.action === 'skip') {
+                    layerStats[entry.layerName].skips++;
                 }
             });
+            
+            report += 'BY LAYER\n';
+            report += '-'.repeat(80) + '\n';
+            Object.keys(layerStats).forEach(layerName => {
+                const stats = layerStats[layerName];
+                report += `${layerName}:\n`;
+                report += `  Updated: ${stats.updates}\n`;
+                if (stats.skips > 0) report += `  Skipped: ${stats.skips}\n`;
+                if (stats.failures > 0) report += `  Failed: ${stats.failures}\n`;
+            });
+            report += '\n';
+            
+            report += 'DETAILED EDIT LOG\n';
+            report += '='.repeat(80) + '\n\n';
+            
+            editLog.forEach((entry, idx) => {
+                report += `[${idx + 1}] ${entry.timestamp.toLocaleTimeString()}\n`;
+                report += `Layer: ${entry.layerName}\n`;
+                report += `Feature OID: ${entry.featureOID}\n`;
+                report += `Action: ${entry.action.toUpperCase()}\n`;
+                report += `Status: ${entry.success ? 'SUCCESS' : 'FAILED'}\n`;
+                
+                if (entry.changes && Object.keys(entry.changes).length > 0) {
+                    report += 'Changes:\n';
+                    Object.keys(entry.changes).forEach(fieldName => {
+                        const change = entry.changes[fieldName];
+                        if (change.oldValue !== undefined) {
+                            report += `  ${change.fieldAlias}: ${change.oldValue} → ${change.newValue}\n`;
+                        } else {
+                            report += `  ${change.fieldAlias}: ${change.newValue}\n`;
+                        }
+                    });
+                }
+                
+                if (entry.error) {
+                    report += `Error: ${entry.error}\n`;
+                }
+                
+                report += '\n';
+            });
+            
+            report += '='.repeat(80) + '\n';
+            report += 'END OF REPORT\n';
+            report += '='.repeat(80) + '\n';
+            
+            const blob = new Blob([report], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `edit-summary-${sessionEnd.toISOString().split('T')[0]}-${sessionEnd.getHours()}${sessionEnd.getMinutes()}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            
+            updateStatus('Summary report exported successfully!');
         }
         
-        if (entry.error) {
-            report += `Error: ${entry.error}\n`;
-        }
-        
-        report += '\n';
-    });
-    
-    report += '='.repeat(80) + '\n';
-    report += 'END OF REPORT\n';
-    report += '='.repeat(80) + '\n';
-    
-    // Create download
-    const blob = new Blob([report], { type: 'text/plain' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `edit-summary-${sessionEnd.toISOString().split('T')[0]}-${sessionEnd.getHours()}${sessionEnd.getMinutes()}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-    
-    updateStatus('Summary report exported successfully!');
-}
         function cleanup() {
             if (sketchViewModel) {
                 sketchViewModel.destroy();
                 sketchViewModel = null;
             }
             
+            if (mapClickHandler) {
+                mapClickHandler.remove();
+                mapClickHandler = null;
+            }
+            
             clearHighlights();
             
-            if (polygonGraphic) {
-                mapView.graphics.remove(polygonGraphic);
+            if (selectionGraphic) {
+                mapView.graphics.remove(selectionGraphic);
             }
             
             toolBox.remove();
         }
         
         // Event listeners
-        $("#drawPolygonBtn").onclick = enablePolygonDrawing;
-        $("#clearPolygonBtn").onclick = clearPolygonSelection;
+        $("#startSelectionBtn").onclick = startSelection;
+        $("#clearSelectionBtn").onclick = clearSelection;
         $("#configureLayersBtn").onclick = showLayerConfiguration;
         $("#saveConfigBtn").onclick = saveConfiguration;
         $("#loadConfigBtn").onclick = loadConfiguration;
@@ -2026,20 +2231,20 @@ function exportSummaryReport() {
         $("#startOverBtn").onclick = startOver;
         
         $("#closeTool").onclick = () => {
-            window.gisToolHost.closeTool('generic-sequential-editor');
+            window.gisToolHost.closeTool('path-editor');
         };
         
         // Initialize
         setPhase('selection');
-        updateStatus("Ready. Click 'Draw Selection Polygon' to start selecting features.");
+        updateStatus("Ready. Choose a selection method: Polygon, Line Path, or Single Click.");
         
         // Register tool with host
-        window.gisToolHost.activeTools.set('generic-sequential-editor', {
+        window.gisToolHost.activeTools.set('path-editor', {
             cleanup: cleanup,
             toolBox: toolBox
         });
         
     } catch (error) {
-        alert("Error creating Generic Sequential Editor Tool: " + (error.message || error));
+        alert("Error creating Path Editor Tool: " + (error.message || error));
     }
 })();
