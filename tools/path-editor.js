@@ -345,17 +345,22 @@
                     // Create buffer geometry around click point
                     const bufferGeometry = window.geometryEngine.buffer(event.mapPoint, bufferDistance, 'meters');
                     
-                    // Show the click point
-                    selectionGraphic = {
-                        geometry: event.mapPoint,
-                        symbol: {
-                            type: "simple-marker",
-                            color: [255, 0, 0, 0.8],
-                            size: 12,
-                            outline: { color: [255, 255, 255, 1], width: 2 }
-                        }
-                    };
-                    mapView.graphics.add(selectionGraphic);
+                    // Show the click point - create proper Graphic object
+                    await new Promise((resolve) => {
+                        window.require(['esri/Graphic'], (Graphic) => {
+                            selectionGraphic = new Graphic({
+                                geometry: event.mapPoint,
+                                symbol: {
+                                    type: "simple-marker",
+                                    color: [255, 0, 0, 0.8],
+                                    size: 12,
+                                    outline: { color: [255, 255, 255, 1], width: 2 }
+                                }
+                            });
+                            mapView.graphics.add(selectionGraphic);
+                            resolve();
+                        });
+                    });
                     
                     // Query all visible feature layers
                     selectedFeaturesByLayer.clear();
