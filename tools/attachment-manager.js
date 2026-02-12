@@ -24,26 +24,29 @@
         
         const mapView = utils.getMapView();
         
-        // Target layers configuration - EXPANDED
-        const TARGET_LAYERS = [
-            {id: 21050, name: "Info Point"},
-            {id: 22100, name: "GIG"},
-            {id: 22200, name: "Make Ready"},
-            {id: 23100, name: "Adder Line"},
-            {id: 23150, name: "Restoration Polygon"},
-            {id: 23250, name: "Pothole"},
-            {id: 41050, name: "Fiber Cable"},
-            {id: 41150, name: "Splice Closure"},
-            {id: 41200, name: "Fiber Equipment"},
-            {id: 41250, name: "Slack Loop"},
-            {id: 42050, name: "Underground Span"},
-            {id: 42100, name: "Vault"},
-            {id: 43050, name: "Aerial Span"},
-            {id: 43150, name: "Pole"},
-            {id: 43200, name: "Riser"},
-            {id: 43250, name: "Anchor"},
-            {id: 45000, name: "Equipment"}
-        ];
+
+// Target layers configuration - AUTO-DETECT from map
+const TARGET_LAYERS = [];
+
+// Auto-detect all feature layers that support attachments
+mapView.map.allLayers.forEach(layer => {
+    if (layer.type === "feature" && layer.layerId !== undefined) {
+        TARGET_LAYERS.push({
+            id: layer.layerId,
+            name: layer.title || `Layer ${layer.layerId}`,
+            layer: layer // Store reference to actual layer
+        });
+    }
+});
+
+// Sort by name for easier selection
+TARGET_LAYERS.sort((a, b) => a.name.localeCompare(b.name));
+
+console.log('Auto-detected layers:', TARGET_LAYERS);
+
+if (TARGET_LAYERS.length === 0) {
+    throw new Error('No feature layers found in the map');
+}
         
         const z = 99999;
         
