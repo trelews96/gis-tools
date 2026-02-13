@@ -3,7 +3,7 @@
 // - Overview of all active work orders with key metrics
 // - Quality tracking per WO
 // - Run rate and completion forecasting
-// - Drill-down detailed analysis
+// - Drill-down detailed analysis with layer + category filtering
 // - Global crew performance
 // - Stale project tracking
 
@@ -63,15 +63,16 @@
             globalCrewPerformance: null
         };
         let selectedWOForDrilldown = null;
-        let activeLayerFilter = null; // ADD THIS LINE - tracks active layer filter
+        let activeLayerFilter = null; // tracks active layer filter
+        let activeCategoryFilter = null; // NEW: tracks active category filter
         let drilldownData = null;
         let isProcessing = false;
         let sortBy = 'completion'; // completion, billing, invoice, lastActivity
         
         // Helper function to get selected layers with recalculated weights
         function getSelectedLayers() {
-    return targetLayers.filter((_, idx) => selectedLayers.includes(idx));
-}
+            return targetLayers.filter((_, idx) => selectedLayers.includes(idx));
+        }
         
         // Helper function to get completion bar color
         function getCompletionColor(percent) {
@@ -79,79 +80,225 @@
             if (percent >= 50) return '#ff9800'; // Orange
             return '#f44336'; // Red
         }
-        // Helper function to filter map by layer
-function filterMapByLayer(layerIndex) {
-    try {
-        const layer = targetLayers[layerIndex];
-        const mapLayer = mapView.map.allLayers.find(l => l.id === layer.id);
         
-        if (!mapLayer) {
-            console.warn(`Layer ${layer.name} not found`);
-            return;
-        }
-        
-        // Toggle filter
-        if (activeLayerFilter === layerIndex) {
-            // Clear filter if clicking the same layer
-            clearMapFilters();
-            activeLayerFilter = null;
-        } else {
-            // Clear all filters first
-            clearAllLayerFilters();
-            
-            // Build filter expression
-            let filterExpression = '';
-            
-            // Add work order filter
-            if (selectedPurchaseOrders.length > 0) {
-                const poList = selectedPurchaseOrders.map(po => `'${po}'`).join(',');
-                filterExpression = `purchase_order IN (${poList})`;
-            }
-            
-            // Add layer-specific filter if exists
-            if (layer.additionalFilter) {
-                filterExpression = filterExpression 
-                    ? `${filterExpression} AND ${layer.additionalFilter}`
-                    : layer.additionalFilter;
-            }
-            
-            // Apply filter to the specific layer
-            mapLayer.definitionExpression = filterExpression;
-            activeLayerFilter = layerIndex;
-            
-            // Zoom to filtered features
-            mapLayer.queryExtent({ where: filterExpression || '1=1' })
-                .then(result => {
-                    if (result.extent) {
-                        mapView.goTo(result.extent.expand(1.2));
+        // NEW FUNCTION: Filter map by both layer AND category
+        function filterMapByLayerAndCategory(layerIndex, categoryName) {
+            try {
+                const layer = targetLayers[layerIndex];
+                const mapLayer = mapView.map.allLayers.find(l => l.layerId === layer.id);
+                
+                if (!mapLayer) {
+                    console.warn(`Layer ${layer.name} not found`);
+                    return;
+                }
+                
+                // Toggle filter
+                if (activeLayerFilter === layerIndex && activeCategoryFilter === categoryName) {
+                    // Clear filter if clicking the same cell
+                    clearMapFilters();
+                    activeLayerFilter = null;
+                    activeCategoryFilter = null;
+                } else {
+                    // Clear all filters first
+                    clearAllLayerFilters();
+                    
+                    // Build filter expression
+                    let filterExpression = '';
+                    
+                    // Add work order filter
+                    if (selectedWOForDrilldown) {
+                        filterExpression = `workorder_id='${selectedWOForDrilldown.toString().replace(/'/g, "''")}'`;
                     }
-                })
-                .catch(err => console.warn('Could not zoom to layer:', err));
+                    
+                    // Add purchase order filter if applicable
+                    if (selectedPurchaseOrders.length > 0 && selectedPurchaseOrders.length < allPurchaseOrders.length) {
+                        const poList = selectedPurchaseOrders.map(po => `'${po}'`).join(',');
+                        const poFilter = `purchase_order_id IN (${poList})`;
+                        filterExpression = filterExpression 
+                            ? `${filterExpression} AND ${poFilter}`
+                            : poFilter;
+                    }
+                    
+                    // Add category-specific filter based on the row clicked
+                    const categoryFilter = getCategoryFilterClause(categoryName);
+                    if (categoryFilter) {
+                        filterExpression = filterExpression 
+                            ? `${filterExpression} AND ${categoryFilter}`
+                            : categoryFilter;
+                    }
+                    
+                    // Add layer-specific filter if exists
+                    if (layer.additionalFilter) {
+                        filterExpression = filterExpression 
+                            ? `${filterExpression} AND ${layer.additionalFilter}`
+                            : layer.additionalFilter;
+                    }
+                    
+                    // Apply filter to the specific layer
+                    mapLayer.definitionExpression = filterExpression;
+                    activeLayerFilter = layerIndex;
+                    activeCategoryFilter = categoryName;
+                    
+                    // Zoom to filtered features
+                    mapLayer.queryExtent({ where: filterExpression || '1=1' })
+                        .then(result => {
+                            if (result.extent) {
+                                mapView.goTo(result.extent.expand(1.2));
+                            }
+                        })
+                        .catch(err => console.warn('Could not zoom to layer:', err));
+                }
+                
+                // Update UI to show active filter
+                updateDrilldownDisplay();
+                
+            } catch (error) {
+                console.error('Error filtering map by layer and category:', error);
+            }
         }
         
-        // Update UI to show active filter
-        updateDrilldownDisplay();
-        
-    } catch (error) {
-        console.error('Error filtering map by layer:', error);
-    }
-}
-
-// Helper to clear filters from all target layers
-function clearAllLayerFilters() {
-    targetLayers.forEach(layer => {
-        const mapLayer = mapView.map.allLayers.find(l => l.id === layer.id);
-        if (mapLayer) {
-            mapLayer.definitionExpression = '';
+        // NEW FUNCTION: Get filter clause for a specific category
+        function getCategoryFilterClause(categoryName) {
+            const categoryDefinitions = {
+                "Total Assigned": {
+                    includeStatuses: ['ASSG']
+                },
+                "Designed": {
+                    excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD']
+                },
+                "Constructed": {
+                    excludeStatuses: ['DNB', 'ONHOLD', 'DEFRD', 'NA', 'ASSG', 'INPROG']
+                },
+                "Remaining to Construct": {
+                    requireStage: 'OSP_CONST',
+                    includeStatuses: ['NA']
+                },
+                "On Hold": {
+                    includeStatuses: ['ONHOLD']
+                },
+                "Daily Complete": {
+                    includeStatuses: ['DLYCMPLT', 'INVCMPLT']
+                },
+                "Ready for Daily": {
+                    includeStatuses: ['RDYFDLY']
+                },
+                "Invoiced": {
+                    includeStatuses: ['INVCMPLT']
+                }
+            };
+            
+            const categoryDef = categoryDefinitions[categoryName];
+            if (!categoryDef) return '';
+            
+            let clause = '';
+            
+            if (categoryDef.includeStatuses) {
+                clause = categoryDef.includeStatuses.map(s => `workflow_status = '${s}'`).join(' OR ');
+                if (categoryDef.includeStatuses.length > 1) {
+                    clause = `(${clause})`;
+                }
+            } else if (categoryDef.excludeStatuses) {
+                clause = categoryDef.excludeStatuses.map(s => `workflow_status <> '${s}'`).join(' AND ');
+            }
+            
+            if (categoryDef.requireStage) {
+                const stageClause = `workflow_stage = '${categoryDef.requireStage}'`;
+                clause = clause ? `${clause} AND ${stageClause}` : stageClause;
+            }
+            
+            return clause;
         }
-    });
-}
+        
+        // UPDATED FUNCTION: Update drilldown display to show active filter
+        function updateDrilldownDisplay() {
+            if (drilldownData) {
+                const layersInUse = getSelectedLayers();
+                const crewPerf = []; // We don't need to recalculate crew perf for display update
+                const alerts = generateWOAlerts(drilldownData, selectedWOForDrilldown);
+                const isAllTime = !$("#drilldownStartDate").value || !$("#drilldownEndDate").value || 
+                                  $("#allTimeDrilldownBtn").style.background === 'rgb(51, 103, 214)';
+                renderDrilldownResults(drilldownData, crewPerf, alerts, isAllTime);
+            }
+        }
+        
+        // Helper function to filter map by layer (header click - shows all categories)
+        function filterMapByLayer(layerIndex) {
+            try {
+                const layer = targetLayers[layerIndex];
+                const mapLayer = mapView.map.allLayers.find(l => l.layerId === layer.id);
+                
+                if (!mapLayer) {
+                    console.warn(`Layer ${layer.name} not found`);
+                    return;
+                }
+                
+                // Toggle filter
+                if (activeLayerFilter === layerIndex && activeCategoryFilter === null) {
+                    // Clear filter if clicking the same layer header
+                    clearMapFilters();
+                    activeLayerFilter = null;
+                    activeCategoryFilter = null;
+                } else {
+                    // Clear all filters first
+                    clearAllLayerFilters();
+                    
+                    // Build filter expression
+                    let filterExpression = '';
+                    
+                    // Add work order filter
+                    if (selectedWOForDrilldown) {
+                        filterExpression = `workorder_id='${selectedWOForDrilldown.toString().replace(/'/g, "''")}'`;
+                    } else if (selectedPurchaseOrders.length > 0 && selectedPurchaseOrders.length < allPurchaseOrders.length) {
+                        const poList = selectedPurchaseOrders.map(po => `'${po}'`).join(',');
+                        filterExpression = `purchase_order_id IN (${poList})`;
+                    }
+                    
+                    // Add layer-specific filter if exists
+                    if (layer.additionalFilter) {
+                        filterExpression = filterExpression 
+                            ? `${filterExpression} AND ${layer.additionalFilter}`
+                            : layer.additionalFilter;
+                    }
+                    
+                    // Apply filter to the specific layer
+                    mapLayer.definitionExpression = filterExpression || '1=1';
+                    activeLayerFilter = layerIndex;
+                    activeCategoryFilter = null; // Reset category filter
+                    
+                    // Zoom to filtered features
+                    mapLayer.queryExtent({ where: filterExpression || '1=1' })
+                        .then(result => {
+                            if (result.extent) {
+                                mapView.goTo(result.extent.expand(1.2));
+                            }
+                        })
+                        .catch(err => console.warn('Could not zoom to layer:', err));
+                }
+                
+                // Update UI to show active filter
+                updateDrilldownDisplay();
+                
+            } catch (error) {
+                console.error('Error filtering map by layer:', error);
+            }
+        }
 
-// Helper to clear all map filters
-function clearMapFilters() {
-    clearAllLayerFilters();
-    activeLayerFilter = null;
-}
+        // Helper to clear filters from all target layers
+        function clearAllLayerFilters() {
+            targetLayers.forEach(layer => {
+                const mapLayer = mapView.map.allLayers.find(l => l.layerId === layer.id);
+                if (mapLayer) {
+                    mapLayer.definitionExpression = '';
+                }
+            });
+        }
+
+        // Helper to clear all map filters
+        function clearMapFilters() {
+            clearAllLayerFilters();
+            activeLayerFilter = null;
+            activeCategoryFilter = null;
+        }
         
         // Helper function to format dates
         function formatDateForInput(date) {
@@ -168,11 +315,11 @@ function clearMapFilters() {
         }
         // Helper function to get a unique identifier for the week (e.g., the date of the Sunday)
         function getStartOfWeek(date) {
-            const d = new Date(date);
-            const day = d.getDay(); // 0 = Sunday, 1 = Monday...
-            const diff = d.getDate() - day; // Go back to Sunday
-            return new Date(d.setDate(diff)).toISOString().split('T')[0];
-        }
+            const d = new Date(date);
+            const day = d.getDay(); // 0 = Sunday, 1 = Monday...
+            const diff = d.getDate() - day; // Go back to Sunday
+            return new Date(d.setDate(diff)).toISOString().split('T')[0];
+        }
         
        const styles = document.createElement('style');
 styles.textContent = `
@@ -280,15 +427,28 @@ styles.textContent = `
         border-radius: 6px;
     }
     .layer-header-cell {
-    transition: background-color 0.2s, transform 0.1s;
-}
-.layer-header-cell:hover {
-    background-color: #e3f2fd !important;
-    transform: scale(1.02);
-}
-.layer-header-cell:active {
-    transform: scale(0.98);
-}
+        transition: background-color 0.2s, transform 0.1s;
+    }
+    .layer-header-cell:hover {
+        background-color: #e3f2fd !important;
+        transform: scale(1.02);
+    }
+    .layer-header-cell:active {
+        transform: scale(0.98);
+    }
+    .clickable-cell {
+        cursor: pointer;
+        transition: background-color 0.2s;
+        user-select: none;
+    }
+    .clickable-cell:hover {
+        background-color: #e8f4f8 !important;
+    }
+    .active-filter-cell {
+        background-color: #3367d6 !important;
+        color: white !important;
+        font-weight: bold;
+    }
 `;
         document.head.appendChild(styles);
         
@@ -748,13 +908,13 @@ if (fiberLayer) {
     metrics.fiberOutstanding = Math.round(Math.max(0, fiberConstructed - fiberDailyComplete));
     
    // Calculate run rate based on active work weeks
-    const fiberActiveWeekCount = fiberActiveWeeks.size;
-    if (fiberActiveWeekCount > 0) {
-        const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
-        metrics.fiberRunRate = Math.round(fiberConstructed / workingDays);
-    } else {
-        metrics.fiberRunRate = 0;
-    }
+    const fiberActiveWeekCount = fiberActiveWeeks.size;
+    if (fiberActiveWeekCount > 0) {
+        const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
+        metrics.fiberRunRate = Math.round(fiberConstructed / workingDays);
+    } else {
+        metrics.fiberRunRate = 0;
+    }
 }
             
             // Underground Span
@@ -793,13 +953,13 @@ if (ugLayer) {
     metrics.ugOutstanding = Math.round(Math.max(0, ugConstructed - ugDailyComplete));
     
    // Calculate run rate based on active work weeks
-    const ugActiveWeekCount = ugActiveWeeks.size;
-    if (ugActiveWeekCount > 0) {
-        const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
-        metrics.ugRunRate = Math.round(ugConstructed / workingDays);
-    } else {
-        metrics.ugRunRate = 0;
-    }
+    const ugActiveWeekCount = ugActiveWeeks.size;
+    if (ugActiveWeekCount > 0) {
+        const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
+        metrics.ugRunRate = Math.round(ugConstructed / workingDays);
+    } else {
+        metrics.ugRunRate = 0;
+    }
 }
             
             // Calculate remaining work for expected completion
@@ -1103,18 +1263,18 @@ metrics.ugOutstanding = Math.round(Math.max(0, metrics.ugConstructed - metrics.u
 // Run rates based on 5-day work week
 const fiberActiveWeekCount = metrics.fiberActiveWeeks.size;
 if (fiberActiveWeekCount > 0) {
-    const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
-    metrics.fiberRunRate = Math.round(metrics.fiberConstructed / workingDays);
+    const workingDays = Math.max(1, fiberActiveWeekCount * 5); // 5 days per active week
+    metrics.fiberRunRate = Math.round(metrics.fiberConstructed / workingDays);
 } else {
-    metrics.fiberRunRate = 0;
+    metrics.fiberRunRate = 0;
 }
 
 const ugActiveWeekCount = metrics.ugActiveWeeks.size;
 if (ugActiveWeekCount > 0) {
-    const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
-    metrics.ugRunRate = Math.round(metrics.ugConstructed / workingDays);
+    const workingDays = Math.max(1, ugActiveWeekCount * 5); // 5 days per active week
+    metrics.ugRunRate = Math.round(metrics.ugConstructed / workingDays);
 } else {
-    metrics.ugRunRate = 0;
+    metrics.ugRunRate = 0;
 }
                 
                 // For expected completion: calculate remaining work based on fiber & UG designed vs constructed
@@ -1498,11 +1658,11 @@ if (ugActiveWeekCount > 0) {
                 
                 crewData.forEach((data, crewName) => {
     let dailyRate = 0;
-    const activeWeekCount = data.activeWeeks.size;
-    if (activeWeekCount > 0) {
-        const workingDays = Math.max(1, activeWeekCount * 5);
-        dailyRate = data.totalConstructed / workingDays;
-    }
+    const activeWeekCount = data.activeWeeks.size;
+    if (activeWeekCount > 0) {
+        const workingDays = Math.max(1, activeWeekCount * 5);
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     // Quality metrics
                     const quality = qualityData.get(crewName);
@@ -1850,6 +2010,9 @@ $("#closeDrilldown").onclick = () => {
     $("#drilldownSection").style.display = "none";
     selectedWOForDrilldown = null;
     drilldownData = null;
+    
+    // Clear map filters when closing drilldown
+    clearMapFilters();
     
     // Remove selected highlighting from active cards
     toolBox.querySelectorAll('.wo-card').forEach(card => {
@@ -2261,11 +2424,11 @@ if (installDate) {
                 
                 crewData.forEach((data, crewName) => {
    let dailyRate = 0;
-    const activeWeekCount = data.activeWeeks.size;
-    if (activeWeekCount > 0) {
-        const workingDays = Math.max(1, activeWeekCount * 5);
-        dailyRate = data.totalConstructed / workingDays;
-    }
+    const activeWeekCount = data.activeWeeks.size;
+    if (activeWeekCount > 0) {
+        const workingDays = Math.max(1, activeWeekCount * 5);
+        dailyRate = data.totalConstructed / workingDays;
+    }
                     
                     const quality = qualityData.get(crewName);
                     const avgApprovalDays = quality && quality.approvalDaysCount > 0 ? 
@@ -2385,29 +2548,31 @@ if (installDate) {
         
         // Render drilldown results
         function renderDrilldownResults(tableData, crewPerf, alerts, isAllTime = false) {
-            const container = $("#drilldownResults");
-            let html = '';
-            
-            // Show filter status
-            const filterStatus = isAllTime ? 
-                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Showing: <strong>All Time</strong></div>' :
-                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Filtered by date range</div>';
-            html += filterStatus;
-            
-            // vvv PASTE THE MOVED CODE HERE AND WRAP IT vvv
-            html += `
-                ${activeLayerFilter !== null ? `
+            const container = $("#drilldownResults");
+            let html = '';
+            
+            // Show filter status
+            const filterStatus = isAllTime ? 
+                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Showing: <strong>All Time</strong></div>' :
+                '<div style="font-size:11px;color:#666;margin-bottom:8px;">📅 Filtered by date range</div>';
+            html += filterStatus;
+            
+            // Clear map filter button (UPDATED to show category too)
+            if (activeLayerFilter !== null) {
+                const layerName = targetLayers[activeLayerFilter].name;
+                const categoryName = activeCategoryFilter || 'All Categories';
+                html += `
                 <div style="margin-bottom:8px;">
                     <button onclick="clearMapFilters(); updateDrilldownDisplay();" 
                             style="padding:6px 12px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
-                        ✖ Clear Layer Filter (${targetLayers[activeLayerFilter].name})
+                        ✖ Clear Map Filter: ${layerName} - ${categoryName}
                     </button>
                 </div>
-                ` : ''}
-            `;
+                `;
+            }
 
-            // Summary section
-            const designedRow = tableData.find(r => r.category === "Designed");
+            // Summary section
+            const designedRow = tableData.find(r => r.category === "Designed");
             const constructedRow = tableData.find(r => r.category === "Constructed");
             const dailyCompleteRow = tableData.find(r => r.category === "Daily Complete");
             const invoicedRow = tableData.find(r => r.category === "Invoiced");
@@ -2485,11 +2650,11 @@ if (installDate) {
                 html += '</div>';
             }
             
-            // Layer-by-layer table with completion percentages
+            // Layer-by-layer table with completion percentages AND clickable cells
             const layersInUse = getSelectedLayers();
             html += `
                 <div style="margin-bottom:12px;">
-                    <div style="font-weight:bold;margin-bottom:8px;">📊 Layer-by-Layer Breakdown</div>
+                    <div style="font-weight:bold;margin-bottom:8px;">📊 Layer-by-Layer Breakdown (Click cells to filter map)</div>
                     <div style="overflow-x:auto;">
                         <table style="width:100%;border-collapse:collapse;font-size:11px;">
                             <thead>
@@ -2497,16 +2662,17 @@ if (installDate) {
         <th style="border:1px solid #ddd;padding:6px;text-align:left;">Category</th>
         ${layersInUse.map((layer, idx) => {
             const layerIndex = targetLayers.indexOf(layer);
-            const isActive = activeLayerFilter === layerIndex;
+            const isActive = activeLayerFilter === layerIndex && activeCategoryFilter === null;
             const headerStyle = isActive 
-                ? 'background:#3367d6;color:white;cursor:pointer;user-select:none;' 
-                : 'cursor:pointer;user-select:none;';
+                ? 'background:#3367d6;color:white;' 
+                : '';
             const icon = isActive ? '🔍 ' : '';
             
             return `
-                <th style="border:1px solid #ddd;padding:6px;text-align:center;${headerStyle}" 
+                <th class="layer-header-cell" 
+                    style="border:1px solid #ddd;padding:6px;text-align:center;cursor:pointer;user-select:none;${headerStyle}" 
                     onclick="filterMapByLayer(${layerIndex})"
-                    title="Click to filter map by ${layer.name}">
+                    title="Click to filter map by ${layer.name} (all categories)">
                     ${icon}${layer.name}
                 </th>
             `;
@@ -2514,8 +2680,8 @@ if (installDate) {
     </tr>
 </thead>
                             <tbody>
-                                ${tableData.map((row, idx) => {
-                                    const rowStyle = idx % 2 === 0 ? 'background:#fff;' : 'background:#f9f9f9;';
+                                ${tableData.map((row, rowIdx) => {
+                                    const rowStyle = rowIdx % 2 === 0 ? 'background:#fff;' : 'background:#f9f9f9;';
                                     
                                     // Calculate percentages for key rows
                                     let showPercentages = false;
@@ -2527,7 +2693,12 @@ if (installDate) {
                                         <tr style="${rowStyle}">
                                             <td style="border:1px solid #ddd;padding:6px;font-weight:bold;">${row.category}</td>
                                             ${row.values.map((value, colIdx) => {
-                                                let cellContent = value;
+                                                const layerIndex = targetLayers.indexOf(layersInUse[colIdx]);
+                                                const isActive = activeLayerFilter === layerIndex && activeCategoryFilter === row.category;
+                                                const cellStyle = isActive ? 'background:#3367d6;color:white;font-weight:bold;' : '';
+                                                const icon = isActive ? '🔍 ' : '';
+                                                
+                                                let cellContent = icon + value;
                                                 
                                                 if (showPercentages && designedRow) {
                                                     const designed = designedRow.rawValues[colIdx] || 0;
@@ -2535,12 +2706,19 @@ if (installDate) {
                                                     
                                                     if (designed > 0) {
                                                         const pct = (current / designed * 100).toFixed(1);
-                                                        const color = getCompletionColor(parseFloat(pct));
+                                                        const color = isActive ? 'white' : getCompletionColor(parseFloat(pct));
                                                         cellContent += `<div style="font-size:10px;color:${color};margin-top:2px;">(${pct}%)</div>`;
                                                     }
                                                 }
                                                 
-                                                return `<td style="border:1px solid #ddd;padding:6px;text-align:right;">${cellContent}</td>`;
+                                                return `
+                                                    <td class="clickable-cell ${isActive ? 'active-filter-cell' : ''}" 
+                                                        style="border:1px solid #ddd;padding:6px;text-align:right;${cellStyle}" 
+                                                        onclick="filterMapByLayerAndCategory(${layerIndex}, '${row.category}')"
+                                                        title="Click to filter map: ${layersInUse[colIdx].name} - ${row.category}">
+                                                        ${cellContent}
+                                                    </td>
+                                                `;
                                             }).join('')}
                                         </tr>
                                     `;
@@ -2549,7 +2727,7 @@ if (installDate) {
                         </table>
                     </div>
                     <div style="margin-top:6px;font-size:10px;color:#666;font-style:italic;">
-                        💡 Percentages shown for Constructed, Daily Complete, and Invoiced (relative to Designed)
+                        💡 Click any cell to filter the map by that layer + category combination. Click headers to show all categories for a layer.
                     </div>
                 </div>
             `;
@@ -2609,18 +2787,19 @@ if (installDate) {
         $("#closeTool").onclick = () => {
             window.gisToolHost.closeTool('wo-dashboard');
         };
+        
         // Make functions globally accessible for onclick handlers
-window.filterMapByLayer = filterMapByLayer;
-window.clearMapFilters = clearMapFilters;
-
-// Initialize
-loadPurchaseOrders();
+        window.filterMapByLayer = filterMapByLayer;
+        window.filterMapByLayerAndCategory = filterMapByLayerAndCategory;
+        window.clearMapFilters = clearMapFilters;
+        window.updateDrilldownDisplay = updateDrilldownDisplay;
         
         // Cleanup function
       // Cleanup function
  		function cleanup() {
  		    // Clear active layer filter
  		    activeLayerFilter = null;
+ 		    activeCategoryFilter = null;
  		
  		    // Restore map filters to their initial state
  		    try {
@@ -2653,8 +2832,14 @@ loadPurchaseOrders();
  		    if (window.filterMapByLayer) {
  		        delete window.filterMapByLayer;
  		    }
+ 		    if (window.filterMapByLayerAndCategory) {
+ 		        delete window.filterMapByLayerAndCategory;
+ 		    }
  		    if (window.clearMapFilters) {
  		        delete window.clearMapFilters;
+ 		    }
+ 		    if (window.updateDrilldownDisplay) {
+ 		        delete window.updateDrilldownDisplay;
  		    }
  		
  		    // Remove styles
