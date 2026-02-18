@@ -369,12 +369,25 @@
                         try {
                             await layer.load();
                             
-                            const result = await layer.queryFeatures({
+                            // Get the layer view to respect display filters
+                            const layerView = await mapView.whenLayerView(layer);
+                            
+                            // Build query with buffered geometry
+                            const queryParams = {
                                 geometry: bufferGeometry,
                                 spatialRelationship: 'intersects',
                                 returnGeometry: true,
                                 outFields: ['*']
-                            });
+                            };
+                            
+                            // Add the layer's definition expression if it exists
+                            if (layerView.filter && layerView.filter.where) {
+                                queryParams.where = layerView.filter.where;
+                            } else if (layer.definitionExpression) {
+                                queryParams.where = layer.definitionExpression;
+                            }
+                            
+                            const result = await layer.queryFeatures(queryParams);
                             
                             if (result.features.length > 0) {
                                 selectedFeaturesByLayer.set(layer.layerId, {
@@ -468,12 +481,25 @@
                     try {
                         await layer.load();
                         
-                        const result = await layer.queryFeatures({
+                        // Get the layer view to respect display filters
+                        const layerView = await mapView.whenLayerView(layer);
+                        
+                        // Build query with geometry
+                        const queryParams = {
                             geometry: polygon,
                             spatialRelationship: 'intersects',
                             returnGeometry: true,
                             outFields: ['*']
-                        });
+                        };
+                        
+                        // Add the layer's definition expression if it exists
+                        if (layerView.filter && layerView.filter.where) {
+                            queryParams.where = layerView.filter.where;
+                        } else if (layer.definitionExpression) {
+                            queryParams.where = layer.definitionExpression;
+                        }
+                        
+                        const result = await layer.queryFeatures(queryParams);
                         
                         if (result.features.length > 0) {
                             selectedFeaturesByLayer.set(layer.layerId, {
@@ -483,6 +509,7 @@
                         }
                     } catch (e) {
                         // Skip layers that fail
+                        console.warn('Error querying layer:', layer.title, e);
                     }
                 });
                 
@@ -514,11 +541,10 @@
                 }
                 
                 // Create a buffer around the line for selection
-                // Calculate appropriate buffer distance based on map scale
                 const mapWidth = mapView.extent.width;
                 const screenWidth = mapView.width;
                 const metersPerPixel = mapWidth / screenWidth;
-                const bufferPixels = 20; // 20 pixel buffer on each side
+                const bufferPixels = 20;
                 const bufferDistance = metersPerPixel * bufferPixels;
                 
                 const bufferedGeometry = window.geometryEngine.buffer(line, bufferDistance, 'meters');
@@ -529,13 +555,25 @@
                     try {
                         await layer.load();
                         
-                        // Query using the buffered geometry
-                        const result = await layer.queryFeatures({
+                        // Get the layer view to respect display filters
+                        const layerView = await mapView.whenLayerView(layer);
+                        
+                        // Build query with buffered geometry
+                        const queryParams = {
                             geometry: bufferedGeometry,
                             spatialRelationship: 'intersects',
                             returnGeometry: true,
                             outFields: ['*']
-                        });
+                        };
+                        
+                        // Add the layer's definition expression if it exists
+                        if (layerView.filter && layerView.filter.where) {
+                            queryParams.where = layerView.filter.where;
+                        } else if (layer.definitionExpression) {
+                            queryParams.where = layer.definitionExpression;
+                        }
+                        
+                        const result = await layer.queryFeatures(queryParams);
                         
                         if (result.features.length > 0) {
                             const featuresWithDistance = result.features.map(feature => {
@@ -561,7 +599,6 @@
                                     }
                                     
                                     if (point && window.geometryEngine) {
-                                        // Find the closest point on the ORIGINAL line (not buffer) to this feature
                                         const nearestCoordinate = window.geometryEngine.nearestCoordinate(line, point);
                                         
                                         if (nearestCoordinate && nearestCoordinate.coordinate) {
@@ -2265,8 +2302,8 @@
         }
         
         // Event listeners
-        // Selection mode radio buttons
-        document.querySelectorAll('input[name="selectionMode"]').forEach(radio => {
+        // Selection mode radio buttons - attach to toolBox, not document
+        toolBox.querySelectorAll('input[name="selectionMode"]').forEach(radio => {
             radio.addEventListener('change', () => {
                 // Clear any existing selection first
                 if (selectionGraphic) {
@@ -2277,6 +2314,16 @@
                     mapClickHandler.remove();
                     mapClickHandler = null;
                 }
+                
+                // If there was a sketch in progress, cancel it
+                if (sketchViewModel) {
+                    try {
+                        sketchViewModel.cancel();
+                    } catch (e) {
+                        // Ignore if no sketch in progress
+                    }
+                }
+                
                 selectedFeaturesByLayer.clear();
                 $("#selectionResults").innerHTML = "";
                 $("#configureLayersBtn").style.display = "none";
