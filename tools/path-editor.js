@@ -154,6 +154,20 @@
                 
                 <button id="prevBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Previous</button>
                 
+                <!-- Photo Upload Section -->
+                <div style="border-top:1px solid #ddd;margin:12px 0;padding-top:12px;">
+                    <div style="font-weight:bold;margin-bottom:8px;">📷 Upload Photos</div>
+                    <div id="uploadArea">
+                        <div style="border:2px dashed #ccc;padding:20px;text-align:center;background:#f9f9f9;cursor:pointer;transition:all 0.3s;border-radius:3px;" id="dropZone">
+                            <div style="margin-bottom:8px;">📁 Drag & Drop Photos Here</div>
+                            <div style="font-size:11px;color:#666;">or click to browse</div>
+                            <input type="file" id="fileInput" multiple accept="image/*" style="display:none;">
+                        </div>
+                        <div id="fileList" style="margin-top:8px;"></div>
+                        <button id="uploadPhotosBtn" style="display:none;width:100%;margin-top:8px;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Upload Photos to This Feature</button>
+                    </div>
+                </div>
+                
                 <button id="clearHighlightsBtn" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Clear Highlights</button>
             </div>
             
@@ -370,7 +384,12 @@
                             await layer.load();
                             
                             // Get the layer view to respect display filters
-                            const layerView = await mapView.whenLayerView(layer);
+                            let layerView = null;
+                            try {
+                                layerView = await mapView.whenLayerView(layer);
+                            } catch (lvError) {
+                                console.warn('Could not get layer view for:', layer.title, lvError);
+                            }
                             
                             // Build query with buffered geometry
                             const queryParams = {
@@ -381,7 +400,7 @@
                             };
                             
                             // Add the layer's definition expression if it exists
-                            if (layerView.filter && layerView.filter.where) {
+                            if (layerView && layerView.filter && layerView.filter.where) {
                                 queryParams.where = layerView.filter.where;
                             } else if (layer.definitionExpression) {
                                 queryParams.where = layer.definitionExpression;
@@ -482,7 +501,12 @@
                         await layer.load();
                         
                         // Get the layer view to respect display filters
-                        const layerView = await mapView.whenLayerView(layer);
+                        let layerView = null;
+                        try {
+                            layerView = await mapView.whenLayerView(layer);
+                        } catch (lvError) {
+                            console.warn('Could not get layer view for:', layer.title, lvError);
+                        }
                         
                         // Build query with geometry
                         const queryParams = {
@@ -493,7 +517,7 @@
                         };
                         
                         // Add the layer's definition expression if it exists
-                        if (layerView.filter && layerView.filter.where) {
+                        if (layerView && layerView.filter && layerView.filter.where) {
                             queryParams.where = layerView.filter.where;
                         } else if (layer.definitionExpression) {
                             queryParams.where = layer.definitionExpression;
@@ -556,7 +580,12 @@
                         await layer.load();
                         
                         // Get the layer view to respect display filters
-                        const layerView = await mapView.whenLayerView(layer);
+                        let layerView = null;
+                        try {
+                            layerView = await mapView.whenLayerView(layer);
+                        } catch (lvError) {
+                            console.warn('Could not get layer view for:', layer.title, lvError);
+                        }
                         
                         // Build query with buffered geometry
                         const queryParams = {
@@ -567,7 +596,7 @@
                         };
                         
                         // Add the layer's definition expression if it exists
-                        if (layerView.filter && layerView.filter.where) {
+                        if (layerView && layerView.filter && layerView.filter.where) {
                             queryParams.where = layerView.filter.where;
                         } else if (layer.definitionExpression) {
                             queryParams.where = layer.definitionExpression;
@@ -653,7 +682,7 @@
                             });
                         }
                     } catch (e) {
-                        console.error('Error querying layer:', e);
+                        console.error('Error querying layer:', layer.title, e);
                     }
                 });
                 
@@ -2281,6 +2310,158 @@
             updateStatus('Summary report exported successfully!');
         }
         
+        // Photo upload functions
+        function setupFileUpload() {
+            const dropZone = $("#dropZone");
+            const fileInput = $("#fileInput");
+            
+            if (!dropZone || !fileInput) return;
+            
+            dropZone.addEventListener('click', () => fileInput.click());
+            
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#007acc";
+                dropZone.style.backgroundColor = "#f0f8ff";
+            });
+            
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#ccc";
+                dropZone.style.backgroundColor = "#f9f9f9";
+            });
+            
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.style.borderColor = "#ccc";
+                dropZone.style.backgroundColor = "#f9f9f9";
+                const files = Array.from(e.dataTransfer.files);
+                addFilesToUpload(files);
+            });
+            
+            fileInput.addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                addFilesToUpload(files);
+            });
+        }
+        
+        function addFilesToUpload(files) {
+            files.forEach(file => {
+                // Only add image files
+                if (file.type.startsWith('image/')) {
+                    if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
+                        filesToUpload.push(file);
+                    }
+                }
+            });
+            updateFileList();
+        }
+        
+        function updateFileList() {
+            const fileListDiv = $("#fileList");
+            
+            if (!fileListDiv) return;
+            
+            if (filesToUpload.length === 0) {
+                fileListDiv.innerHTML = "";
+                $("#uploadPhotosBtn").style.display = "none";
+                return;
+            }
+            
+            let html = "<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Photos to upload:</div>";
+            filesToUpload.forEach((file, index) => {
+                html += `
+                    <div style='display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;background:#fff;border-radius:2px;'>
+                        <span style='font-size:11px;'>${file.name} (${(file.size / 1024).toFixed(1)}KB)</span>
+                        <button class="removeFileBtn" data-index="${index}" style='background:#ff4444;color:white;border:none;padding:2px 6px;font-size:10px;cursor:pointer;border-radius:2px;'>×</button>
+                    </div>
+                `;
+            });
+            fileListDiv.innerHTML = html;
+            $("#uploadPhotosBtn").style.display = "block";
+            
+            // Add event listeners to remove buttons
+            fileListDiv.querySelectorAll('.removeFileBtn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    filesToUpload.splice(index, 1);
+                    updateFileList();
+                });
+            });
+        }
+        
+        async function uploadPhotos() {
+            try {
+                if (currentIndex >= currentEditingQueue.length) {
+                    alert("No feature currently selected.");
+                    return;
+                }
+                
+                if (filesToUpload.length === 0) {
+                    alert("Please select photos to upload.");
+                    return;
+                }
+                
+                const item = currentEditingQueue[currentIndex];
+                const layer = item.layer;
+                const feature = item.feature;
+                
+                updateStatus("Uploading photos...");
+                
+                let uploadedCount = 0;
+                let failedCount = 0;
+                const results = [];
+                
+                for (let i = 0; i < filesToUpload.length; i++) {
+                    const file = filesToUpload[i];
+                    try {
+                        updateStatus(`Uploading: ${file.name} (${i + 1}/${filesToUpload.length})...`);
+                        
+                        const formData = new FormData();
+                        formData.append('attachment', file);
+                        formData.append('f', 'json');
+                        
+                        const uploadResult = await layer.addAttachment(feature, formData);
+                        console.log('Upload success:', uploadResult);
+                        
+                        results.push({
+                            fileName: file.name,
+                            success: true
+                        });
+                        uploadedCount++;
+                    } catch (error) {
+                        console.error(`Error uploading ${file.name}:`, error);
+                        results.push({
+                            fileName: file.name,
+                            success: false,
+                            error: error.message || error
+                        });
+                        failedCount++;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                
+                // Show results
+                let message = `Upload completed!\n${uploadedCount} photo(s) uploaded successfully`;
+                if (failedCount > 0) {
+                    message += `\n${failedCount} photo(s) failed`;
+                }
+                
+                alert(message);
+                updateStatus(`Photos uploaded: ${uploadedCount} successful, ${failedCount} failed`);
+                
+                // Clear the upload list
+                filesToUpload = [];
+                updateFileList();
+                
+            } catch (error) {
+                console.error("Upload error:", error);
+                updateStatus("Error uploading photos: " + error.message);
+                alert("Error uploading photos: " + error.message);
+            }
+        }
+        
         function cleanup() {
             if (sketchViewModel) {
                 sketchViewModel.destroy();
@@ -2347,6 +2528,7 @@
         $("#skipBtn").onclick = skipFeature;
         $("#prevBtn").onclick = prevFeature;
         $("#clearHighlightsBtn").onclick = clearHighlights;
+        $("#uploadPhotosBtn").onclick = uploadPhotos;
         
         $("#applyBulkEditBtn").onclick = applyBulkEdit;
         $("#backToSummaryBtn").onclick = () => setPhase('summary');
@@ -2359,6 +2541,9 @@
         
         // Initialize
         setPhase('selection');
+        
+        // Setup file upload functionality
+        setupFileUpload();
         
         // Auto-start with single click mode (default)
         startSelection();
