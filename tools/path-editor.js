@@ -33,6 +33,7 @@
         let sessionStartTime = null;
         let selectionMode = 'polygon';
         let mapClickHandler = null;
+        let filesToUpload = [];
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -2315,60 +2316,95 @@
             const dropZone = $("#dropZone");
             const fileInput = $("#fileInput");
             
-            if (!dropZone || !fileInput) return;
+            if (!dropZone || !fileInput) {
+                console.warn('Upload elements not found');
+                return;
+            }
             
-            dropZone.addEventListener('click', () => fileInput.click());
+            dropZone.addEventListener('click', () => {
+                console.log('Drop zone clicked, opening file picker');
+                fileInput.click();
+            });
             
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 dropZone.style.borderColor = "#007acc";
                 dropZone.style.backgroundColor = "#f0f8ff";
             });
             
             dropZone.addEventListener('dragleave', (e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 dropZone.style.borderColor = "#ccc";
                 dropZone.style.backgroundColor = "#f9f9f9";
             });
             
             dropZone.addEventListener('drop', (e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 dropZone.style.borderColor = "#ccc";
                 dropZone.style.backgroundColor = "#f9f9f9";
+                
+                console.log('Files dropped:', e.dataTransfer.files);
                 const files = Array.from(e.dataTransfer.files);
                 addFilesToUpload(files);
             });
             
             fileInput.addEventListener('change', (e) => {
+                console.log('Files selected:', e.target.files);
                 const files = Array.from(e.target.files);
                 addFilesToUpload(files);
+                // Reset input so same file can be selected again
+                e.target.value = '';
             });
         }
         
         function addFilesToUpload(files) {
+            console.log('Adding files to upload:', files.length);
+            
+            let addedCount = 0;
             files.forEach(file => {
                 // Only add image files
                 if (file.type.startsWith('image/')) {
                     if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
                         filesToUpload.push(file);
+                        addedCount++;
+                        console.log('Added file:', file.name, file.type, (file.size / 1024).toFixed(1) + 'KB');
+                    } else {
+                        console.log('File already in list:', file.name);
                     }
+                } else {
+                    console.log('Skipped non-image file:', file.name, file.type);
                 }
             });
+            
+            console.log('Total files in upload list:', filesToUpload.length);
             updateFileList();
+            
+            if (addedCount > 0) {
+                updateStatus(`${addedCount} photo(s) ready to upload`);
+            }
         }
         
         function updateFileList() {
             const fileListDiv = $("#fileList");
+            const uploadBtn = $("#uploadPhotosBtn");
             
-            if (!fileListDiv) return;
-            
-            if (filesToUpload.length === 0) {
-                fileListDiv.innerHTML = "";
-                $("#uploadPhotosBtn").style.display = "none";
+            if (!fileListDiv) {
+                console.warn('File list div not found');
                 return;
             }
             
-            let html = "<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Photos to upload:</div>";
+            if (filesToUpload.length === 0) {
+                fileListDiv.innerHTML = "";
+                if (uploadBtn) uploadBtn.style.display = "none";
+                return;
+            }
+            
+            console.log('Updating file list, files:', filesToUpload.length);
+            
+            let html = "<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Photos to upload (" + filesToUpload.length + "):</div>";
             filesToUpload.forEach((file, index) => {
                 html += `
                     <div style='display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;background:#fff;border-radius:2px;'>
@@ -2378,12 +2414,13 @@
                 `;
             });
             fileListDiv.innerHTML = html;
-            $("#uploadPhotosBtn").style.display = "block";
+            if (uploadBtn) uploadBtn.style.display = "block";
             
             // Add event listeners to remove buttons
             fileListDiv.querySelectorAll('.removeFileBtn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const index = parseInt(e.target.dataset.index);
+                    console.log('Removing file at index:', index);
                     filesToUpload.splice(index, 1);
                     updateFileList();
                 });
@@ -2406,7 +2443,15 @@
                 const layer = item.layer;
                 const feature = item.feature;
                 
+                // Ensure layer supports attachments
+                await layer.load();
+                if (!layer.capabilities || !layer.capabilities.operations || !layer.capabilities.operations.supportsAdd) {
+                    alert("This layer does not support adding attachments.");
+                    return;
+                }
+                
                 updateStatus("Uploading photos...");
+                $("#uploadPhotosBtn").disabled = true;
                 
                 let uploadedCount = 0;
                 let failedCount = 0;
@@ -2417,39 +2462,56 @@
                     try {
                         updateStatus(`Uploading: ${file.name} (${i + 1}/${filesToUpload.length})...`);
                         
+                        // Create FormData
                         const formData = new FormData();
                         formData.append('attachment', file);
-                        formData.append('f', 'json');
                         
-                        const uploadResult = await layer.addAttachment(feature, formData);
-                        console.log('Upload success:', uploadResult);
+                        // Use applyEdits method with addAttachments
+                        const oidField = layer.objectIdField;
+                        const objectId = feature.attributes[oidField];
                         
-                        results.push({
-                            fileName: file.name,
-                            success: true
-                        });
-                        uploadedCount++;
+                        // Create the attachment using the feature object directly
+                        const result = await layer.addAttachment(feature, formData);
+                        
+                        console.log('Upload result:', result);
+                        
+                        // Check if upload was successful
+                        if (result && (result.addAttachmentResult || result.objectId)) {
+                            results.push({
+                                fileName: file.name,
+                                success: true
+                            });
+                            uploadedCount++;
+                        } else {
+                            throw new Error('Upload did not return expected result');
+                        }
+                        
                     } catch (error) {
                         console.error(`Error uploading ${file.name}:`, error);
                         results.push({
                             fileName: file.name,
                             success: false,
-                            error: error.message || error
+                            error: error.message || String(error)
                         });
                         failedCount++;
                     }
                     
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                 }
                 
-                // Show results
-                let message = `Upload completed!\n${uploadedCount} photo(s) uploaded successfully`;
+                // Show detailed results
+                let message = `Upload completed!\n\n`;
+                message += `✓ ${uploadedCount} photo(s) uploaded successfully\n`;
                 if (failedCount > 0) {
-                    message += `\n${failedCount} photo(s) failed`;
+                    message += `✗ ${failedCount} photo(s) failed\n\n`;
+                    message += `Failed files:\n`;
+                    results.filter(r => !r.success).forEach(r => {
+                        message += `  • ${r.fileName}: ${r.error}\n`;
+                    });
                 }
                 
                 alert(message);
-                updateStatus(`Photos uploaded: ${uploadedCount} successful, ${failedCount} failed`);
+                updateStatus(`Photos uploaded: ${uploadedCount} successful${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
                 
                 // Clear the upload list
                 filesToUpload = [];
@@ -2459,6 +2521,8 @@
                 console.error("Upload error:", error);
                 updateStatus("Error uploading photos: " + error.message);
                 alert("Error uploading photos: " + error.message);
+            } finally {
+                $("#uploadPhotosBtn").disabled = false;
             }
         }
         
