@@ -34,6 +34,43 @@
         let selectionMode = 'polygon';
         let mapClickHandler = null;
         let filesToUpload = [];
+
+        // Allowed file types for attachment uploads
+        const ALLOWED_MIME_TYPES = new Set([
+            // Images
+            'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff',
+            // Documents
+            'application/pdf',
+            // Spreadsheets
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+            'application/vnd.ms-excel',                                           // .xls (bonus)
+            // CSV — browsers may report text/plain or text/csv depending on OS
+            'text/csv',
+            'text/plain',
+        ]);
+
+        // Extensions accepted as a fallback when MIME type is unreliable (e.g. .csv on Windows)
+        const ALLOWED_EXTENSIONS = new Set([
+            'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif',
+            'pdf',
+            'xlsx', 'xls',
+            'csv',
+        ]);
+
+        function isAllowedFile(file) {
+            if (ALLOWED_MIME_TYPES.has(file.type)) return true;
+            const ext = file.name.split('.').pop().toLowerCase();
+            return ALLOWED_EXTENSIONS.has(ext);
+        }
+
+        function fileTypeLabel(file) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (['jpg','jpeg','png','gif','webp','bmp','tiff','tif'].includes(ext)) return '🖼️';
+            if (ext === 'pdf') return '📄';
+            if (['xlsx','xls'].includes(ext)) return '📊';
+            if (ext === 'csv') return '📋';
+            return '📎';
+        }
         
         // Create tool UI
         const toolBox = document.createElement("div");
@@ -155,17 +192,22 @@
                 
                 <button id="prevBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Previous</button>
                 
-                <!-- Photo Upload Section -->
+                <!-- File Upload Section -->
                 <div style="border-top:1px solid #ddd;margin:12px 0;padding-top:12px;">
-                    <div style="font-weight:bold;margin-bottom:8px;">📷 Upload Photos</div>
+                    <div style="font-weight:bold;margin-bottom:8px;">📎 Upload Attachments</div>
+                    <div style="font-size:10px;color:#888;margin-bottom:8px;">
+                        Supported: Images (JPG, PNG, GIF…), PDF, XLSX, CSV
+                    </div>
                     <div id="uploadArea">
                         <div style="border:2px dashed #ccc;padding:20px;text-align:center;background:#f9f9f9;cursor:pointer;transition:all 0.3s;border-radius:3px;" id="dropZone">
-                            <div style="margin-bottom:8px;">📁 Drag & Drop Photos Here</div>
+                            <div style="margin-bottom:8px;">📁 Drag & Drop Files Here</div>
                             <div style="font-size:11px;color:#666;">or click to browse</div>
-                            <input type="file" id="fileInput" multiple accept="image/*" style="display:none;">
+                            <input type="file" id="fileInput" multiple
+                                accept="image/*,.pdf,.xlsx,.xls,.csv"
+                                style="display:none;">
                         </div>
                         <div id="fileList" style="margin-top:8px;"></div>
-                        <button id="uploadPhotosBtn" style="display:none;width:100%;margin-top:8px;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Upload Photos to This Feature</button>
+                        <button id="uploadPhotosBtn" style="display:none;width:100%;margin-top:8px;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Upload Files to This Feature</button>
                     </div>
                 </div>
                 
@@ -1436,6 +1478,10 @@
             
             $("#prevBtn").disabled = currentIndex === 0;
             $("#skipBtn").style.display = item.allowSkip ? 'block' : 'none';
+
+            // Clear any leftover files from the previous feature
+            filesToUpload = [];
+            updateFileList();
             
             highlightFeature(item.feature, item.showPopup);
             
@@ -2311,7 +2357,8 @@
             updateStatus('Summary report exported successfully!');
         }
         
-        // Photo upload functions
+        // ── File upload ───────────────────────────────────────────────────────────
+
         function setupFileUpload() {
             const dropZone = $("#dropZone");
             const fileInput = $("#fileInput");
@@ -2321,10 +2368,7 @@
                 return;
             }
             
-            dropZone.addEventListener('click', () => {
-                console.log('Drop zone clicked, opening file picker');
-                fileInput.click();
-            });
+            dropZone.addEventListener('click', () => fileInput.click());
             
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -2345,45 +2389,37 @@
                 e.stopPropagation();
                 dropZone.style.borderColor = "#ccc";
                 dropZone.style.backgroundColor = "#f9f9f9";
-                
-                console.log('Files dropped:', e.dataTransfer.files);
-                const files = Array.from(e.dataTransfer.files);
-                addFilesToUpload(files);
+                addFilesToUpload(Array.from(e.dataTransfer.files));
             });
             
             fileInput.addEventListener('change', (e) => {
-                console.log('Files selected:', e.target.files);
-                const files = Array.from(e.target.files);
-                addFilesToUpload(files);
-                // Reset input so same file can be selected again
-                e.target.value = '';
+                addFilesToUpload(Array.from(e.target.files));
+                e.target.value = ''; // reset so same file can be re-selected
             });
         }
         
         function addFilesToUpload(files) {
-            console.log('Adding files to upload:', files.length);
-            
+            const rejected = [];
             let addedCount = 0;
+
             files.forEach(file => {
-                // Only add image files
-                if (file.type.startsWith('image/')) {
-                    if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
-                        filesToUpload.push(file);
-                        addedCount++;
-                        console.log('Added file:', file.name, file.type, (file.size / 1024).toFixed(1) + 'KB');
-                    } else {
-                        console.log('File already in list:', file.name);
-                    }
-                } else {
-                    console.log('Skipped non-image file:', file.name, file.type);
+                if (!isAllowedFile(file)) {
+                    rejected.push(file.name);
+                    return;
+                }
+                // Deduplicate by name + size
+                if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
+                    filesToUpload.push(file);
+                    addedCount++;
                 }
             });
-            
-            console.log('Total files in upload list:', filesToUpload.length);
+
             updateFileList();
-            
-            if (addedCount > 0) {
-                updateStatus(`${addedCount} photo(s) ready to upload`);
+
+            if (rejected.length > 0) {
+                updateStatus(`Skipped unsupported file(s): ${rejected.join(', ')}`);
+            } else if (addedCount > 0) {
+                updateStatus(`${addedCount} file(s) ready to upload`);
             }
         }
         
@@ -2391,10 +2427,7 @@
             const fileListDiv = $("#fileList");
             const uploadBtn = $("#uploadPhotosBtn");
             
-            if (!fileListDiv) {
-                console.warn('File list div not found');
-                return;
-            }
+            if (!fileListDiv) return;
             
             if (filesToUpload.length === 0) {
                 fileListDiv.innerHTML = "";
@@ -2402,26 +2435,22 @@
                 return;
             }
             
-            console.log('Updating file list, files:', filesToUpload.length);
-            
-            let html = "<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Photos to upload (" + filesToUpload.length + "):</div>";
+            let html = `<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Files to upload (${filesToUpload.length}):</div>`;
             filesToUpload.forEach((file, index) => {
                 html += `
                     <div style='display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;background:#fff;border-radius:2px;'>
-                        <span style='font-size:11px;'>${file.name} (${(file.size / 1024).toFixed(1)}KB)</span>
-                        <button class="removeFileBtn" data-index="${index}" style='background:#ff4444;color:white;border:none;padding:2px 6px;font-size:10px;cursor:pointer;border-radius:2px;'>×</button>
+                        <span style='font-size:11px;'>${fileTypeLabel(file)} ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
+                        <button class="removeFileBtn" data-index="${index}"
+                            style='background:#ff4444;color:white;border:none;padding:2px 6px;font-size:10px;cursor:pointer;border-radius:2px;'>×</button>
                     </div>
                 `;
             });
             fileListDiv.innerHTML = html;
             if (uploadBtn) uploadBtn.style.display = "block";
             
-            // Add event listeners to remove buttons
             fileListDiv.querySelectorAll('.removeFileBtn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    const index = parseInt(e.target.dataset.index);
-                    console.log('Removing file at index:', index);
-                    filesToUpload.splice(index, 1);
+                    filesToUpload.splice(parseInt(e.target.dataset.index), 1);
                     updateFileList();
                 });
             });
@@ -2433,24 +2462,21 @@
                     alert("No feature currently selected.");
                     return;
                 }
-                
                 if (filesToUpload.length === 0) {
-                    alert("Please select photos to upload.");
+                    alert("Please select files to upload.");
                     return;
                 }
                 
                 const item = currentEditingQueue[currentIndex];
-                const layer = item.layer;
-                const feature = item.feature;
+                const { layer, feature } = item;
                 
-                // Ensure layer supports attachments
                 await layer.load();
-                if (!layer.capabilities || !layer.capabilities.operations || !layer.capabilities.operations.supportsAdd) {
+                if (!layer.capabilities?.operations?.supportsAdd) {
                     alert("This layer does not support adding attachments.");
                     return;
                 }
                 
-                updateStatus("Uploading photos...");
+                updateStatus("Uploading files...");
                 $("#uploadPhotosBtn").disabled = true;
                 
                 let uploadedCount = 0;
@@ -2462,65 +2488,43 @@
                     try {
                         updateStatus(`Uploading: ${file.name} (${i + 1}/${filesToUpload.length})...`);
                         
-                        // Create FormData
                         const formData = new FormData();
                         formData.append('attachment', file);
                         
-                        // Use applyEdits method with addAttachments
-                        const oidField = layer.objectIdField;
-                        const objectId = feature.attributes[oidField];
-                        
-                        // Create the attachment using the feature object directly
                         const result = await layer.addAttachment(feature, formData);
                         
-                        console.log('Upload result:', result);
-                        
-                        // Check if upload was successful
                         if (result && (result.addAttachmentResult || result.objectId)) {
-                            results.push({
-                                fileName: file.name,
-                                success: true
-                            });
+                            results.push({ fileName: file.name, success: true });
                             uploadedCount++;
                         } else {
                             throw new Error('Upload did not return expected result');
                         }
-                        
                     } catch (error) {
                         console.error(`Error uploading ${file.name}:`, error);
-                        results.push({
-                            fileName: file.name,
-                            success: false,
-                            error: error.message || String(error)
-                        });
+                        results.push({ fileName: file.name, success: false, error: error.message || String(error) });
                         failedCount++;
                     }
                     
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(r => setTimeout(r, 300));
                 }
                 
-                // Show detailed results
-                let message = `Upload completed!\n\n`;
-                message += `✓ ${uploadedCount} photo(s) uploaded successfully\n`;
+                let message = `Upload complete!\n\n✓ ${uploadedCount} file(s) uploaded successfully`;
                 if (failedCount > 0) {
-                    message += `✗ ${failedCount} photo(s) failed\n\n`;
-                    message += `Failed files:\n`;
+                    message += `\n✗ ${failedCount} file(s) failed\n\nFailed files:\n`;
                     results.filter(r => !r.success).forEach(r => {
                         message += `  • ${r.fileName}: ${r.error}\n`;
                     });
                 }
-                
                 alert(message);
-                updateStatus(`Photos uploaded: ${uploadedCount} successful${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
                 
-                // Clear the upload list
+                updateStatus(`Files uploaded: ${uploadedCount} successful${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
                 filesToUpload = [];
                 updateFileList();
                 
             } catch (error) {
                 console.error("Upload error:", error);
-                updateStatus("Error uploading photos: " + error.message);
-                alert("Error uploading photos: " + error.message);
+                updateStatus("Error uploading files: " + error.message);
+                alert("Error uploading files: " + error.message);
             } finally {
                 $("#uploadPhotosBtn").disabled = false;
             }
@@ -2531,26 +2535,21 @@
                 sketchViewModel.destroy();
                 sketchViewModel = null;
             }
-            
             if (mapClickHandler) {
                 mapClickHandler.remove();
                 mapClickHandler = null;
             }
-            
             clearHighlights();
-            
             if (selectionGraphic) {
                 mapView.graphics.remove(selectionGraphic);
             }
-            
             toolBox.remove();
         }
         
-        // Event listeners
-        // Selection mode radio buttons - attach to toolBox, not document
+        // ── Event listeners ───────────────────────────────────────────────────────
+
         toolBox.querySelectorAll('input[name="selectionMode"]').forEach(radio => {
             radio.addEventListener('change', () => {
-                // Clear any existing selection first
                 if (selectionGraphic) {
                     mapView.graphics.remove(selectionGraphic);
                     selectionGraphic = null;
@@ -2559,22 +2558,13 @@
                     mapClickHandler.remove();
                     mapClickHandler = null;
                 }
-                
-                // If there was a sketch in progress, cancel it
                 if (sketchViewModel) {
-                    try {
-                        sketchViewModel.cancel();
-                    } catch (e) {
-                        // Ignore if no sketch in progress
-                    }
+                    try { sketchViewModel.cancel(); } catch (e) {}
                 }
-                
                 selectedFeaturesByLayer.clear();
                 $("#selectionResults").innerHTML = "";
                 $("#configureLayersBtn").style.display = "none";
                 $("#clearSelectionBtn").disabled = true;
-                
-                // Start the new selection mode
                 startSelection();
             });
         });
@@ -2603,16 +2593,10 @@
             window.gisToolHost.closeTool('path-editor');
         };
         
-        // Initialize
         setPhase('selection');
-        
-        // Setup file upload functionality
         setupFileUpload();
-        
-        // Auto-start with single click mode (default)
         startSelection();
         
-        // Register tool with host
         window.gisToolHost.activeTools.set('path-editor', {
             cleanup: cleanup,
             toolBox: toolBox
