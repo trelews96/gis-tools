@@ -30,11 +30,9 @@
         const SNAP_TOLERANCE = 15, POINT_SNAP_TOLERANCE = 25;
 
         // ── Dynamic layer registry ────────────────────────────────────────────
-        // Each entry: { layer, name, id }
-        // Populated by loadLayers(); all query functions reference these directly.
 
-        let pointLayers = [];   // geometry: point / multipoint
-        let lineLayers  = [];   // geometry: polyline
+        let pointLayers = [];
+        let lineLayers  = [];
 
         async function loadLayers() {
             pointLayers = []; lineLayers = [];
@@ -70,54 +68,197 @@
             box-shadow:0 4px 16px rgba(0,0,0,.2);border-radius:4px;`;
 
         toolBox.innerHTML = `
-            <div style="font-weight:bold;margin-bottom:6px;">🔧 Click-to-Move Tool</div>
-            <div style="margin-bottom:6px;color:#666;font-size:11px;">
-                <strong>Point Mode:</strong> Click point → Click destination<br>
-                <strong>Line Mode:</strong> Click line vertex → Click destination<br>
-                <strong>Vertex Tools:</strong> Toggle buttons to add/delete vertices
+            <style>
+                #snapMoveToolbox .smt-section {
+                    border-radius:3px; margin-bottom:8px; overflow:hidden;
+                }
+                #snapMoveToolbox .smt-section-header {
+                    display:flex; align-items:center; justify-content:space-between;
+                    padding:5px 8px; font-size:11px; font-weight:bold;
+                }
+                #snapMoveToolbox .smt-body { padding:0 8px 8px; }
+                #snapMoveToolbox .smt-sublabel {
+                    display:flex; align-items:center; justify-content:space-between;
+                    font-size:10px; font-weight:bold; color:#444; margin:6px 0 2px;
+                }
+                #snapMoveToolbox .smt-info-btn {
+                    font-size:9px; padding:1px 5px; background:#ccc; color:#444;
+                    border:none; border-radius:8px; cursor:pointer; font-family:inherit;
+                    line-height:1.4; flex-shrink:0;
+                }
+                #snapMoveToolbox .smt-info-btn:hover { background:#bbb; }
+                #snapMoveToolbox .smt-hint {
+                    font-size:10px; color:#666; line-height:1.5;
+                    margin-bottom:5px; padding:5px 7px;
+                    background:rgba(0,0,0,0.04); border-radius:3px;
+                    border-left:2px solid rgba(0,0,0,0.12);
+                }
+                #snapMoveToolbox .smt-row { display:flex; gap:4px; margin-bottom:4px; }
+                #snapMoveToolbox .smt-row button { flex:1; }
+                #snapMoveToolbox button {
+                    padding:4px 6px; color:white; border:none; border-radius:2px;
+                    font-size:11px; cursor:pointer; font-family:inherit;
+                }
+            </style>
+
+            <!-- ── Header ───────────────────────────────────────────── -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div style="font-weight:bold;font-size:13px;">🔧 Click-to-Move Tool</div>
+                <div style="display:flex;gap:4px;align-items:center;">
+                    <button id="toggleAllTips" title="Show or hide all hint text"
+                        style="padding:2px 7px;background:#aaa;color:white;border:none;border-radius:2px;font-size:10px;cursor:pointer;">
+                        ℹ Hide Tips</button>
+                    <button id="closeTool" title="Close and deactivate the tool"
+                        style="padding:2px 8px;background:#d32f2f;color:white;border:none;border-radius:2px;font-size:11px;cursor:pointer;">✕ Close</button>
+                </div>
             </div>
 
-            <!-- Layer status -->
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:5px 8px;
-                        background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#555;">
+            <!-- ── Layer status ──────────────────────────────────────── -->
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:4px 8px;
+                        background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#555;"
+                 title="Auto-detected layers. Click Refresh if you change visibility or add new layers.">
+                <span>🗂</span>
                 <span id="layerBadge" style="flex:1;">Detecting layers…</span>
-                <button id="refreshLayers" style="padding:2px 7px;font-size:10px;background:#3367d6;color:#fff;
-                    border:none;border-radius:2px;cursor:pointer;">↺ Refresh</button>
+                <button id="refreshLayers" style="padding:2px 7px;font-size:10px;background:#3367d6;border-radius:2px;"
+                    title="Re-scan all visible layers">↺ Refresh</button>
             </div>
 
-            <div style="display:flex;gap:4px;margin-bottom:8px;">
-                <button id="pointMode" style="flex:1;padding:4px 6px;background:#3367d6;color:white;border:none;border-radius:2px;font-size:11px;">Point Mode</button>
-                <button id="lineMode"  style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;">Line Mode</button>
+            <!-- ── Section 1: Tool Activation ───────────────────────── -->
+            <div class="smt-section" style="border:1px solid #b8d4f0;">
+                <div class="smt-section-header" style="background:#deeeff;color:#1a56a0;">⚡ Tool Activation</div>
+                <div class="smt-body" style="background:#f0f7ff;">
+                    <div class="smt-sublabel">
+                        <span>Activate / Deactivate</span>
+                        <button class="smt-info-btn" data-hint="h-activate">▾ more</button>
+                    </div>
+                    <div id="h-activate" class="smt-hint">
+                        Enable to start clicking on the map — the cursor becomes a crosshair.
+                        Disable at any time to restore normal map navigation.
+                    </div>
+                    <div class="smt-row">
+                        <button id="enableTool" style="background:#28a745;"
+                            title="Activate the tool and begin editing">▶ Enable Tool</button>
+                        <button id="disableTool" style="background:#666;" disabled
+                            title="Deactivate and restore normal navigation">⏹ Disable Tool</button>
+                    </div>
+                    <div class="smt-sublabel">
+                        <span>Cancel</span>
+                        <button class="smt-info-btn" data-hint="h-cancel">▾ more</button>
+                    </div>
+                    <div id="h-cancel" class="smt-hint">
+                        Cancel a pending selection before you've clicked the destination.
+                        Use this if you clicked the wrong feature.
+                    </div>
+                    <button id="cancelMove" style="width:100%;background:#ff9800;" disabled
+                        title="Cancel a pending move without saving any changes">⊘ Cancel Current Move</button>
+                </div>
             </div>
-            <div style="display:flex;gap:4px;margin-bottom:8px;">
-                <button id="addVertexMode"    style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;">Add Vertex</button>
-                <button id="deleteVertexMode" style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;">Delete Vertex</button>
+
+            <!-- ── Section 2: Single Feature Editing ────────────────── -->
+            <div class="smt-section" style="border:1px solid #d4b8f0;">
+                <div class="smt-section-header" style="background:#ead8ff;color:#5a1a9e;">📌 Single Feature Editing</div>
+                <div class="smt-body" style="background:#faf0ff;">
+                    <div class="smt-sublabel">
+                        <span>Lock to Feature</span>
+                        <button class="smt-info-btn" data-hint="h-lock">▾ more</button>
+                    </div>
+                    <div id="h-lock" class="smt-hint">
+                        Pin all edits to one specific feature — ideal when features overlap.
+                        Once locked, only that feature is affected by any click on the map.<br><br>
+                        <strong>Point lock:</strong> moves only that point; connected lines are unaffected.<br>
+                        <strong>Line lock:</strong> restricts vertex moves, add/delete, and vertex highlights to that line only.
+                    </div>
+                    <div class="smt-row">
+                        <button id="lockFeatureBtn" style="background:#666;"
+                            title="Click then click any point or line on the map to lock edits to it">🎯 Pick Feature</button>
+                        <button id="releaseFeatureBtn" style="background:#666;" disabled
+                            title="Release the lock and return to editing any feature">🔓 Release Lock</button>
+                    </div>
+                    <div id="lockedFeatureInfo" style="font-size:10px;color:#6f42c1;min-height:14px;font-style:italic;margin-top:2px;"></div>
+                </div>
             </div>
-            <div style="display:flex;gap:4px;margin-bottom:4px;">
-                <button id="showVerticesToggle" style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;">👁 Show Vertices</button>
-                <button id="refreshVertices"    style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;" disabled>🔄 Refresh</button>
+
+            <!-- ── Section 3: Feature Editing Modes ─────────────────── -->
+            <div class="smt-section" style="border:1px solid #b8e8c8;">
+                <div class="smt-section-header" style="background:#d0f0dc;color:#1a6e3a;">🖱 Feature Editing Modes</div>
+                <div class="smt-body" style="background:#f0fff4;">
+
+                    <div class="smt-sublabel">
+                        <span>Move Features</span>
+                        <button class="smt-info-btn" data-hint="h-move">▾ more</button>
+                    </div>
+                    <div id="h-move" class="smt-hint">
+                        <strong>Point:</strong> Click a point → click the destination. Connected line endpoints follow automatically.<br>
+                        <strong>Line:</strong> Click a vertex → click the destination. All coincident lines sharing that vertex move together.<br>
+                        Destinations snap to the nearest point feature or line vertex within tolerance.
+                    </div>
+                    <div class="smt-row">
+                        <button id="pointMode" style="background:#3367d6;"
+                            title="Move point features. Connected line endpoints follow.">📍 Point Mode</button>
+                        <button id="lineMode"  style="background:#666;"
+                            title="Move line vertices. Coincident shared vertices move together.">〰️ Line Mode</button>
+                    </div>
+
+                    <div class="smt-sublabel">
+                        <span>Vertex Tools <span style="font-weight:normal;color:#888;">(Line Mode only)</span></span>
+                        <button class="smt-info-btn" data-hint="h-vertex">▾ more</button>
+                    </div>
+                    <div id="h-vertex" class="smt-hint">
+                        <strong>Add:</strong> Click anywhere along a segment to insert a vertex at that exact spot.<br>
+                        <strong>Delete:</strong> Click an existing vertex to remove it. Lines with only 2 vertices cannot be reduced further.
+                    </div>
+                    <div class="smt-row">
+                        <button id="addVertexMode"    style="background:#666;"
+                            title="Toggle: click along a line segment to insert a new vertex">➕ Add Vertex</button>
+                        <button id="deleteVertexMode" style="background:#666;"
+                            title="Toggle: click an existing vertex to remove it">✖ Delete Vertex</button>
+                    </div>
+
+                    <div class="smt-sublabel">
+                        <span>Vertex Visualisation</span>
+                        <button class="smt-info-btn" data-hint="h-viz">▾ more</button>
+                    </div>
+                    <div id="h-viz" class="smt-hint">
+                        Overlay vertex markers on all visible line features in the current extent.
+                        Auto-refreshes on pan/zoom unless a feature is locked.
+                        🟠 = endpoints &nbsp; 🔵 = midpoints
+                    </div>
+                    <div class="smt-row">
+                        <button id="showVerticesToggle" style="background:#666;"
+                            title="Toggle vertex markers on the map">👁 Show Vertices</button>
+                        <button id="refreshVertices"    style="background:#666;" disabled
+                            title="Manually refresh markers for the current extent">🔄 Refresh</button>
+                    </div>
+                </div>
             </div>
-            <div style="margin-bottom:8px;font-size:10px;color:#888;">🟠 Endpoints &nbsp;|&nbsp; 🔵 Midpoints</div>
-            <hr style="margin:6px 0;border:none;border-top:1px solid #ddd;">
-            <div style="font-weight:bold;font-size:11px;margin-bottom:2px;">📌 Single Feature Editing</div>
-            <div style="margin-bottom:4px;color:#666;font-size:10px;">Lock all edits to one specific line feature.</div>
-            <div style="display:flex;gap:4px;margin-bottom:4px;">
-                <button id="lockFeatureBtn"    style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;">🎯 Pick Feature</button>
-                <button id="releaseFeatureBtn" style="flex:1;padding:4px 6px;background:#666;color:white;border:none;border-radius:2px;font-size:11px;" disabled>🔓 Release</button>
-            </div>
-            <div id="lockedFeatureInfo" style="font-size:10px;color:#6f42c1;min-height:14px;font-style:italic;margin-bottom:8px;"></div>
-            <hr style="margin:6px 0;border:none;border-top:1px solid #ddd;">
-            <div style="display:flex;gap:8px;margin-bottom:8px;">
-                <button id="enableTool"  style="flex:1;padding:4px 8px;background:#28a745;color:white;border:none;border-radius:2px;">Enable Tool</button>
-                <button id="disableTool" style="flex:1;padding:4px 8px;background:#666;color:white;border:none;border-radius:2px;" disabled>Disable Tool</button>
-            </div>
-            <div style="display:flex;gap:8px;margin-bottom:8px;">
-                <button id="cancelMove" style="flex:1;padding:4px 8px;background:#ff9800;color:white;border:none;border-radius:2px;" disabled>Cancel Move</button>
-                <button id="closeTool"  style="flex:1;padding:4px 8px;background:#d32f2f;color:white;border:none;border-radius:2px;">Close</button>
-            </div>
-            <div id="toolStatus" style="margin-top:8px;color:#3367d6;font-size:11px;"></div>`;
+
+            <!-- ── Status bar ────────────────────────────────────────── -->
+            <div id="toolStatus" style="padding:5px 7px;background:#f5f5f5;border:1px solid #ddd;
+                border-radius:3px;color:#3367d6;font-size:11px;min-height:18px;"></div>`;
 
         document.body.appendChild(toolBox);
+
+        // ── Collapsible hints ─────────────────────────────────────────────────
+
+        toolBox.querySelectorAll('.smt-info-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const hint  = toolBox.querySelector('#' + btn.dataset.hint);
+                const open  = hint.style.display !== 'none';
+                hint.style.display = open ? 'none' : '';
+                btn.textContent    = open ? '▾ more' : '▴ less';
+            });
+        });
+
+        toolBox.querySelector('#toggleAllTips').addEventListener('click', () => {
+            const btn   = toolBox.querySelector('#toggleAllTips');
+            const hints = toolBox.querySelectorAll('.smt-hint');
+            const infos = toolBox.querySelectorAll('.smt-info-btn');
+            // If any hint is visible, hide all; otherwise show all.
+            const anyOpen = [...hints].some(h => h.style.display !== 'none');
+            hints.forEach(h => h.style.display = anyOpen ? 'none' : '');
+            infos.forEach(b => b.textContent   = anyOpen ? '▾ more' : '▴ less');
+            btn.textContent = anyOpen ? 'ℹ Show Tips' : 'ℹ Hide Tips';
+        });
 
         // ── State ─────────────────────────────────────────────────────────────
 
@@ -127,7 +268,8 @@
         let connectedFeatures = [], originalGeometries = new Map(), clickHandler = null;
 
         // Single-feature lock
-        let lockedLineFeature = null, pickingFeatureMode = false;
+        // lockedFeature: { feature, layer, layerConfig, featureType: 'point'|'line' }
+        let lockedFeature = null, pickingFeatureMode = false;
 
         // Vertex highlight
         let vertexHighlightActive = false, vertexHighlightLayer = null;
@@ -261,9 +403,9 @@
             closeX.textContent="✕"; closeX.style.cssText="cursor:pointer;color:#999;font-size:13px;padding:0 2px;";
             closeX.onclick=()=>{
                 dismissPickerPopup(); pickingFeatureMode=false;
-                lockFeatureBtn.style.background=lockedLineFeature?"#6f42c1":"#666";
-                lockFeatureBtn.textContent=lockedLineFeature?"🎯 Re-Pick":"🎯 Pick Feature";
-                updateStatus(lockedLineFeature?`🔒 Locked: ${lockedLineFeature.layerConfig.name}.`:"Pick cancelled.");
+                lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";
+                lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";
+                updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}.`:"Pick cancelled.");
             };
             header.appendChild(closeX); popup.appendChild(header);
 
@@ -273,16 +415,21 @@
                 row.onmouseenter=()=>row.style.background="#f0f4ff";
                 row.onmouseleave=()=>row.style.background="";
                 const oid=getOid(c.feature)??"?";
-                const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0);
-                const paths=(c.feature.geometry?.paths??[]).length;
+                const typeIcon = c.featureType === 'point' ? '📍' : '〰️';
                 const title=document.createElement("div");
                 title.style.cssText="font-weight:bold;color:#2a2a2a;font-size:11px;";
-                title.textContent=c.layerConfig.name;
+                title.textContent=`${typeIcon} ${c.layerConfig.name}`;
                 const meta=document.createElement("div");
                 meta.style.cssText="color:#888;font-size:10px;";
-                meta.textContent=`OID: ${oid}  ·  ${vtxCount} vertices  ·  ${paths} path(s)`;
+                if (c.featureType === 'line') {
+                    const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0);
+                    const paths=(c.feature.geometry?.paths??[]).length;
+                    meta.textContent=`OID: ${oid}  ·  ${vtxCount} vertices  ·  ${paths} path(s)`;
+                } else {
+                    meta.textContent=`OID: ${oid}  ·  Point feature`;
+                }
                 row.appendChild(title); row.appendChild(meta);
-                row.onclick=()=>{ dismissPickerPopup(); applyLock(c.feature,c.layer,c.layerConfig); };
+                row.onclick=()=>{ dismissPickerPopup(); applyLock(c.feature, c.layer, c.layerConfig, c.featureType); };
                 popup.appendChild(row);
             });
             document.body.appendChild(popup);
@@ -298,83 +445,114 @@
         const getOid = f => f?.attributes?.objectid ?? f?.attributes?.OBJECTID ?? null;
 
         async function refreshLockedFeature() {
-            if (!lockedLineFeature) return;
+            if (!lockedFeature) return;
             try {
-                const oid=getOid(lockedLineFeature.feature); if (oid==null) return;
-                const res=await lockedLineFeature.layer.queryFeatures({where:`objectid=${oid}`,returnGeometry:true,outFields:["*"]});
-                if (res.features.length>0) lockedLineFeature.feature=res.features[0];
+                const oid=getOid(lockedFeature.feature); if (oid==null) return;
+                const res=await lockedFeature.layer.queryFeatures({where:`objectid=${oid}`,returnGeometry:true,outFields:["*"]});
+                if (res.features.length>0) lockedFeature.feature=res.features[0];
             } catch(e){console.error("refreshLockedFeature error:",e);}
         }
 
-        function applyLock(feature,layer,cfg) {
-            lockedLineFeature={feature,layer,layerConfig:cfg}; pickingFeatureMode=false;
-            if(lockFeatureBtn){lockFeatureBtn.style.background="#6f42c1";lockFeatureBtn.textContent="🎯 Re-Pick";}
-            if(releaseFeatureBtn) releaseFeatureBtn.disabled=false;
-            if(lockedFeatureInfo) lockedFeatureInfo.textContent=`Locked: ${cfg.name} (OID: ${getOid(feature)??"?"})`;
-            if(vertexHighlightActive) scheduleHighlightRefresh();
-            setLineMode();
-            updateStatus(`🔒 Locked to ${cfg.name}. All line edits apply only to this feature.`);
+        // ── CHANGE 1: applyLock now accepts featureType ('point' | 'line') ───
+
+        function applyLock(feature, layer, cfg, featureType = 'line') {
+            lockedFeature = { feature, layer, layerConfig: cfg, featureType };
+            pickingFeatureMode = false;
+            if (lockFeatureBtn) { lockFeatureBtn.style.background="#6f42c1"; lockFeatureBtn.textContent="🎯 Re-Pick"; }
+            if (releaseFeatureBtn) releaseFeatureBtn.disabled=false;
+            if (lockedFeatureInfo) {
+                const typeLabel = featureType === 'point' ? '📍 point' : '〰️ line';
+                lockedFeatureInfo.textContent=`Locked: ${cfg.name} (OID: ${getOid(feature)??"?"}) [${typeLabel}]`;
+            }
+            if (vertexHighlightActive) scheduleHighlightRefresh();
+            // Switch to the matching mode for clarity
+            if (featureType === 'line') setLineMode();
+            else setPointMode();
+            const editNote = featureType === 'line'
+                ? 'All line edits apply only to this feature.'
+                : 'All point moves apply only to this feature.';
+            updateStatus(`🔒 Locked to ${cfg.name} (${featureType}). ${editNote}`);
         }
 
         function releaseLockedFeature() {
-            dismissPickerPopup(); lockedLineFeature=null; pickingFeatureMode=false;
-            if(lockFeatureBtn){lockFeatureBtn.style.background="#666";lockFeatureBtn.textContent="🎯 Pick Feature";}
-            if(releaseFeatureBtn) releaseFeatureBtn.disabled=true;
-            if(lockedFeatureInfo) lockedFeatureInfo.textContent="";
-            if(vertexHighlightActive) scheduleHighlightRefresh();
+            dismissPickerPopup(); lockedFeature=null; pickingFeatureMode=false;
+            if (lockFeatureBtn) { lockFeatureBtn.style.background="#666"; lockFeatureBtn.textContent="🎯 Pick Feature"; }
+            if (releaseFeatureBtn) releaseFeatureBtn.disabled=true;
+            if (lockedFeatureInfo) lockedFeatureInfo.textContent="";
+            if (vertexHighlightActive) scheduleHighlightRefresh();
             const mText=currentMode==="point"?"point feature":"line vertex";
             updateStatus(toolActive?`Feature released. Click on a ${mText} to select it.`:"Feature released.");
         }
 
-        async function pickLineFeature(event) {
+        // ── CHANGE 1: pickFeature now detects both point and line features ───
+
+        async function pickFeature(event) {
             const sp={x:event.x,y:event.y};
-            updateStatus("Looking for line feature...");
+            updateStatus("Looking for feature...");
             try {
                 const candidates=[], seenOids=new Set();
 
                 if (mapView.hitTest) {
                     const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});
                     for (const r of hit.results) {
-                        if (r.graphic?.geometry?.type==="polyline") {
-                            // Match against dynamic line layers
+                        const gtype = r.graphic?.geometry?.type;
+                        if (gtype === "polyline") {
                             const cfg=lineLayers.find(l=>l.id===r.layer.layerId);
                             if (!cfg) continue;
                             const oid=getOid(r.graphic);
                             if (oid!=null&&seenOids.has(oid)) continue;
                             if (oid!=null) seenOids.add(oid);
-                            candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg});
+                            candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'line'});
+                        } else if (gtype === "point" || gtype === "multipoint") {
+                            const cfg=pointLayers.find(p=>p.id===r.layer.layerId);
+                            if (!cfg) continue;
+                            const oid=getOid(r.graphic);
+                            if (oid!=null&&seenOids.has(oid)) continue;
+                            if (oid!=null) seenOids.add(oid);
+                            candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'point'});
                         }
                     }
                 }
 
+                // Fallback spatial query when hitTest returns nothing
                 if (candidates.length===0) {
-                    const mp=mapView.toMap(sp),tol=30;
+                    const mp=mapView.toMap(sp), tol=30;
+                    const ext={xmin:mp.x-tol,ymin:mp.y-tol,xmax:mp.x+tol,ymax:mp.y+tol,spatialReference:mapView.spatialReference};
+
                     for (const cfg of lineLayers) {
                         if (!cfg.layer.visible) continue;
-                        const ext={xmin:mp.x-tol,ymin:mp.y-tol,xmax:mp.x+tol,ymax:mp.y+tol,spatialReference:mapView.spatialReference};
                         const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});
                         for (const f of res.features) {
                             const oid=getOid(f);
                             if (oid!=null&&seenOids.has(oid)) continue;
                             if (oid!=null) seenOids.add(oid);
-                            candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg});
+                            candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'line'});
+                        }
+                    }
+
+                    for (const cfg of pointLayers) {
+                        if (!cfg.layer.visible) continue;
+                        const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});
+                        for (const f of res.features) {
+                            const oid=getOid(f);
+                            if (oid!=null&&seenOids.has(oid)) continue;
+                            if (oid!=null) seenOids.add(oid);
+                            candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'point'});
                         }
                     }
                 }
 
-                if (candidates.length===0){updateStatus("❌ No line feature found. Click directly on a line.");return;}
-                if (candidates.length===1){applyLock(candidates[0].feature,candidates[0].layer,candidates[0].layerConfig);}
+                if (candidates.length===0){updateStatus("❌ No feature found. Click directly on a point or line feature.");return;}
+                if (candidates.length===1){applyLock(candidates[0].feature,candidates[0].layer,candidates[0].layerConfig,candidates[0].featureType);}
                 else {
                     const rect=mapView.container.getBoundingClientRect();
                     showFeaturePickerPopup(candidates,rect.left+sp.x,rect.top+sp.y);
                     updateStatus(`🗂 ${candidates.length} overlapping features found. Choose one from the menu.`);
                 }
-            } catch(e){console.error("pickLineFeature error:",e);updateStatus("❌ Error picking feature.");}
+            } catch(e){console.error("pickFeature error:",e);updateStatus("❌ Error picking feature.");}
         }
 
         // ── Layer query helpers ───────────────────────────────────────────────
-        // All functions now iterate the dynamic pointLayers / lineLayers arrays
-        // and use cfg.layer directly — no allLayers.find() needed.
 
         async function findNearestPointFeature(mapPt) {
             try {
@@ -390,6 +568,66 @@
                 }
                 return (nearest&&nearest.distance<tol)?nearest:null;
             } catch(e){console.error("findNearestPointFeature error:",e);return null;}
+        }
+
+        // ── CHANGE 2: snap to nearest line vertex ─────────────────────────────
+        // Returns { geometry, layerConfig, snapType: 'lineVertex' } or null.
+        // excludeOids: Set of OIDs to skip (the feature(s) being moved).
+
+        async function findNearestLineVertex(dst, excludeOids = new Set()) {
+            try {
+                const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                let nearest = null, minD = Infinity, nearestCfg = null;
+                for (const cfg of lineLayers) {
+                    if (!cfg.layer.visible) continue;
+                    try {
+                        const ext = {
+                            xmin: dst.x - tol, ymin: dst.y - tol,
+                            xmax: dst.x + tol, ymax: dst.y + tol,
+                            spatialReference: mapView.spatialReference
+                        };
+                        const res = await cfg.layer.queryFeatures({
+                            geometry: ext, spatialRelationship: "intersects",
+                            returnGeometry: true, outFields: ["objectid"]
+                        });
+                        for (const f of res.features) {
+                            if (excludeOids.has(getOid(f))) continue;
+                            if (!f.geometry?.paths) continue;
+                            for (const path of f.geometry.paths) {
+                                for (const coord of path) {
+                                    const d = calcDist(dst, {x: coord[0], y: coord[1]});
+                                    if (d < minD) {
+                                        minD = d;
+                                        nearest = {x: coord[0], y: coord[1], spatialReference: dst.spatialReference};
+                                        nearestCfg = cfg;
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e) { console.error(`findNearestLineVertex error on ${cfg.name}:`, e); }
+                }
+                return (nearest && minD < tol)
+                    ? { geometry: nearest, layerConfig: nearestCfg, snapType: 'lineVertex' }
+                    : null;
+            } catch(e) { console.error("findNearestLineVertex error:", e); return null; }
+        }
+
+        // ── CHANGE 2: combined snap — picks closest of point feature or line vertex ──
+
+        async function findSnapTarget(dst, excludeOids = new Set()) {
+            const [pointSnap, vertexSnap] = await Promise.all([
+                findNearestPointFeature(dst),
+                findNearestLineVertex(dst, excludeOids)
+            ]);
+            if (!pointSnap && !vertexSnap) return null;
+            if (pointSnap && !vertexSnap) return { ...pointSnap, snapType: 'pointFeature' };
+            if (!pointSnap && vertexSnap) return vertexSnap;
+            // Both found — pick whichever is closer
+            const dPoint  = calcDist(dst, pointSnap.geometry);
+            const dVertex = calcDist(dst, vertexSnap.geometry);
+            return dPoint <= dVertex
+                ? { ...pointSnap, snapType: 'pointFeature' }
+                : vertexSnap;
         }
 
         async function findPointFeatureAtLocation(sp) {
@@ -422,10 +660,11 @@
         async function findCoincidentLinesForVertexCreation(sp, mp) {
             try {
                 const bufM=10/3.28084, lines=[];
-                if (lockedLineFeature) {
+                // CHANGE 1: check lockedFeature type
+                if (lockedFeature?.featureType === 'line') {
                     await refreshLockedFeature();
-                    const seg=findClosestSeg(lockedLineFeature.feature.geometry,mp);
-                    if (seg&&seg.distance<=bufM) lines.push({feature:lockedLineFeature.feature,layer:lockedLineFeature.layer,layerConfig:lockedLineFeature.layerConfig,segmentInfo:seg});
+                    const seg=findClosestSeg(lockedFeature.feature.geometry,mp);
+                    if (seg&&seg.distance<=bufM) lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,segmentInfo:seg});
                     return lines;
                 }
                 if (mapView.hitTest) {
@@ -454,10 +693,11 @@
         async function findCoincidentLineVertices(sp) {
             try {
                 const clickPt=mapView.toMap(sp),snapTol=50,lines=[];
-                if (lockedLineFeature) {
+                // CHANGE 1: check lockedFeature type
+                if (lockedFeature?.featureType === 'line') {
                     await refreshLockedFeature();
-                    const v=findClosestVertex(lockedLineFeature.feature.geometry,clickPt);
-                    if (v&&v.distance<snapTol) lines.push({feature:lockedLineFeature.feature,layer:lockedLineFeature.layer,layerConfig:lockedLineFeature.layerConfig,vertex:v});
+                    const v=findClosestVertex(lockedFeature.feature.geometry,clickPt);
+                    if (v&&v.distance<snapTol) lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,vertex:v});
                     return lines;
                 }
                 if (mapView.hitTest) {
@@ -525,9 +765,15 @@
         // ── Vertex operations ─────────────────────────────────────────────────
 
         function lockedReadyStatus() {
-            return lockedLineFeature
-                ?`🔒 Locked: ${lockedLineFeature.layerConfig.name}. Click a vertex to move, or use Add/Delete mode.`
-                :"Line mode active. Click on a line vertex to select it.";
+            if (!lockedFeature) {
+                return currentMode === 'point'
+                    ? "Click on a point feature to select it."
+                    : "Line mode active. Click on a line vertex to select it.";
+            }
+            if (lockedFeature.featureType === 'point') {
+                return `🔒 Locked: ${lockedFeature.layerConfig.name} (point). Click the locked point to move it.`;
+            }
+            return `🔒 Locked: ${lockedFeature.layerConfig.name}. Click a vertex to move, or use Add/Delete mode.`;
         }
 
         async function addVertexToLine(event) {
@@ -549,7 +795,7 @@
                 if (!updates.length){updateStatus("❌ No vertices could be added.");return;}
                 for (const u of updates) if(u.layer.applyEdits) await u.layer.applyEdits({updateFeatures:[u.feature]});
                 updateStatus(`✅ Added vertex to ${updates.length} line(s): ${updates.map(u=>u.layerName).join(", ")}!`);
-                if(lockedLineFeature) await refreshLockedFeature();
+                if(lockedFeature) await refreshLockedFeature();
                 if(vertexHighlightActive) scheduleHighlightRefresh();
                 setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
             } catch(e){console.error("addVertexToLine error:",e);updateStatus("❌ Error adding vertex.");}
@@ -577,7 +823,7 @@
                 if (!updates.length){updateStatus("❌ No vertices deleted (lines with only 2 vertices cannot be reduced further).");return;}
                 for (const u of updates) if(u.layer.applyEdits) await u.layer.applyEdits({updateFeatures:[u.feature]});
                 updateStatus(`✅ Deleted vertex from ${updates.length} line(s): ${updates.map(u=>u.layerName).join(", ")}!`);
-                if(lockedLineFeature) await refreshLockedFeature();
+                if(lockedFeature) await refreshLockedFeature();
                 if(vertexHighlightActive) scheduleHighlightRefresh();
                 setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
             } catch(e){console.error("deleteVertexFromLine error:",e);updateStatus("❌ Error deleting vertex.");}
@@ -588,7 +834,30 @@
         async function handleFeatureSelection(event) {
             const sp={x:event.x,y:event.y};
             updateStatus("Searching for feature...");
+
             if (currentMode==="point") {
+                // CHANGE 1: if locked to a point, restrict selection to only that feature
+                if (lockedFeature?.featureType === 'point') {
+                    await refreshLockedFeature();
+                    const r = await findPointFeatureAtLocation(sp);
+                    const clickOid = r ? getOid(r.feature) : null;
+                    const lockOid = getOid(lockedFeature.feature);
+                    if (!r || (lockOid != null && clickOid !== lockOid)) {
+                        updateStatus(`🔒 Locked to ${lockedFeature.layerConfig.name}. Click directly on the locked point to move it.`);
+                        return;
+                    }
+                    // Use the refreshed locked feature geometry
+                    selectedFeature = lockedFeature.feature;
+                    selectedLayer = lockedFeature.layer;
+                    selectedLayerConfig = lockedFeature.layerConfig;
+                    selectedVertex = null;
+                    connectedFeatures = await findConnectedLines(lockedFeature.feature.geometry);
+                    if (selectedFeature.geometry?.clone) originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false;
+                    updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected with ${connectedFeatures.length} connected line(s). Click destination to move.`);
+                    return;
+                }
+
                 const r=await findPointFeatureAtLocation(sp);
                 if (r){
                     selectedFeature=r.feature;selectedLayer=r.layer;selectedLayerConfig=r.layerConfig;selectedVertex=null;
@@ -605,8 +874,8 @@
                     for(const li of results)if(li.feature.geometry?.clone)originalGeometries.set(li.feature.attributes.objectid,li.feature.geometry.clone());
                     if(cancelBtn)cancelBtn.disabled=false;
                     const vType=results[0].vertex.isEndpoint?"endpoint":"vertex";
-                    const snap=results[0].vertex.isEndpoint?" (will snap to nearest point)":"";
-                    const lockNote=lockedLineFeature?" [🔒 Locked feature]":"";
+                    const snap=results[0].vertex.isEndpoint?" (will snap to nearest point or line vertex)":"";
+                    const lockNote=lockedFeature?.featureType==='line'?" [🔒 Locked feature]":"";
                     updateStatus(`🎯 Selected ${vType} on ${results.length} line(s): ${results.map(r=>r.layerConfig.name).join(", ")}${snap}${lockNote}. Click destination.`);
                 } else {updateStatus("❌ No line vertex found.");}
             }
@@ -617,13 +886,35 @@
             updateStatus("Moving feature...");
             try {
                 if (currentMode==="point") {
-                    await updateConnectedLines(dst);
+                    // Snap destination to nearest point feature or line vertex,
+                    // excluding the feature being moved to avoid self-snap.
+                    const excludeOids = new Set([getOid(selectedFeature)].filter(Boolean));
+                    const snapInfo = await findSnapTarget(dst, excludeOids);
+                    if (snapInfo) dst = snapInfo.geometry;
+
+                    const isLockedPoint = lockedFeature?.featureType === 'point';
+                    if (!isLockedPoint) await updateConnectedLines(dst);
                     const upd=selectedFeature.clone(); upd.geometry=dst;
                     if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});
-                    updateStatus(`✅ Moved ${selectedLayerConfig.name} and ${connectedFeatures.length} connected lines!`);
+                    const movedLines = isLockedPoint ? 0 : connectedFeatures.length;
+                    let msg = movedLines > 0
+                        ? `✅ Moved ${selectedLayerConfig.name} and ${movedLines} connected line(s)!`
+                        : `✅ Moved ${selectedLayerConfig.name}!`;
+                    if (snapInfo) {
+                        const snapDesc = snapInfo.snapType === 'lineVertex'
+                            ? `line vertex in ${snapInfo.layerConfig.name}`
+                            : `point feature in ${snapInfo.layerConfig.name}`;
+                        msg += ` Snapped to ${snapDesc}.`;
+                    }
+                    updateStatus(msg);
                 } else {
-                    let snapInfo = await findNearestPointFeature(dst);
+                    // CHANGE 2: snap to nearest point feature OR nearest line vertex
+                    const excludeOids = new Set(
+                        selectedCoincidentLines.map(li => getOid(li.feature)).filter(Boolean)
+                    );
+                    const snapInfo = await findSnapTarget(dst, excludeOids);
                     if (snapInfo) dst = snapInfo.geometry;
+
                     const updates=[];
                     for (const li of selectedCoincidentLines) {
                         try {
@@ -639,23 +930,29 @@
                     for(const u of updates){try{if(u.layer.applyEdits){await u.layer.applyEdits({updateFeatures:[u.feature]});ok++;}}catch(e){console.error("applyEdits error:",e);}}
                     const vLabel = selectedVertex.isEndpoint ? "endpoint" : "vertex";
                     let msg = `✅ Moved ${vLabel} on ${ok} line(s) and recalculated lengths!`;
-                    if (snapInfo) msg += ` Snapped to ${snapInfo.layerConfig.name}.`;
+                    if (snapInfo) {
+                        const snapDesc = snapInfo.snapType === 'lineVertex'
+                            ? `line vertex in ${snapInfo.layerConfig.name}`
+                            : `point feature in ${snapInfo.layerConfig.name}`;
+                        msg += ` Snapped to ${snapDesc}.`;
+                    }
                     updateStatus(msg);
                 }
                 selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
                 selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
                 connectedFeatures=[];originalGeometries.clear();
                 if(cancelBtn)cancelBtn.disabled=true;
-                if(lockedLineFeature)await refreshLockedFeature();
+                if(lockedFeature)await refreshLockedFeature();
                 if(vertexHighlightActive)scheduleHighlightRefresh();
-                setTimeout(()=>updateStatus(lockedLineFeature?lockedReadyStatus():`Ready. Click on a ${currentMode==="point"?"point feature":"line vertex"} to select it.`),3000);
+                setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
             } catch(e){console.error("handleMoveToDestination error:",e);updateStatus("❌ Error moving feature.");}
         }
 
         async function handleClick(event) {
             if (!toolActive) return;
             event.stopPropagation();
-            if(pickingFeatureMode){await pickLineFeature(event);return;}
+            // CHANGE 1: use pickFeature (was pickLineFeature)
+            if(pickingFeatureMode){await pickFeature(event);return;}
             if(vertexMode==="add"){await addVertexToLine(event);return;}
             if(vertexMode==="delete"){await deleteVertexFromLine(event);return;}
             if(!selectedFeature){await handleFeatureSelection(event);}
@@ -697,9 +994,10 @@
                         }
                 };
 
-                if (lockedLineFeature) {
-                    renderGeom(lockedLineFeature.feature.geometry);
-                    updateStatus(`👁 Showing ${total} vertices for locked feature (${lockedLineFeature.layerConfig.name}).`);
+                // CHANGE 1: check lockedFeature type
+                if (lockedFeature?.featureType === 'line') {
+                    renderGeom(lockedFeature.feature.geometry);
+                    updateStatus(`👁 Showing ${total} vertices for locked feature (${lockedFeature.layerConfig.name}).`);
                 } else {
                     for (const cfg of lineLayers) {
                         if (!cfg.layer.visible) continue;
@@ -730,7 +1028,7 @@
                 showVerticesToggleBtn.textContent="👁 Hide Vertices";
                 if(refreshVerticesBtn)refreshVerticesBtn.disabled=false;
                 renderVertexHighlights();
-                extentWatchHandle=mapView.watch("extent",()=>{if(vertexHighlightActive&&!lockedLineFeature)scheduleHighlightRefresh();});
+                extentWatchHandle=mapView.watch("extent",()=>{if(vertexHighlightActive&&!lockedFeature?.featureType==='line')scheduleHighlightRefresh();});
             } else {
                 showVerticesToggleBtn.style.background="#666";
                 showVerticesToggleBtn.textContent="👁 Show Vertices";
@@ -749,7 +1047,7 @@
             selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
             connectedFeatures=[];originalGeometries.clear();
             if(cancelBtn)cancelBtn.disabled=true;
-            if(lockedLineFeature)      updateStatus(lockedReadyStatus());
+            if(lockedFeature)          updateStatus(lockedReadyStatus());
             else if(vertexMode==="add")    updateStatus("Add Vertex mode active. Click on any line segment.");
             else if(vertexMode==="delete") updateStatus("Delete Vertex mode active. Click on any vertex.");
             else { const m=currentMode==="point"?"point feature":"line vertex"; updateStatus(`Move cancelled. Click on a ${m} to select it.`); }
@@ -784,7 +1082,7 @@
             if(lineModeBtn)     lineModeBtn.style.background="#3367d6";
             if(addVertexBtn)    addVertexBtn.style.background="#666";
             if(deleteVertexBtn) deleteVertexBtn.style.background="#666";
-            if(toolActive) updateStatus(lockedLineFeature?lockedReadyStatus():"Line mode active. Click on a line vertex to select it.");
+            if(toolActive) updateStatus(lockedReadyStatus());
             if(selectedFeature) cancelMove();
         }
         function enableTool() {
@@ -802,7 +1100,8 @@
             connectedFeatures=[];originalGeometries.clear();vertexMode="none";
             if(addVertexBtn)    addVertexBtn.style.background="#666";
             if(deleteVertexBtn) deleteVertexBtn.style.background="#666";
-            if(lockFeatureBtn)  {lockFeatureBtn.style.background=lockedLineFeature?"#6f42c1":"#666";lockFeatureBtn.textContent=lockedLineFeature?"🎯 Re-Pick":"🎯 Pick Feature";}
+            // CHANGE 1: use lockedFeature
+            if(lockFeatureBtn)  {lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";}
             if(clickHandler)clickHandler.remove();
             if(enableBtn)  enableBtn.disabled=false;
             if(disableBtn) disableBtn.disabled=true;
@@ -829,8 +1128,8 @@
             refreshLayersBtn.onclick = async () => {
                 refreshLayersBtn.disabled=true;
                 refreshLayersBtn.textContent="…";
-                if(lockedLineFeature) releaseLockedFeature();
-                if(selectedFeature)   cancelMove();
+                if(lockedFeature)  releaseLockedFeature();
+                if(selectedFeature) cancelMove();
                 updateStatus("Refreshing layers...");
                 await loadLayers();
                 updateLayerBadge();
@@ -844,15 +1143,15 @@
             lockFeatureBtn.onclick=()=>{
                 if(pickingFeatureMode){
                     pickingFeatureMode=false;
-                    lockFeatureBtn.style.background=lockedLineFeature?"#6f42c1":"#666";
-                    lockFeatureBtn.textContent=lockedLineFeature?"🎯 Re-Pick":"🎯 Pick Feature";
-                    updateStatus(lockedLineFeature?`🔒 Locked: ${lockedLineFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled.");
+                    lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";
+                    lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";
+                    updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled.");
                 } else {
                     pickingFeatureMode=true;
                     if(selectedFeature)cancelMove();
                     lockFeatureBtn.style.background="#e6ac00";
-                    lockFeatureBtn.textContent="⏳ Click a line...";
-                    updateStatus("🖱 Click any line on the map to lock all edits to that feature.");
+                    lockFeatureBtn.textContent="⏳ Click a feature...";
+                    updateStatus("🖱 Click any point or line feature on the map to lock all edits to it.");
                 }
             };
         }
@@ -867,7 +1166,7 @@
             };
         }
 
-        // ── Init: load layers then start ──────────────────────────────────────
+        // ── Init ──────────────────────────────────────────────────────────────
 
         setPointMode();
         window.gisToolHost.activeTools.add('snap-move-tool');
