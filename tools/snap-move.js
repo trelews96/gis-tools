@@ -27,7 +27,7 @@
 
         const mapView = getMapView();
         const z = 99999;
-        const SNAP_TOLERANCE = 15, POINT_SNAP_TOLERANCE = 25;
+        const SNAP_TOLERANCE = 25, POINT_SNAP_TOLERANCE = 45;
 
         // ── Dynamic layer registry ────────────────────────────────────────────
 
@@ -65,7 +65,8 @@
         toolBox.style.cssText = `
             position:fixed;top:120px;right:40px;z-index:${z};background:#fff;border:1px solid #333;
             padding:12px;max-width:320px;font:12px/1.3 Arial,sans-serif;
-            box-shadow:0 4px 16px rgba(0,0,0,.2);border-radius:4px;`;
+            box-shadow:0 4px 16px rgba(0,0,0,.2);border-radius:4px;
+            max-height:calc(100vh - 140px);overflow-y:auto;overflow-x:hidden;`;
 
         toolBox.innerHTML = `
             <style>
@@ -358,7 +359,7 @@
                         distance:inf.distance,point:inf.point,segmentStart:p1,segmentEnd:p2};}
                 }
             }
-            return (cl&&cl.distance<50)?cl:null;
+            return (cl&&cl.distance < POINT_SNAP_TOLERANCE*(mapView.resolution||1))?cl:null;
         }
         function findClosestVertex(geom,mp) {
             if (!geom?.paths) return null;
@@ -453,9 +454,9 @@
             } catch(e){console.error("refreshLockedFeature error:",e);}
         }
 
-        // ── CHANGE 1: applyLock now accepts featureType ('point' | 'line') ───
+        // ── FIX 1: applyLock auto-enters editing session for point features ──
 
-        function applyLock(feature, layer, cfg, featureType = 'line') {
+        async function applyLock(feature, layer, cfg, featureType = 'line') {
             lockedFeature = { feature, layer, layerConfig: cfg, featureType };
             pickingFeatureMode = false;
             if (lockFeatureBtn) { lockFeatureBtn.style.background="#6f42c1"; lockFeatureBtn.textContent="🎯 Re-Pick"; }
@@ -465,13 +466,27 @@
                 lockedFeatureInfo.textContent=`Locked: ${cfg.name} (OID: ${getOid(feature)??"?"}) [${typeLabel}]`;
             }
             if (vertexHighlightActive) scheduleHighlightRefresh();
-            // Switch to the matching mode for clarity
-            if (featureType === 'line') setLineMode();
-            else setPointMode();
-            const editNote = featureType === 'line'
-                ? 'All line edits apply only to this feature.'
-                : 'All point moves apply only to this feature.';
-            updateStatus(`🔒 Locked to ${cfg.name} (${featureType}). ${editNote}`);
+
+            if (featureType === 'line') {
+                setLineMode(); // clears any prior selection
+                updateStatus(`🔒 Locked to ${cfg.name}. Click any vertex to select it, then click the destination.`);
+            } else {
+                setPointMode(); // clears any prior selection, sets currentMode='point'
+                if (toolActive) {
+                    // Immediately enter the editing session — next click is the destination
+                    selectedFeature   = feature;
+                    selectedLayer     = layer;
+                    selectedLayerConfig = cfg;
+                    selectedVertex    = null;
+                    waitingForDestination = true;
+                    if (feature.geometry?.clone) originalGeometries.set(getOid(feature) ?? 'locked', feature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false;
+                    connectedFeatures = await findConnectedLines(feature.geometry);
+                    updateStatus(`🔒 Locked to ${cfg.name}. Click the destination to move it (${connectedFeatures.length} connected line(s)).`);
+                } else {
+                    updateStatus(`🔒 Locked to ${cfg.name}. Enable the tool then click the destination.`);
+                }
+            }
         }
 
         function releaseLockedFeature() {
@@ -692,7 +707,7 @@
 
         async function findCoincidentLineVertices(sp) {
             try {
-                const clickPt=mapView.toMap(sp),snapTol=50,lines=[];
+                const clickPt=mapView.toMap(sp),snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),lines=[];
                 // CHANGE 1: check lockedFeature type
                 if (lockedFeature?.featureType === 'line') {
                     await refreshLockedFeature();
@@ -831,12 +846,13 @@
 
         // ── Feature selection & movement ──────────────────────────────────────
 
+        // FIX 3: set waitingForDestination=true on successful selection so the
+        // next click goes straight to handleMoveToDestination — no empty middle click.
         async function handleFeatureSelection(event) {
             const sp={x:event.x,y:event.y};
             updateStatus("Searching for feature...");
 
             if (currentMode==="point") {
-                // CHANGE 1: if locked to a point, restrict selection to only that feature
                 if (lockedFeature?.featureType === 'point') {
                     await refreshLockedFeature();
                     const r = await findPointFeatureAtLocation(sp);
@@ -846,7 +862,6 @@
                         updateStatus(`🔒 Locked to ${lockedFeature.layerConfig.name}. Click directly on the locked point to move it.`);
                         return;
                     }
-                    // Use the refreshed locked feature geometry
                     selectedFeature = lockedFeature.feature;
                     selectedLayer = lockedFeature.layer;
                     selectedLayerConfig = lockedFeature.layerConfig;
@@ -854,6 +869,7 @@
                     connectedFeatures = await findConnectedLines(lockedFeature.feature.geometry);
                     if (selectedFeature.geometry?.clone) originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
+                    waitingForDestination = true;
                     updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected with ${connectedFeatures.length} connected line(s). Click destination to move.`);
                     return;
                 }
@@ -864,7 +880,8 @@
                     connectedFeatures=await findConnectedLines(r.feature.geometry);
                     if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());
                     if(cancelBtn)cancelBtn.disabled=false;
-                    updateStatus(`🎯 ${r.layerConfig.name} selected with ${connectedFeatures.length} connected lines. Click destination to move.`);
+                    waitingForDestination=true;
+                    updateStatus(`🎯 ${r.layerConfig.name} selected with ${connectedFeatures.length} connected line(s). Click destination to move.`);
                 } else {updateStatus("❌ No point feature found.");}
             } else {
                 const results=await findCoincidentLineVertices(sp);
@@ -873,6 +890,7 @@
                     selectedLayer=results[0].layer;selectedLayerConfig=results[0].layerConfig;selectedVertex=results[0].vertex;
                     for(const li of results)if(li.feature.geometry?.clone)originalGeometries.set(li.feature.attributes.objectid,li.feature.geometry.clone());
                     if(cancelBtn)cancelBtn.disabled=false;
+                    waitingForDestination=true;
                     const vType=results[0].vertex.isEndpoint?"endpoint":"vertex";
                     const snap=results[0].vertex.isEndpoint?" (will snap to nearest point or line vertex)":"";
                     const lockNote=lockedFeature?.featureType==='line'?" [🔒 Locked feature]":"";
@@ -951,12 +969,12 @@
         async function handleClick(event) {
             if (!toolActive) return;
             event.stopPropagation();
-            // CHANGE 1: use pickFeature (was pickLineFeature)
             if(pickingFeatureMode){await pickFeature(event);return;}
             if(vertexMode==="add"){await addVertexToLine(event);return;}
             if(vertexMode==="delete"){await deleteVertexFromLine(event);return;}
+            // FIX 3: selectedFeature+waitingForDestination are set together in
+            // handleFeatureSelection, so there is no intermediate "empty" click state.
             if(!selectedFeature){await handleFeatureSelection(event);}
-            else if(!waitingForDestination){waitingForDestination=true;updateStatus("Now click where you want to move the feature to...");}
             else{await handleMoveToDestination(event);}
         }
 
