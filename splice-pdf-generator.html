@@ -28,135 +28,104 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 (async function () {
-  const params    = new URLSearchParams(location.search);
-  const oid       = params.get('oid');
-  const job       = params.get('job') || 'N/A';
-  const layerUrl  = params.get('layerUrl');
+  const p          = new URLSearchParams(location.search);
+  const statusEl   = document.getElementById('status');
+  const spinnerEl  = document.getElementById('spinner');
+  const setStatus  = t => statusEl.textContent = t;
+  const setErr     = t => { statusEl.textContent = t; statusEl.className = 'status err'; spinnerEl.textContent = '❌'; spinnerEl.style.animation = 'none'; };
 
-  const infoEl    = document.getElementById('info');
-  const statusEl  = document.getElementById('status');
-  const spinnerEl = document.getElementById('spinner');
-
-  const setStatus = t => statusEl.textContent = t;
-  const setErr    = t => { statusEl.textContent = t; statusEl.className = 'status err'; spinnerEl.textContent = '❌'; };
-
-  infoEl.textContent = `Job: ${job}`;
-
-  if (!oid || !layerUrl) {
-    setErr('Missing parameters. Please use the button in the ArcGIS popup.');
-    return;
-  }
-
-  // ── CONFIG ──────────────────────────────────────────────────────────────
-  const CONFIG = {
-    FIBER_SEARCH_DISTANCE: 10,
-    ENABLE_REVERSE_GEOCODING: true,
-    COMPANY_NAME: 'Charter Spectrum RDOF',
-    REPORT_TITLE: 'Splice Closure Production Report'
+  // ── Read all fields passed from Arcade ──────────────────────────────────
+  const oid      = p.get('oid');
+  const layerUrl = p.get('layerUrl');
+  const attrs    = {
+    job_number:                   p.get('job')       || 'N/A',
+    workorder_id:                 p.get('workorder') || 'N/A',
+    workflow_status:              p.get('status')    || 'N/A',
+    installation_date:            p.get('instdate')  || 'N/A',
+    physical_status:              p.get('physstatus')|| 'N/A',
+    placement_type:               p.get('placement') || 'N/A',
+    splice_enclosure_type:        p.get('enctype')   || 'N/A',
+    splice_closure_material:      p.get('closmat')   || 'N/A',
+    port_count:                   p.get('ports')     || 'N/A',
+    drop_count:                   p.get('drops')     || 'N/A',
+    measured_light_Level:         p.get('light')     || 'N/A',
+    construction_subcontractor:   p.get('subcon')    || 'N/A',
+    creator:                      p.get('creator')   || 'N/A',
+    last_editior:                 p.get('editor')    || 'N/A'
   };
+  const lat   = parseFloat(p.get('lat'));
+  const lon   = parseFloat(p.get('lon'));
+  const token = p.get('token') || '';
 
-  const FIELD_MAP = {
-    job_number: 'job_number',
-    workorder_id: 'workorder_id',
-    workflow_status: 'workflow_status',
-    installation_date: 'installation_date',
-    physical_status: 'physical_status',
-    placement_type: 'placement_type',
-    splice_enclosure_type: 'splice_enclosure_type',
-    splice_closure_material: 'splice_closure_material',
-    port_count: 'port_count',
-    drop_count: 'drop_count',
-    measured_light_Level: 'measured_light_Level',
-    construction_subcontractor: 'construction_subcontractor',
-    creator: 'creator',
-    last_editior: 'last_editior'
-  };
+  document.getElementById('info').textContent = `Job: ${attrs.job_number}`;
 
-  // ── HELPERS ──────────────────────────────────────────────────────────────
+  if (!oid) { setErr('Missing feature ID. Please use the button in the ArcGIS popup.'); return; }
+
+  // ── CONFIG ────────────────────────────────────────────────────────────
+  const COMPANY_NAME  = 'Charter Spectrum RDOF';
+  const REPORT_TITLE  = 'Splice Closure Production Report';
+
+  // ── HELPERS ───────────────────────────────────────────────────────────
   const fmtDate = v => {
-    if (!v) return 'N/A';
-    const d = new Date(v);
-    return isNaN(d) ? 'N/A' : d.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+    if (!v || v === 'N/A') return 'N/A';
+    const d = new Date(isNaN(v) ? v : Number(v));
+    return isNaN(d) ? v : d.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
   };
 
-  const restGet = async (url, qs) => {
-    qs.f = 'json';
-    const r = await fetch(url + '?' + new URLSearchParams(qs));
-    return r.json();
-  };
-
-  // ── FETCH FEATURE ────────────────────────────────────────────────────────
-  setStatus('Fetching feature data...');
-  const featureResp = await restGet(`${layerUrl}/query`, {
-    where: `OBJECTID = ${oid}`,
-    outFields: '*',
-    returnGeometry: true,
-    outSR: 4326
-  });
-
-  if (!featureResp.features || featureResp.features.length === 0) {
-    setErr('Feature not found. Check the layer URL and OBJECTID.');
-    return;
-  }
-
-  const feature = featureResp.features[0];
-  const attrs   = feature.attributes;
-  const geom    = feature.geometry; // {x, y} in WGS84
-
-  // ── FETCH ATTACHMENTS ────────────────────────────────────────────────────
-  setStatus('Fetching attachments...');
-  let attachments = [];
-  try {
-    const attResp = await restGet(`${layerUrl}/${oid}/attachments`, {});
-    attachments = attResp.attachmentInfos || [];
-  } catch(e) { console.warn('Attachments failed:', e); }
-
-  // ── REVERSE GEOCODE ──────────────────────────────────────────────────────
+  // ── REVERSE GEOCODE ───────────────────────────────────────────────────
   let address = null;
-  if (CONFIG.ENABLE_REVERSE_GEOCODING && geom) {
+  if (!isNaN(lat) && !isNaN(lon)) {
     setStatus('Looking up address...');
     try {
-      const geo = await restGet(
-        'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode',
-        { location: `${geom.x},${geom.y}` }
+      const r = await fetch(
+        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode` +
+        `?location=${lon},${lat}&f=json`
       );
-      if (geo.address) address = geo.address;
+      const d = await r.json();
+      if (d.address) address = d.address;
     } catch(e) { console.warn('Geocode failed:', e); }
   }
 
-  // ── LOAD ATTACHMENT IMAGES AS BASE64 ─────────────────────────────────────
-  const getBase64 = (url) => fetch(url)
+  // ── FETCH ATTACHMENTS (best effort — may fail if auth required) ───────
+  let attachments = [];
+  if (layerUrl && oid) {
+    setStatus('Fetching attachments...');
+    try {
+      const r = await fetch(`${layerUrl}/${oid}/attachments?f=json&token=${token}`);
+      const d = await r.json();
+      attachments = d.attachmentInfos || [];
+    } catch(e) { console.warn('Attachments unavailable (auth required?):', e); }
+  }
+
+  const getBase64 = url => fetch(url)
     .then(r => r.blob())
-    .then(b => new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onloadend = () => res(reader.result);
-      reader.onerror  = rej;
-      reader.readAsDataURL(b);
+    .then(b => new Promise((res,rej) => {
+      const fr = new FileReader();
+      fr.onloadend = () => res(fr.result);
+      fr.onerror = rej;
+      fr.readAsDataURL(b);
     }));
 
-  // ── BUILD PDF ────────────────────────────────────────────────────────────
+  // ── BUILD PDF ─────────────────────────────────────────────────────────
   setStatus('Generating PDF...');
-
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-
-  const pageW  = doc.internal.pageSize.getWidth();
-  const pageH  = doc.internal.pageSize.getHeight();
+  const doc  = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
   const margin = 20;
   let y = 20;
 
-  const section = (title, startY) => {
-    doc.setFontSize(14); doc.setFont(undefined,'bold');
-    doc.setTextColor(30,58,138);
-    doc.text(title, margin, startY);
+  const section = (title, sy) => {
+    doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(30,58,138);
+    doc.text(title, margin, sy);
     doc.setDrawColor(59,130,246); doc.setLineWidth(0.5);
-    doc.line(margin, startY+2, pageW-margin, startY+2);
-    return startY + 8;
+    doc.line(margin, sy+2, pageW-margin, sy+2);
+    return sy + 8;
   };
 
-  const grid = (items, startY) => {
+  const grid = (items, sy) => {
     const colW = (pageW - 2*margin) / 2;
-    let gy = startY, col = 0;
+    let gy = sy, col = 0;
     items.forEach(item => {
       const x = margin + col * colW;
       doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(100,100,100);
@@ -177,86 +146,68 @@
   };
 
   // Header
-  doc.setFillColor(30,58,138);
-  doc.rect(0, 0, pageW, 50, 'F');
+  doc.setFillColor(30,58,138); doc.rect(0,0,pageW,50,'F');
   doc.setTextColor(255,255,255);
-  doc.setFontSize(22); doc.setFont(undefined,'bold');
-  doc.text(CONFIG.REPORT_TITLE, margin, 20);
-  doc.setFontSize(12); doc.setFont(undefined,'normal');
-  doc.text(CONFIG.COMPANY_NAME, margin, 28);
+  doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.text(REPORT_TITLE, margin, 20);
+  doc.setFontSize(12); doc.setFont(undefined,'normal'); doc.text(COMPANY_NAME, margin, 28);
   doc.setFontSize(9);
-  doc.text(`Job: ${attrs[FIELD_MAP.job_number] || 'N/A'}`, margin, 38);
-  doc.text(`Status: ${attrs[FIELD_MAP.workflow_status] || 'N/A'}`, margin+70, 38);
-  doc.text(`Date: ${fmtDate(attrs[FIELD_MAP.installation_date])}`, margin+140, 38);
+  doc.text(`Job: ${attrs.job_number}`,            margin,     38);
+  doc.text(`Status: ${attrs.workflow_status}`,    margin+70,  38);
+  doc.text(`Date: ${fmtDate(attrs.installation_date)}`, margin+140, 38);
   doc.setTextColor(0,0,0);
   y = 60;
 
   // Location
   y = section('📍 Location Information', y);
-  const locItems = address
-    ? [
-        { label:'Address',          value: address.Address || 'N/A' },
-        { label:'City, State, ZIP', value: `${address.City || ''}, ${address.Region || ''} ${address.Postal || ''}` }
-      ]
-    : [
-        { label:'Address',          value: 'See coordinates' },
-        { label:'City, State, ZIP', value: 'N/A' }
-      ];
-  locItems.push(
-    { label:'Coordinates',      value: geom ? `${geom.y?.toFixed(6)}, ${geom.x?.toFixed(6)}` : 'N/A' },
-    { label:'Installation Type',value: attrs[FIELD_MAP.placement_type] || 'N/A' }
-  );
-  y = grid(locItems, y); y += 10;
+  y = grid([
+    { label:'Address',           value: address ? address.Address : 'See coordinates' },
+    { label:'City, State, ZIP',  value: address ? `${address.City}, ${address.Region} ${address.Postal}` : 'N/A' },
+    { label:'Coordinates',       value: (!isNaN(lat) && !isNaN(lon)) ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : 'N/A' },
+    { label:'Installation Type', value: attrs.placement_type }
+  ], y); y += 10;
 
   // Closure data
-  y = checkBreak(60);
-  y = section('🔌 Closure Data', y);
+  y = checkBreak(60); y = section('🔌 Closure Data', y);
   y = grid([
-    { label:'Closure Condition',    value: attrs[FIELD_MAP.physical_status] },
-    { label:'Splice Location Type', value: attrs[FIELD_MAP.splice_enclosure_type] },
-    { label:'Closure Type',         value: attrs[FIELD_MAP.splice_closure_material] },
-    { label:'Work Order ID',        value: attrs[FIELD_MAP.workorder_id] }
+    { label:'Closure Condition',    value: attrs.physical_status },
+    { label:'Splice Location Type', value: attrs.splice_enclosure_type },
+    { label:'Closure Type',         value: attrs.splice_closure_material },
+    { label:'Work Order ID',        value: attrs.workorder_id }
   ], y); y += 10;
 
   // Port data
-  y = checkBreak(60);
-  y = section('🔧 Port & Connection Data', y);
+  y = checkBreak(60); y = section('🔧 Port & Connection Data', y);
   const portItems = [
-    { label:'Number of Ports', value: attrs[FIELD_MAP.port_count] },
-    { label:'Drops Connected',  value: attrs[FIELD_MAP.drop_count] }
+    { label:'Number of Ports', value: attrs.port_count },
+    { label:'Drops Connected',  value: attrs.drop_count }
   ];
-  const rawLevels = attrs[FIELD_MAP.measured_light_Level];
-  if (rawLevels) {
-    rawLevels.split(',').map(l => l.trim()).filter(Boolean).forEach((lvl, i) => {
+  if (attrs.measured_light_Level && attrs.measured_light_Level !== 'N/A') {
+    attrs.measured_light_Level.split(',').map(l=>l.trim()).filter(Boolean).forEach((lvl,i) => {
       portItems.push({ label:`Light Level #${i+1}`, value:`${lvl} dBm` });
     });
   }
   y = grid(portItems, y); y += 10;
 
   // Work summary
-  y = checkBreak(60);
-  y = section('👷 Work Summary', y);
+  y = checkBreak(60); y = section('👷 Work Summary', y);
   y = grid([
-    { label:'Subcontractor',    value: attrs[FIELD_MAP.construction_subcontractor] },
-    { label:'Created By',       value: attrs[FIELD_MAP.creator] },
-    { label:'Last Edited By',   value: attrs[FIELD_MAP.last_editior] },
-    { label:'Installation Date',value: fmtDate(attrs[FIELD_MAP.installation_date]) }
+    { label:'Subcontractor',     value: attrs.construction_subcontractor },
+    { label:'Created By',        value: attrs.creator },
+    { label:'Last Edited By',    value: attrs.last_editior },
+    { label:'Installation Date', value: fmtDate(attrs.installation_date) }
   ], y); y += 10;
 
   // Photos
   if (attachments.length > 0) {
     doc.addPage(); y = 20;
     y = section('📷 Installation Photos', y);
-
     for (let i = 0; i < attachments.length; i++) {
       setStatus(`Adding photo ${i+1} of ${attachments.length}...`);
       try {
-        const imgUrl  = `${layerUrl}/${oid}/attachments/${attachments[i].id}`;
-        const imgData = await getBase64(imgUrl);
+        const imgData = await getBase64(`${layerUrl}/${oid}/attachments/${attachments[i].id}?token=${token}`);
         if (imgData) {
           if (i > 0 && i % 2 === 0) { doc.addPage(); y = 20; }
-          const imgH  = 80;
-          const imgW  = pageW - 2*margin;
+          const imgH = 80, imgW = pageW - 2*margin;
           const photoY = i % 2 === 0 ? y : y + imgH + 15;
           doc.setFontSize(8); doc.setTextColor(100,100,100);
           doc.text(attachments[i].name, margin, photoY);
@@ -277,9 +228,8 @@
   }
 
   // Save
-  const filename = `SpliceClosure_${attrs[FIELD_MAP.job_number] || 'Report'}_${Date.now()}.pdf`;
+  const filename = `SpliceClosure_${attrs.job_number}_${Date.now()}.pdf`;
   doc.save(filename);
-
   spinnerEl.textContent = '✅';
   spinnerEl.style.animation = 'none';
   setStatus(`Download started: ${filename}`);
