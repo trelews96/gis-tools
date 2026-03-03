@@ -82,13 +82,30 @@
     });
   };
 
+  // ── CONVERT WEB MERCATOR TO WGS84 ─────────────────────────────────────
+  // Arcade returns coordinates in the layer's spatial reference (Web Mercator)
+  const toWGS84 = (x, y) => {
+    const lng = (x / 20037508.34) * 180;
+    let lat = (y / 20037508.34) * 180;
+    lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
+    return { lat, lng };
+  };
+
+  let wgsLat = lat, wgsLon = lon;
+  // If coords look like Web Mercator (large numbers), convert them
+  if (!isNaN(lat) && Math.abs(lat) > 90) {
+    const wgs = toWGS84(lon, lat);
+    wgsLat = wgs.lat;
+    wgsLon = wgs.lng;
+  }
+
   // ── REVERSE GEOCODE ────────────────────────────────────────────────────
   let address = null;
-  if (!isNaN(lat) && !isNaN(lon)) {
+  if (!isNaN(wgsLat) && !isNaN(wgsLon)) {
     setStatus('Looking up address...');
     try {
       const r = await fetch(
-        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?location=${lon},${lat}&f=json`
+        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?location=${wgsLon},${wgsLat}&f=json`
       );
       const d = await r.json();
       if (d.address) address = d.address;
@@ -150,16 +167,16 @@
   y = 60;
 
   // ── LOCATION ───────────────────────────────────────────────────────────
-  y = section('📍 Location Information', y);
+  y = section('LOCATION INFORMATION', y);
   y = grid([
     { label: 'Address',           value: address ? address.Address : 'See coordinates' },
     { label: 'City, State, ZIP',  value: address ? `${address.City}, ${address.Region} ${address.Postal}` : 'N/A' },
-    { label: 'Coordinates',       value: (!isNaN(lat) && !isNaN(lon)) ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : 'N/A' },
+    { label: 'Coordinates',       value: (!isNaN(wgsLat) && !isNaN(wgsLon)) ? `${wgsLat.toFixed(6)}, ${wgsLon.toFixed(6)}` : 'N/A' },
     { label: 'Installation Type', value: attrs.placement_type }
   ], y); y += 10;
 
   // ── CLOSURE DATA ───────────────────────────────────────────────────────
-  y = checkBreak(60); y = section('🔌 Closure Data', y);
+  y = checkBreak(60); y = section('CLOSURE DATA', y);
   y = grid([
     { label: 'Closure Condition',    value: attrs.physical_status },
     { label: 'Splice Location Type', value: attrs.splice_enclosure_type },
@@ -168,7 +185,7 @@
   ], y); y += 10;
 
   // ── PORT DATA ──────────────────────────────────────────────────────────
-  y = checkBreak(60); y = section('🔧 Port & Connection Data', y);
+  y = checkBreak(60); y = section('PORT & CONNECTION DATA', y);
   const portItems = [
     { label: 'Number of Ports', value: attrs.port_count },
     { label: 'Drops Connected', value: attrs.drop_count }
@@ -181,7 +198,7 @@
   y = grid(portItems, y); y += 10;
 
   // ── WORK SUMMARY ───────────────────────────────────────────────────────
-  y = checkBreak(60); y = section('👷 Work Summary', y);
+  y = checkBreak(60); y = section('WORK SUMMARY', y);
   y = grid([
     { label: 'Subcontractor',     value: attrs.construction_subcontractor },
     { label: 'Created By',        value: attrs.creator },
