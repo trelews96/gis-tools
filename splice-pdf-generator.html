@@ -82,35 +82,13 @@
     });
   };
 
-  // ── CONVERT WEB MERCATOR TO WGS84 ─────────────────────────────────────
-  // Arcade returns coordinates in the layer's spatial reference (Web Mercator)
-  const toWGS84 = (x, y) => {
-    const lng = (x / 20037508.34) * 180;
-    let lat = (y / 20037508.34) * 180;
-    lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
-    return { lat, lng };
+  // ── Address passed directly from Arcade — no geocoding needed ───────────
+  const address = {
+    Address: p.get('addr')   || 'N/A',
+    City:    p.get('city')   || 'N/A',
+    Region:  p.get('region') || 'N/A',
+    Postal:  p.get('postal') || 'N/A'
   };
-
-  let wgsLat = lat, wgsLon = lon;
-  // If coords look like Web Mercator (large numbers), convert them
-  if (!isNaN(lat) && Math.abs(lat) > 90) {
-    const wgs = toWGS84(lon, lat);
-    wgsLat = wgs.lat;
-    wgsLon = wgs.lng;
-  }
-
-  // ── REVERSE GEOCODE ────────────────────────────────────────────────────
-  let address = null;
-  if (!isNaN(wgsLat) && !isNaN(wgsLon)) {
-    setStatus('Looking up address...');
-    try {
-      const r = await fetch(
-        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?location=${wgsLon},${wgsLat}&f=json`
-      );
-      const d = await r.json();
-      if (d.address) address = d.address;
-    } catch (e) { console.warn('Geocode failed:', e); }
-  }
 
   // ── BUILD PDF ──────────────────────────────────────────────────────────
   setStatus('Generating PDF...');
@@ -171,7 +149,7 @@
   y = grid([
     { label: 'Address',           value: address ? address.Address : 'See coordinates' },
     { label: 'City, State, ZIP',  value: address ? `${address.City}, ${address.Region} ${address.Postal}` : 'N/A' },
-    { label: 'Coordinates',       value: (!isNaN(wgsLat) && !isNaN(wgsLon)) ? `${wgsLat.toFixed(6)}, ${wgsLon.toFixed(6)}` : 'N/A' },
+    { label: 'Coordinates',       value: (!isNaN(lat) && !isNaN(lon)) ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : 'N/A' },
     { label: 'Installation Type', value: attrs.placement_type }
   ], y); y += 10;
 
