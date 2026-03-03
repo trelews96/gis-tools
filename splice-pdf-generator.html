@@ -10,9 +10,9 @@
     .card { background: white; border-radius: 12px; padding: 32px 40px;
             box-shadow: 0 4px 16px rgba(0,0,0,.1); text-align: center;
             max-width: 420px; width: 90%; }
-    h2   { margin: 0 0 8px; color: #1e3a5f; }
+    h2 { margin: 0 0 8px; color: #1e3a5f; }
     .status { font-size: 14px; color: #3b82f6; margin-top: 16px; min-height: 20px; }
-    .err    { color: #dc2626 !important; }
+    .err { color: #dc2626 !important; }
     .spinner { font-size: 40px; animation: spin 1.5s linear infinite; display: inline-block; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   </style>
@@ -28,111 +28,101 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 (async function () {
-  const p          = new URLSearchParams(location.search);
-  const statusEl   = document.getElementById('status');
-  const spinnerEl  = document.getElementById('spinner');
-  const setStatus  = t => statusEl.textContent = t;
-  const setErr     = t => { statusEl.textContent = t; statusEl.className = 'status err'; spinnerEl.textContent = '❌'; spinnerEl.style.animation = 'none'; };
 
-  // ── Read all fields passed from Arcade ──────────────────────────────────
-  const oid      = p.get('oid');
-  const layerUrl = p.get('layerUrl');
-  const attrs    = {
-    job_number:                   p.get('job')       || 'N/A',
-    workorder_id:                 p.get('workorder') || 'N/A',
-    workflow_status:              p.get('status')    || 'N/A',
-    installation_date:            p.get('instdate')  || 'N/A',
-    physical_status:              p.get('physstatus')|| 'N/A',
-    placement_type:               p.get('placement') || 'N/A',
-    splice_enclosure_type:        p.get('enctype')   || 'N/A',
-    splice_closure_material:      p.get('closmat')   || 'N/A',
-    port_count:                   p.get('ports')     || 'N/A',
-    drop_count:                   p.get('drops')     || 'N/A',
-    measured_light_Level:         p.get('light')     || 'N/A',
-    construction_subcontractor:   p.get('subcon')    || 'N/A',
-    creator:                      p.get('creator')   || 'N/A',
-    last_editior:                 p.get('editor')    || 'N/A'
+  const p         = new URLSearchParams(location.search);
+  const statusEl  = document.getElementById('status');
+  const spinnerEl = document.getElementById('spinner');
+  const setStatus = t => statusEl.textContent = t;
+  const setErr    = t => {
+    statusEl.textContent = t;
+    statusEl.className = 'status err';
+    spinnerEl.textContent = '❌';
+    spinnerEl.style.animation = 'none';
   };
-  const lat   = parseFloat(p.get('lat'));
-  const lon   = parseFloat(p.get('lon'));
-  const token = p.get('token') || '';
+
+  // ── Read all fields passed from Arcade via URL params ──────────────────
+  const oid  = p.get('oid');
+  const lat  = parseFloat(p.get('lat'));
+  const lon  = parseFloat(p.get('lon'));
+
+  const attrs = {
+    job_number:                 p.get('job')        || 'N/A',
+    workorder_id:               p.get('workorder')  || 'N/A',
+    workflow_status:            p.get('status')     || 'N/A',
+    installation_date:          p.get('instdate')   || 'N/A',
+    physical_status:            p.get('physstatus') || 'N/A',
+    placement_type:             p.get('placement')  || 'N/A',
+    splice_enclosure_type:      p.get('enctype')    || 'N/A',
+    splice_closure_material:    p.get('closmat')    || 'N/A',
+    port_count:                 p.get('ports')      || 'N/A',
+    drop_count:                 p.get('drops')      || 'N/A',
+    measured_light_Level:       p.get('light')      || 'N/A',
+    construction_subcontractor: p.get('subcon')     || 'N/A',
+    creator:                    p.get('creator')    || 'N/A',
+    last_edit_user:             p.get('editor')     || 'N/A'
+  };
 
   document.getElementById('info').textContent = `Job: ${attrs.job_number}`;
 
-  if (!oid) { setErr('Missing feature ID. Please use the button in the ArcGIS popup.'); return; }
+  if (!oid) {
+    setErr('Missing feature ID. Please use the button in the ArcGIS popup.');
+    return;
+  }
 
-  // ── CONFIG ────────────────────────────────────────────────────────────
-  const COMPANY_NAME  = 'Charter Spectrum RDOF';
-  const REPORT_TITLE  = 'Splice Closure Production Report';
+  // ── CONFIG ─────────────────────────────────────────────────────────────
+  const COMPANY_NAME = 'Charter Spectrum RDOF';
+  const REPORT_TITLE = 'Splice Closure Production Report';
 
-  // ── HELPERS ───────────────────────────────────────────────────────────
+  // ── HELPERS ────────────────────────────────────────────────────────────
   const fmtDate = v => {
     if (!v || v === 'N/A') return 'N/A';
     const d = new Date(isNaN(v) ? v : Number(v));
-    return isNaN(d) ? v : d.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+    return isNaN(d.getTime()) ? v : d.toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric'
+    });
   };
 
-  // ── REVERSE GEOCODE ───────────────────────────────────────────────────
+  // ── REVERSE GEOCODE ────────────────────────────────────────────────────
   let address = null;
   if (!isNaN(lat) && !isNaN(lon)) {
     setStatus('Looking up address...');
     try {
       const r = await fetch(
-        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode` +
-        `?location=${lon},${lat}&f=json`
+        `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?location=${lon},${lat}&f=json`
       );
       const d = await r.json();
       if (d.address) address = d.address;
-    } catch(e) { console.warn('Geocode failed:', e); }
+    } catch (e) { console.warn('Geocode failed:', e); }
   }
 
-  // ── FETCH ATTACHMENTS (best effort — may fail if auth required) ───────
-  let attachments = [];
-  if (layerUrl && oid) {
-    setStatus('Fetching attachments...');
-    try {
-      const r = await fetch(`${layerUrl}/${oid}/attachments?f=json&token=${token}`);
-      const d = await r.json();
-      attachments = d.attachmentInfos || [];
-    } catch(e) { console.warn('Attachments unavailable (auth required?):', e); }
-  }
-
-  const getBase64 = url => fetch(url)
-    .then(r => r.blob())
-    .then(b => new Promise((res,rej) => {
-      const fr = new FileReader();
-      fr.onloadend = () => res(fr.result);
-      fr.onerror = rej;
-      fr.readAsDataURL(b);
-    }));
-
-  // ── BUILD PDF ─────────────────────────────────────────────────────────
+  // ── BUILD PDF ──────────────────────────────────────────────────────────
   setStatus('Generating PDF...');
+
   const { jsPDF } = window.jspdf;
-  const doc  = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
+  const doc    = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW  = doc.internal.pageSize.getWidth();
+  const pageH  = doc.internal.pageSize.getHeight();
   const margin = 20;
   let y = 20;
 
   const section = (title, sy) => {
-    doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(30,58,138);
+    doc.setFontSize(14); doc.setFont(undefined, 'bold'); doc.setTextColor(30, 58, 138);
     doc.text(title, margin, sy);
-    doc.setDrawColor(59,130,246); doc.setLineWidth(0.5);
-    doc.line(margin, sy+2, pageW-margin, sy+2);
+    doc.setDrawColor(59, 130, 246); doc.setLineWidth(0.5);
+    doc.line(margin, sy + 2, pageW - margin, sy + 2);
     return sy + 8;
   };
 
   const grid = (items, sy) => {
-    const colW = (pageW - 2*margin) / 2;
+    const colW = (pageW - 2 * margin) / 2;
     let gy = sy, col = 0;
     items.forEach(item => {
       const x = margin + col * colW;
-      doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(100,100,100);
+      doc.setFontSize(8); doc.setFont(undefined, 'normal'); doc.setTextColor(100, 100, 100);
       doc.text(String(item.label).toUpperCase(), x, gy);
-      doc.setFontSize(9); doc.setFont(undefined,'bold'); doc.setTextColor(0,0,0);
-      doc.text(doc.splitTextToSize(String(item.value ?? 'N/A'), colW-5), x, gy+4);
-      doc.setFont(undefined,'normal');
+      doc.setFontSize(9); doc.setFont(undefined, 'bold'); doc.setTextColor(0, 0, 0);
+      doc.text(doc.splitTextToSize(String(item.value ?? 'N/A'), colW - 5), x, gy + 4);
+      doc.setFont(undefined, 'normal');
       col++;
       if (col >= 2) { col = 0; gy += 12; }
     });
@@ -145,94 +135,79 @@
     return y;
   };
 
-  // Header
-  doc.setFillColor(30,58,138); doc.rect(0,0,pageW,50,'F');
-  doc.setTextColor(255,255,255);
-  doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.text(REPORT_TITLE, margin, 20);
-  doc.setFontSize(12); doc.setFont(undefined,'normal'); doc.text(COMPANY_NAME, margin, 28);
+  // ── HEADER ─────────────────────────────────────────────────────────────
+  doc.setFillColor(30, 58, 138); doc.rect(0, 0, pageW, 50, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22); doc.setFont(undefined, 'bold');
+  doc.text(REPORT_TITLE, margin, 20);
+  doc.setFontSize(12); doc.setFont(undefined, 'normal');
+  doc.text(COMPANY_NAME, margin, 28);
   doc.setFontSize(9);
-  doc.text(`Job: ${attrs.job_number}`,            margin,     38);
-  doc.text(`Status: ${attrs.workflow_status}`,    margin+70,  38);
-  doc.text(`Date: ${fmtDate(attrs.installation_date)}`, margin+140, 38);
-  doc.setTextColor(0,0,0);
+  doc.text(`Job: ${attrs.job_number}`,                      margin,      38);
+  doc.text(`Status: ${attrs.workflow_status}`,              margin + 70, 38);
+  doc.text(`Date: ${fmtDate(attrs.installation_date)}`,     margin + 140, 38);
+  doc.setTextColor(0, 0, 0);
   y = 60;
 
-  // Location
+  // ── LOCATION ───────────────────────────────────────────────────────────
   y = section('📍 Location Information', y);
   y = grid([
-    { label:'Address',           value: address ? address.Address : 'See coordinates' },
-    { label:'City, State, ZIP',  value: address ? `${address.City}, ${address.Region} ${address.Postal}` : 'N/A' },
-    { label:'Coordinates',       value: (!isNaN(lat) && !isNaN(lon)) ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : 'N/A' },
-    { label:'Installation Type', value: attrs.placement_type }
+    { label: 'Address',           value: address ? address.Address : 'See coordinates' },
+    { label: 'City, State, ZIP',  value: address ? `${address.City}, ${address.Region} ${address.Postal}` : 'N/A' },
+    { label: 'Coordinates',       value: (!isNaN(lat) && !isNaN(lon)) ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : 'N/A' },
+    { label: 'Installation Type', value: attrs.placement_type }
   ], y); y += 10;
 
-  // Closure data
+  // ── CLOSURE DATA ───────────────────────────────────────────────────────
   y = checkBreak(60); y = section('🔌 Closure Data', y);
   y = grid([
-    { label:'Closure Condition',    value: attrs.physical_status },
-    { label:'Splice Location Type', value: attrs.splice_enclosure_type },
-    { label:'Closure Type',         value: attrs.splice_closure_material },
-    { label:'Work Order ID',        value: attrs.workorder_id }
+    { label: 'Closure Condition',    value: attrs.physical_status },
+    { label: 'Splice Location Type', value: attrs.splice_enclosure_type },
+    { label: 'Closure Type',         value: attrs.splice_closure_material },
+    { label: 'Work Order ID',        value: attrs.workorder_id }
   ], y); y += 10;
 
-  // Port data
+  // ── PORT DATA ──────────────────────────────────────────────────────────
   y = checkBreak(60); y = section('🔧 Port & Connection Data', y);
   const portItems = [
-    { label:'Number of Ports', value: attrs.port_count },
-    { label:'Drops Connected',  value: attrs.drop_count }
+    { label: 'Number of Ports', value: attrs.port_count },
+    { label: 'Drops Connected', value: attrs.drop_count }
   ];
   if (attrs.measured_light_Level && attrs.measured_light_Level !== 'N/A') {
-    attrs.measured_light_Level.split(',').map(l=>l.trim()).filter(Boolean).forEach((lvl,i) => {
-      portItems.push({ label:`Light Level #${i+1}`, value:`${lvl} dBm` });
+    attrs.measured_light_Level.split(',').map(l => l.trim()).filter(Boolean).forEach((lvl, i) => {
+      portItems.push({ label: `Light Level #${i + 1}`, value: `${lvl} dBm` });
     });
   }
   y = grid(portItems, y); y += 10;
 
-  // Work summary
+  // ── WORK SUMMARY ───────────────────────────────────────────────────────
   y = checkBreak(60); y = section('👷 Work Summary', y);
   y = grid([
-    { label:'Subcontractor',     value: attrs.construction_subcontractor },
-    { label:'Created By',        value: attrs.creator },
-    { label:'Last Edited By',    value: attrs.last_editior },
-    { label:'Installation Date', value: fmtDate(attrs.installation_date) }
+    { label: 'Subcontractor',     value: attrs.construction_subcontractor },
+    { label: 'Created By',        value: attrs.creator },
+    { label: 'Last Edited By',    value: attrs.last_edit_user },
+    { label: 'Installation Date', value: fmtDate(attrs.installation_date) }
   ], y); y += 10;
 
-  // Photos
-  if (attachments.length > 0) {
-    doc.addPage(); y = 20;
-    y = section('📷 Installation Photos', y);
-    for (let i = 0; i < attachments.length; i++) {
-      setStatus(`Adding photo ${i+1} of ${attachments.length}...`);
-      try {
-        const imgData = await getBase64(`${layerUrl}/${oid}/attachments/${attachments[i].id}?token=${token}`);
-        if (imgData) {
-          if (i > 0 && i % 2 === 0) { doc.addPage(); y = 20; }
-          const imgH = 80, imgW = pageW - 2*margin;
-          const photoY = i % 2 === 0 ? y : y + imgH + 15;
-          doc.setFontSize(8); doc.setTextColor(100,100,100);
-          doc.text(attachments[i].name, margin, photoY);
-          doc.addImage(imgData, 'JPEG', margin, photoY+3, imgW, imgH);
-          if (i % 2 === 1) y = photoY + imgH + 15;
-        }
-      } catch(e) { console.warn('Photo failed:', e); }
-    }
-  }
-
-  // Footer
+  // ── FOOTER ─────────────────────────────────────────────────────────────
   const pageCount = doc.internal.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
-    doc.setFontSize(8); doc.setTextColor(150,150,150);
-    doc.text(`Page ${i} of ${pageCount} | Generated: ${new Date().toLocaleString()}`,
-      pageW/2, pageH-10, { align:'center' });
+    doc.setFontSize(8); doc.setTextColor(150, 150, 150);
+    doc.text(
+      `Page ${i} of ${pageCount} | Generated: ${new Date().toLocaleString()}`,
+      pageW / 2, pageH - 10, { align: 'center' }
+    );
   }
 
-  // Save
+  // ── SAVE ───────────────────────────────────────────────────────────────
   const filename = `SpliceClosure_${attrs.job_number}_${Date.now()}.pdf`;
   doc.save(filename);
+
   spinnerEl.textContent = '✅';
   spinnerEl.style.animation = 'none';
   setStatus(`Download started: ${filename}`);
+
 })();
 </script>
 </body>
