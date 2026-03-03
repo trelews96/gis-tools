@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Splice Closure PDF Generator</title>
+  <style>
+    body { font-family: sans-serif; display: flex; align-items: center;
+           justify-content: center; min-height: 100vh; margin: 0;
+           background: #f9fafb; }
+    .card { background: white; border-radius: 12px; padding: 32px 40px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.1); text-align: center;
+            max-width: 400px; width: 90%; }
+    h2   { margin: 0 0 8px; color: #1e3a5f; }
+    p    { color: #6b7280; margin: 0 0 24px; }
+    .status { font-size: 14px; color: #374151; margin-top: 16px; }
+    .err    { color: #dc2626; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>📄 PDF Report Generator</h2>
+  <p id="info">Initialising…</p>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+  // ── Read parameters passed by the Arcade expression ──────────────────────
+  const params = new URLSearchParams(location.search);
+  const oid    = params.get('oid');
+  const job    = params.get('job') || 'N/A';
+
+  const info   = document.getElementById('info');
+  const status = document.getElementById('status');
+
+  if (!oid) {
+    info.textContent = 'No feature ID provided.';
+    info.className = 'err';
+  } else {
+    info.textContent  = `Generating report for Job: ${job}`;
+    status.textContent = 'Loading PDF tool…';
+
+    // ── Load your tool-host script, then trigger generation ──────────────
+    // Replace this src with the actual location of your script.
+    const s = document.createElement('script');
+    s.src = 'https://raw.githubusercontent.com/trelews96/gis-tools/main/gis-tool-host.js';
+
+    s.onload = () => {
+      status.textContent = 'Tool host loaded. Loading PDF module…';
+      window.gisToolHost.loadTool('splice-pdf-generator')
+        .then(() => {
+          status.textContent = 'Generating PDF…';
+          window.generateSpliceClosurePDF(Number(oid));
+          status.textContent = '✅ PDF download started!';
+        })
+        .catch(err => {
+          status.textContent = 'Error loading PDF module: ' + err.message;
+          status.className = 'err';
+        });
+    };
+
+    s.onerror = () => {
+      status.textContent = 'Failed to load tool host script. Check the URL.';
+      status.className = 'err';
+    };
+
+    document.head.appendChild(s);
+  }
+</script>
+</body>
+</html>
