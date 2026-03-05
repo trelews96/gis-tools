@@ -29,6 +29,12 @@
         const z = 99999;
         const SNAP_TOLERANCE = 25, POINT_SNAP_TOLERANCE = 45;
 
+        // ── FIX 1: makeExt — always includes type:'extent' so ArcGIS API ──────
+        // accepts the plain object without logging accessor errors.
+        function makeExt(cx, cy, half, sr) {
+            return { type:'extent', xmin:cx-half, ymin:cy-half, xmax:cx+half, ymax:cy+half, spatialReference:sr };
+        }
+
         // ── Dynamic layer registry ────────────────────────────────────────────
 
         let pointLayers = [];
@@ -101,6 +107,14 @@
                     font-size:11px; cursor:pointer; font-family:inherit;
                 }
             </style>
+
+            <!-- ── Drag handle ────────────────────────────────────────── -->
+            <div id="smtDragHandle" style="margin:-12px -12px 8px;padding:4px 10px;
+                background:#e8e8e8;border-bottom:1px solid #ccc;border-radius:4px 4px 0 0;
+                cursor:grab;display:flex;align-items:center;gap:6px;user-select:none;">
+                <span style="color:#999;font-size:13px;letter-spacing:2px;">⠿</span>
+                <span style="font-size:10px;color:#888;">drag to move</span>
+            </div>
 
             <!-- ── Header ───────────────────────────────────────────── -->
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -239,12 +253,44 @@
 
         document.body.appendChild(toolBox);
 
+        // ── Drag to move ──────────────────────────────────────────────────────
+
+        (function() {
+            const handle = toolBox.querySelector('#smtDragHandle');
+            let dragging = false, ox = 0, oy = 0;
+
+            handle.addEventListener('mousedown', e => {
+                dragging = true;
+                ox = e.clientX - toolBox.getBoundingClientRect().left;
+                oy = e.clientY - toolBox.getBoundingClientRect().top;
+                handle.style.cursor = 'grabbing';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', e => {
+                if (!dragging) return;
+                let left = e.clientX - ox;
+                let top  = e.clientY - oy;
+                left = Math.max(0, Math.min(left, window.innerWidth  - toolBox.offsetWidth));
+                top  = Math.max(0, Math.min(top,  window.innerHeight - toolBox.offsetHeight));
+                toolBox.style.left   = left + 'px';
+                toolBox.style.top    = top  + 'px';
+                toolBox.style.right  = 'auto';
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (!dragging) return;
+                dragging = false;
+                handle.style.cursor = 'grab';
+            });
+        })();
+
         // ── Collapsible hints ─────────────────────────────────────────────────
 
         toolBox.querySelectorAll('.smt-info-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const hint  = toolBox.querySelector('#' + btn.dataset.hint);
-                const open  = hint.style.display !== 'none';
+                const hint = toolBox.querySelector('#' + btn.dataset.hint);
+                const open = hint.style.display !== 'none';
                 hint.style.display = open ? 'none' : '';
                 btn.textContent    = open ? '▾ more' : '▴ less';
             });
@@ -254,7 +300,6 @@
             const btn   = toolBox.querySelector('#toggleAllTips');
             const hints = toolBox.querySelectorAll('.smt-hint');
             const infos = toolBox.querySelectorAll('.smt-info-btn');
-            // If any hint is visible, hide all; otherwise show all.
             const anyOpen = [...hints].some(h => h.style.display !== 'none');
             hints.forEach(h => h.style.display = anyOpen ? 'none' : '');
             infos.forEach(b => b.textContent   = anyOpen ? '▾ more' : '▴ less');
@@ -268,8 +313,11 @@
         let selectedVertex = null, selectedCoincidentLines = [], waitingForDestination = false;
         let connectedFeatures = [], originalGeometries = new Map(), clickHandler = null;
 
+        // FIX 2: processing lock — prevents a second click firing handleMoveToDestination
+        // while the first async operation is still running (double-click / fast clicks).
+        let isProcessingClick = false;
+
         // Single-feature lock
-        // lockedFeature: { feature, layer, layerConfig, featureType: 'point'|'line' }
         let lockedFeature = null, pickingFeatureMode = false;
 
         // Vertex highlight
@@ -359,7 +407,7 @@
                         distance:inf.distance,point:inf.point,segmentStart:p1,segmentEnd:p2};}
                 }
             }
-            return (cl&&cl.distance < POINT_SNAP_TOLERANCE*(mapView.resolution||1))?cl:null;
+            return (cl&&cl.distance<50)?cl:null;
         }
         function findClosestVertex(geom,mp) {
             if (!geom?.paths) return null;
@@ -371,7 +419,7 @@
                     if (d<mn){mn=d;cl={pathIndex:pi,pointIndex:vi,distance:d,coordinates:v,isEndpoint:isEndpoint(geom,pi,vi)};}
                 }
             }
-            return (cl&&cl.distance<50)?cl:null;
+            return (cl&&cl.distance < POINT_SNAP_TOLERANCE*(mapView.resolution||1))?cl:null;
         }
         function buildPolyline(srcGeom,newPaths) {
             return {type:"polyline",paths:newPaths,spatialReference:srcGeom.spatialReference};
@@ -454,8 +502,6 @@
             } catch(e){console.error("refreshLockedFeature error:",e);}
         }
 
-        // ── FIX 1: applyLock auto-enters editing session for point features ──
-
         async function applyLock(feature, layer, cfg, featureType = 'line') {
             lockedFeature = { feature, layer, layerConfig: cfg, featureType };
             pickingFeatureMode = false;
@@ -468,12 +514,11 @@
             if (vertexHighlightActive) scheduleHighlightRefresh();
 
             if (featureType === 'line') {
-                setLineMode(); // clears any prior selection
+                setLineMode();
                 updateStatus(`🔒 Locked to ${cfg.name}. Click any vertex to select it, then click the destination.`);
             } else {
-                setPointMode(); // clears any prior selection, sets currentMode='point'
+                setPointMode();
                 if (toolActive) {
-                    // Immediately enter the editing session — next click is the destination
                     selectedFeature   = feature;
                     selectedLayer     = layer;
                     selectedLayerConfig = cfg;
@@ -498,8 +543,6 @@
             const mText=currentMode==="point"?"point feature":"line vertex";
             updateStatus(toolActive?`Feature released. Click on a ${mText} to select it.`:"Feature released.");
         }
-
-        // ── CHANGE 1: pickFeature now detects both point and line features ───
 
         async function pickFeature(event) {
             const sp={x:event.x,y:event.y};
@@ -529,10 +572,9 @@
                     }
                 }
 
-                // Fallback spatial query when hitTest returns nothing
                 if (candidates.length===0) {
                     const mp=mapView.toMap(sp), tol=30;
-                    const ext={xmin:mp.x-tol,ymin:mp.y-tol,xmax:mp.x+tol,ymax:mp.y+tol,spatialReference:mapView.spatialReference};
+                    const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
 
                     for (const cfg of lineLayers) {
                         if (!cfg.layer.visible) continue;
@@ -572,38 +614,35 @@
         async function findNearestPointFeature(mapPt) {
             try {
                 const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
+                const ext = makeExt(mapPt.x, mapPt.y, tol, mapView.spatialReference);
                 let nearest=null,minD=Infinity;
                 for (const cfg of pointLayers) {
                     if (!cfg.layer.visible) continue;
                     try {
-                        const ext={xmin:mapPt.x-tol,ymin:mapPt.y-tol,xmax:mapPt.x+tol,ymax:mapPt.y+tol,spatialReference:mapView.spatialReference};
                         const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"]});
-                        for (const f of res.features){const d=calcDist(mapPt,f.geometry);if(d<minD){minD=d;nearest={feature:f,layer:cfg.layer,layerConfig:cfg,distance:d,geometry:f.geometry};}}
+                        for (const f of res.features){
+                            if (!f.geometry) continue;
+                            const d=calcDist(mapPt,f.geometry);
+                            if(d<minD){minD=d;nearest={feature:f,layer:cfg.layer,layerConfig:cfg,distance:d,geometry:f.geometry};}
+                        }
                     } catch(e){console.error(`findNearestPointFeature error on ${cfg.name}:`,e);}
                 }
                 return (nearest&&nearest.distance<tol)?nearest:null;
             } catch(e){console.error("findNearestPointFeature error:",e);return null;}
         }
 
-        // ── CHANGE 2: snap to nearest line vertex ─────────────────────────────
-        // Returns { geometry, layerConfig, snapType: 'lineVertex' } or null.
-        // excludeOids: Set of OIDs to skip (the feature(s) being moved).
-
         async function findNearestLineVertex(dst, excludeOids = new Set()) {
             try {
                 const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                const ext = makeExt(dst.x, dst.y, tol, mapView.spatialReference);
                 let nearest = null, minD = Infinity, nearestCfg = null;
                 for (const cfg of lineLayers) {
                     if (!cfg.layer.visible) continue;
                     try {
-                        const ext = {
-                            xmin: dst.x - tol, ymin: dst.y - tol,
-                            xmax: dst.x + tol, ymax: dst.y + tol,
-                            spatialReference: mapView.spatialReference
-                        };
                         const res = await cfg.layer.queryFeatures({
                             geometry: ext, spatialRelationship: "intersects",
-                            returnGeometry: true, outFields: ["objectid"]
+                            returnGeometry: true, outFields: ["objectid"],
+                            outSpatialReference: mapView.spatialReference
                         });
                         for (const f of res.features) {
                             if (excludeOids.has(getOid(f))) continue;
@@ -627,8 +666,6 @@
             } catch(e) { console.error("findNearestLineVertex error:", e); return null; }
         }
 
-        // ── CHANGE 2: combined snap — picks closest of point feature or line vertex ──
-
         async function findSnapTarget(dst, excludeOids = new Set()) {
             const [pointSnap, vertexSnap] = await Promise.all([
                 findNearestPointFeature(dst),
@@ -637,7 +674,6 @@
             if (!pointSnap && !vertexSnap) return null;
             if (pointSnap && !vertexSnap) return { ...pointSnap, snapType: 'pointFeature' };
             if (!pointSnap && vertexSnap) return vertexSnap;
-            // Both found — pick whichever is closer
             const dPoint  = calcDist(dst, pointSnap.geometry);
             const dVertex = calcDist(dst, vertexSnap.geometry);
             return dPoint <= dVertex
@@ -656,14 +692,17 @@
                         }
                 }
                 const mp=mapView.toMap(sp),tol=SNAP_TOLERANCE*(mapView.resolution||1);
+                const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
                 for (const cfg of pointLayers) {
                     if (!cfg.layer.visible) continue;
                     try {
-                        const ext={xmin:mp.x-tol,ymin:mp.y-tol,xmax:mp.x+tol,ymax:mp.y+tol,spatialReference:mapView.spatialReference};
                         const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"]});
                         if (res.features.length>0){
                             let best=null,bestD=Infinity;
-                            for(const f of res.features){const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best=f;}}
+                            for(const f of res.features){
+                                if (!f.geometry) continue;
+                                const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best=f;}
+                            }
                             if (best) return {feature:best,layer:cfg.layer,layerConfig:cfg};
                         }
                     } catch(e){console.error(`findPointFeatureAtLocation error on ${cfg.name}:`,e);}
@@ -675,7 +714,6 @@
         async function findCoincidentLinesForVertexCreation(sp, mp) {
             try {
                 const bufM=10/3.28084, lines=[];
-                // CHANGE 1: check lockedFeature type
                 if (lockedFeature?.featureType === 'line') {
                     await refreshLockedFeature();
                     const seg=findClosestSeg(lockedFeature.feature.geometry,mp);
@@ -707,8 +745,9 @@
 
         async function findCoincidentLineVertices(sp) {
             try {
-                const clickPt=mapView.toMap(sp),snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),lines=[];
-                // CHANGE 1: check lockedFeature type
+                const clickPt=mapView.toMap(sp);
+                const snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
+                const lines=[];
                 if (lockedFeature?.featureType === 'line') {
                     await refreshLockedFeature();
                     const v=findClosestVertex(lockedFeature.feature.geometry,clickPt);
@@ -724,10 +763,10 @@
                         }
                 }
                 if (lines.length===0) {
+                    const ext = makeExt(clickPt.x, clickPt.y, snapTol, mapView.spatialReference);
                     for (const cfg of lineLayers) {
                         if (!cfg.layer.visible) continue;
                         try {
-                            const ext={xmin:clickPt.x-20,ymin:clickPt.y-20,xmax:clickPt.x+20,ymax:clickPt.y+20,spatialReference:mapView.spatialReference};
                             const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});
                             for(const f of res.features){const v=findClosestVertex(f.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,vertex:v});}
                         } catch(e){console.error(`findCoincidentLineVertices error on ${cfg.name}:`,e);}
@@ -846,8 +885,6 @@
 
         // ── Feature selection & movement ──────────────────────────────────────
 
-        // FIX 3: set waitingForDestination=true on successful selection so the
-        // next click goes straight to handleMoveToDestination — no empty middle click.
         async function handleFeatureSelection(event) {
             const sp={x:event.x,y:event.y};
             updateStatus("Searching for feature...");
@@ -870,7 +907,7 @@
                     if (selectedFeature.geometry?.clone) originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
                     waitingForDestination = true;
-                    updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected with ${connectedFeatures.length} connected line(s). Click destination to move.`);
+                    updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected. Click destination to move.`);
                     return;
                 }
 
@@ -900,12 +937,13 @@
         }
 
         async function handleMoveToDestination(event) {
+            // FIX 2: guard against selectedFeature being cleared by a concurrent call
+            if (!selectedFeature) { updateStatus("❌ No feature selected. Click a feature first."); return; }
+
             let dst=mapView.toMap({x:event.x,y:event.y});
             updateStatus("Moving feature...");
             try {
                 if (currentMode==="point") {
-                    // Snap destination to nearest point feature or line vertex,
-                    // excluding the feature being moved to avoid self-snap.
                     const excludeOids = new Set([getOid(selectedFeature)].filter(Boolean));
                     const snapInfo = await findSnapTarget(dst, excludeOids);
                     if (snapInfo) dst = snapInfo.geometry;
@@ -926,7 +964,6 @@
                     }
                     updateStatus(msg);
                 } else {
-                    // CHANGE 2: snap to nearest point feature OR nearest line vertex
                     const excludeOids = new Set(
                         selectedCoincidentLines.map(li => getOid(li.feature)).filter(Boolean)
                     );
@@ -956,6 +993,7 @@
                     }
                     updateStatus(msg);
                 }
+
                 selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
                 selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
                 connectedFeatures=[];originalGeometries.clear();
@@ -966,16 +1004,22 @@
             } catch(e){console.error("handleMoveToDestination error:",e);updateStatus("❌ Error moving feature.");}
         }
 
+        // FIX 2: isProcessingClick gate prevents double-click or rapid clicks from
+        // firing a second async handleClick before the first one completes.
         async function handleClick(event) {
             if (!toolActive) return;
+            if (isProcessingClick) return;
+            isProcessingClick = true;
             event.stopPropagation();
-            if(pickingFeatureMode){await pickFeature(event);return;}
-            if(vertexMode==="add"){await addVertexToLine(event);return;}
-            if(vertexMode==="delete"){await deleteVertexFromLine(event);return;}
-            // FIX 3: selectedFeature+waitingForDestination are set together in
-            // handleFeatureSelection, so there is no intermediate "empty" click state.
-            if(!selectedFeature){await handleFeatureSelection(event);}
-            else{await handleMoveToDestination(event);}
+            try {
+                if(pickingFeatureMode){await pickFeature(event);}
+                else if(vertexMode==="add"){await addVertexToLine(event);}
+                else if(vertexMode==="delete"){await deleteVertexFromLine(event);}
+                else if(!selectedFeature){await handleFeatureSelection(event);}
+                else{await handleMoveToDestination(event);}
+            } finally {
+                isProcessingClick = false;
+            }
         }
 
         // ── Vertex highlight ──────────────────────────────────────────────────
@@ -1012,7 +1056,6 @@
                         }
                 };
 
-                // CHANGE 1: check lockedFeature type
                 if (lockedFeature?.featureType === 'line') {
                     renderGeom(lockedFeature.feature.geometry);
                     updateStatus(`👁 Showing ${total} vertices for locked feature (${lockedFeature.layerConfig.name}).`);
@@ -1046,7 +1089,7 @@
                 showVerticesToggleBtn.textContent="👁 Hide Vertices";
                 if(refreshVerticesBtn)refreshVerticesBtn.disabled=false;
                 renderVertexHighlights();
-                extentWatchHandle=mapView.watch("extent",()=>{if(vertexHighlightActive&&!lockedFeature?.featureType==='line')scheduleHighlightRefresh();});
+                extentWatchHandle=mapView.watch("extent",()=>{if(vertexHighlightActive&&lockedFeature?.featureType!=='line')scheduleHighlightRefresh();});
             } else {
                 showVerticesToggleBtn.style.background="#666";
                 showVerticesToggleBtn.textContent="👁 Show Vertices";
@@ -1063,7 +1106,7 @@
         function cancelMove() {
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
             selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
-            connectedFeatures=[];originalGeometries.clear();
+            connectedFeatures=[];originalGeometries.clear();isProcessingClick=false;
             if(cancelBtn)cancelBtn.disabled=true;
             if(lockedFeature)          updateStatus(lockedReadyStatus());
             else if(vertexMode==="add")    updateStatus("Add Vertex mode active. Click on any line segment.");
@@ -1112,13 +1155,12 @@
             updateStatus(`Tool enabled in ${currentMode} mode. Click on a ${currentMode==="point"?"point feature":"line vertex"} to select it.`);
         }
         function disableTool() {
-            toolActive=false;pickingFeatureMode=false;
+            toolActive=false;pickingFeatureMode=false;isProcessingClick=false;
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
             selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
             connectedFeatures=[];originalGeometries.clear();vertexMode="none";
             if(addVertexBtn)    addVertexBtn.style.background="#666";
             if(deleteVertexBtn) deleteVertexBtn.style.background="#666";
-            // CHANGE 1: use lockedFeature
             if(lockFeatureBtn)  {lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";}
             if(clickHandler)clickHandler.remove();
             if(enableBtn)  enableBtn.disabled=false;
@@ -1146,7 +1188,7 @@
             refreshLayersBtn.onclick = async () => {
                 refreshLayersBtn.disabled=true;
                 refreshLayersBtn.textContent="…";
-                if(lockedFeature)  releaseLockedFeature();
+                if(lockedFeature)   releaseLockedFeature();
                 if(selectedFeature) cancelMove();
                 updateStatus("Refreshing layers...");
                 await loadLayers();
