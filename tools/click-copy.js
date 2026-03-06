@@ -8,10 +8,6 @@
             console.log('Click-to-Copy Tool already active');
             return;
         }
-        if (window.gisToolHost.activeTools.has('click-copy')) {
-    console.log('Tool already active');
-    return;
-}
 
 // Remove any orphaned UI from a previous crashed load
 const existingToolbox = document.getElementById('yourToolboxId');
