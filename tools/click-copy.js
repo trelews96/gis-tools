@@ -716,9 +716,12 @@ if (window.gisToolHost.activeTools.has('click-copy')) {
         enableBtn.onclick = enableTool;
         disableBtn.onclick = disableTool;
         clearBtn.onclick = clearTemplate;
-        closeBtn.onclick = () => {
-            window.gisToolHost.closeTool('click-copy');
-        };
+       closeBtn.onclick = () => {
+    cleanup();
+    if (window.gisToolHost.activeTools instanceof Map) {
+        window.gisToolHost.activeTools.delete('click-copy');
+    }
+};
         
         // Initialize - load layers first
         loadAvailableLayers().then(() => {
