@@ -8,6 +8,14 @@
             console.log('Click-to-Copy Tool already active');
             return;
         }
+        if (window.gisToolHost.activeTools.has('click-copy')) {
+    console.log('Tool already active');
+    return;
+}
+
+// Remove any orphaned UI from a previous crashed load
+const existingToolbox = document.getElementById('yourToolboxId');
+if (existingToolbox) existingToolbox.remove();
         
         // Remove any leftover toolbox
         const existingToolbox = document.getElementById('clickCopyToolbox');
@@ -720,11 +728,14 @@
             updateStatus("Click-to-Copy Tool loaded. Select layer and click 'Enable Tool' to start.");
         });
         
-        // Register tool with host
-        window.gisToolHost.activeTools.set('click-copy', {
-            cleanup: cleanup,
-            toolBox: toolBox
-        });
+        // Guard against corrupted activeTools before registering
+if (!(window.gisToolHost.activeTools instanceof Map)) {
+    window.gisToolHost.activeTools = new Map();
+}
+window.gisToolHost.activeTools.set('click-copy', {
+    cleanup: cleanup,
+    toolBox: toolBox
+});
         
         console.log('Click-to-Copy Tool loaded successfully');
         
