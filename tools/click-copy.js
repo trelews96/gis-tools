@@ -4,10 +4,15 @@
 (function() {
     try {
         // Check if tool is already active
-        if (window.gisToolHost.activeTools.has('click-copy')) {
-            console.log('Click-to-Copy Tool already active');
-            return;
-        }
+        // Guard must come first, before any activeTools access
+if (!(window.gisToolHost.activeTools instanceof Map)) {
+    window.gisToolHost.activeTools = new Map();
+}
+
+if (window.gisToolHost.activeTools.has('click-copy')) {
+    console.log('Click-to-Copy Tool already active');
+    return;
+}
         
         // Remove any leftover toolbox
         const existingToolbox = document.getElementById('clickCopyToolbox');
