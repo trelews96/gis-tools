@@ -720,11 +720,14 @@
             updateStatus("Click-to-Copy Tool loaded. Select layer and click 'Enable Tool' to start.");
         });
         
-        // Register tool with host
-        window.gisToolHost.activeTools.set('click-copy', {
-            cleanup: cleanup,
-            toolBox: toolBox
-        });
+       // Guard against corrupted activeTools before registering
+if (!(window.gisToolHost.activeTools instanceof Map)) {
+    window.gisToolHost.activeTools = new Map();
+}
+window.gisToolHost.activeTools.set('your-tool-name', {
+    cleanup: cleanup,
+    toolBox: toolBox
+});
         
         console.log('Click-to-Copy Tool loaded successfully');
         
