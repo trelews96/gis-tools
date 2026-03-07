@@ -88,7 +88,7 @@
             <div style="margin-bottom:10px;font-size:11px;color:#a6adc8;">Choose a selection mode — Single Click is active by default.</div>
 
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;" id="modeCards">
-                <label class="modeCard" data-mode="single" style="border-color:#cba6f7;">
+                <label class="modeCard" data-mode="single">
                     <input type="radio" name="selectionMode" value="single" checked style="display:none;">
                     <div class="modeIcon">🖱️</div>
                     <div class="modeLabel">Single Click</div>
