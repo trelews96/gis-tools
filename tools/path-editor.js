@@ -3,2606 +3,1561 @@
 
 (function() {
     try {
-        if (window.gisToolHost.activeTools.has('path-editor')) {
-            return;
-        }
-        
+        if (window.gisToolHost.activeTools.has('path-editor')) return;
+
         const existingToolbox = document.getElementById('pathEditorToolbox');
-        if (existingToolbox) {
-            existingToolbox.remove();
-        }
-        
+        if (existingToolbox) existingToolbox.remove();
+
         const utils = window.gisSharedUtils;
-        if (!utils) {
-            throw new Error('Shared utilities not loaded');
-        }
-        
+        if (!utils) throw new Error('Shared utilities not loaded');
+
         const mapView = utils.getMapView();
         const z = 99999;
-        
+
         // Tool state
-        let sketchViewModel = null;
-        let selectionGraphic = null;
+        let sketchViewModel   = null;
+        let selectionGraphic  = null;
         let selectedFeaturesByLayer = new Map();
-        let layerConfigs = [];
+        let layerConfigs      = [];
         let currentEditingQueue = [];
-        let currentIndex = 0;
-        let currentPhase = 'selection';
+        let currentIndex      = 0;
+        let currentPhase      = 'selection';
         let highlightGraphics = [];
-        let editLog = [];
-        let sessionStartTime = null;
-        let selectionMode = 'polygon';
-        let mapClickHandler = null;
-        let filesToUpload = [];
+        let editLog           = [];
+        let sessionStartTime  = null;
+        let selectionMode     = 'single';
+        let mapClickHandler   = null;
+        let filesToUpload     = [];
+        let lastSubmittedValues = null; // for "Apply Previous" feature
 
-        // Allowed file types for attachment uploads
         const ALLOWED_MIME_TYPES = new Set([
-            // Images
-            'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff',
-            // Documents
+            'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/tiff',
             'application/pdf',
-            // Spreadsheets
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
-            'application/vnd.ms-excel',                                           // .xls (bonus)
-            // CSV — browsers may report text/plain or text/csv depending on OS
-            'text/csv',
-            'text/plain',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel',
+            'text/csv','text/plain',
         ]);
-
-        // Extensions accepted as a fallback when MIME type is unreliable (e.g. .csv on Windows)
         const ALLOWED_EXTENSIONS = new Set([
-            'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif',
-            'pdf',
-            'xlsx', 'xls',
-            'csv',
+            'jpg','jpeg','png','gif','webp','bmp','tiff','tif','pdf','xlsx','xls','csv',
         ]);
-
-        function isAllowedFile(file) {
-            if (ALLOWED_MIME_TYPES.has(file.type)) return true;
-            const ext = file.name.split('.').pop().toLowerCase();
-            return ALLOWED_EXTENSIONS.has(ext);
+        function isAllowedFile(f) {
+            if (ALLOWED_MIME_TYPES.has(f.type)) return true;
+            return ALLOWED_EXTENSIONS.has(f.name.split('.').pop().toLowerCase());
         }
-
-        function fileTypeLabel(file) {
-            const ext = file.name.split('.').pop().toLowerCase();
+        function fileTypeLabel(f) {
+            const ext = f.name.split('.').pop().toLowerCase();
             if (['jpg','jpeg','png','gif','webp','bmp','tiff','tif'].includes(ext)) return '🖼️';
             if (ext === 'pdf') return '📄';
             if (['xlsx','xls'].includes(ext)) return '📊';
             if (ext === 'csv') return '📋';
             return '📎';
         }
-        
-        // Create tool UI
-        const toolBox = document.createElement("div");
-        toolBox.id = "pathEditorToolbox";
+
+        // ── Toolbox HTML ──────────────────────────────────────────────────────────
+        const toolBox = document.createElement('div');
+        toolBox.id = 'pathEditorToolbox';
         toolBox.style.cssText = `
-            position: fixed;
-            top: 80px;
-            right: 40px;
-            z-index: ${z};
-            background: #fff;
-            border: 1px solid #333;
-            padding: 12px;
-            max-width: 500px;
-            max-height: 85vh;
-            overflow: auto;
-            font: 12px/1.3 Arial, sans-serif;
-            box-shadow: 0 4px 16px rgba(0,0,0,.2);
-            border-radius: 4px;
+            position:fixed; top:80px; right:40px; z-index:${z};
+            background:#1e1e2e; color:#cdd6f4;
+            border:1px solid #313244; border-radius:10px;
+            width:400px; max-height:88vh; overflow:hidden;
+            font:13px/1.4 "Segoe UI",Arial,sans-serif;
+            box-shadow:0 8px 32px rgba(0,0,0,.5);
+            display:flex; flex-direction:column;
+            user-select:none;
         `;
-        
+
         toolBox.innerHTML = `
-            <div style="font-weight:bold;margin-bottom:12px;font-size:14px;">🔧 Path Editor Tool</div>
-            
-            <!-- Phase 1: Selection -->
-            <div id="selectionPhase">
-                <div style="margin-bottom:12px;color:#666;font-size:11px;">
-                    Select a mode below. Single Click is active by default.
-                </div>
-                
-                <!-- Selection Mode -->
-                <div style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
-                    <div style="font-weight:bold;margin-bottom:6px;">Selection Mode:</div>
-                    <label style="display:block;margin-bottom:4px;cursor:pointer;">
-                        <input type="radio" name="selectionMode" value="single" checked>
-                        <strong>Single Click</strong> - Click to select all nearby features
-                    </label>
-                    <label style="display:block;margin-bottom:4px;cursor:pointer;">
-                        <input type="radio" name="selectionMode" value="line">
-                        <strong>Line Path</strong> - Draw a polyline path (features ordered by direction)
-                    </label>
-                    <label style="display:block;cursor:pointer;">
-                        <input type="radio" name="selectionMode" value="polygon">
-                        <strong>Polygon</strong> - Draw an area to select all features within
-                    </label>
-                </div>
-                
-                <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button id="clearSelectionBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;" disabled>Clear Selection</button>
-                </div>
-                
-                <div id="selectionResults" style="margin-bottom:12px;"></div>
-                
-                <button id="configureLayersBtn" style="width:100%;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;display:none;">Configure Selected Layers →</button>
+        <!-- DRAG HANDLE / HEADER -->
+        <div id="peHeader" style="
+            padding:10px 14px; background:#181825; border-radius:10px 10px 0 0;
+            display:flex; align-items:center; justify-content:space-between;
+            cursor:move; border-bottom:1px solid #313244; flex-shrink:0;">
+            <span style="font-weight:700;font-size:14px;color:#cba6f7;">🔧 Path Editor</span>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <span id="phaseIndicator" style="font-size:10px;background:#313244;padding:2px 8px;border-radius:10px;color:#a6e3a1;"></span>
+                <button id="closeTool" style="background:#f38ba8;border:none;color:#1e1e2e;width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:12px;font-weight:bold;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>
             </div>
-            
-            <!-- Phase 2: Layer Configuration -->
-            <div id="configurationPhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;">Configure Layers</div>
-                <div style="margin-bottom:12px;color:#666;font-size:11px;">
-                    Select which layers to process and configure the fields to edit for each.
+        </div>
+
+        <!-- SCROLLABLE BODY -->
+        <div id="peBody" style="overflow-y:auto;flex:1;padding:14px;">
+
+        <!-- ── Phase 1: Selection ───────────────────────────────────────────── -->
+        <div id="selectionPhase">
+            <div style="margin-bottom:10px;font-size:11px;color:#a6adc8;">Choose a selection mode — Single Click is active by default.</div>
+
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;" id="modeCards">
+                <label class="modeCard" data-mode="single" style="border-color:#cba6f7;">
+                    <input type="radio" name="selectionMode" value="single" checked style="display:none;">
+                    <div class="modeIcon">🖱️</div>
+                    <div class="modeLabel">Single Click</div>
+                </label>
+                <label class="modeCard" data-mode="line">
+                    <input type="radio" name="selectionMode" value="line" style="display:none;">
+                    <div class="modeIcon">📏</div>
+                    <div class="modeLabel">Line Path</div>
+                </label>
+                <label class="modeCard" data-mode="polygon">
+                    <input type="radio" name="selectionMode" value="polygon" style="display:none;">
+                    <div class="modeIcon">⬡</div>
+                    <div class="modeLabel">Polygon</div>
+                </label>
+            </div>
+
+            <div id="selectionResults" style="margin-bottom:10px;"></div>
+
+            <div style="display:flex;gap:6px;">
+                <button id="clearSelectionBtn" class="btn btn-secondary" disabled style="flex:1;">Clear</button>
+                <button id="configureLayersBtn" class="btn btn-primary" style="flex:2;display:none;">Configure Layers →</button>
+            </div>
+        </div>
+
+        <!-- ── Phase 2: Configuration ──────────────────────────────────────── -->
+        <div id="configurationPhase" style="display:none;">
+            <!-- Saved configs -->
+            <div class="card" style="margin-bottom:10px;">
+                <div class="card-label">Saved Configurations</div>
+                <select id="savedConfigSelect" class="input-ctrl" style="margin-bottom:6px;">
+                    <option value="">-- Select saved config --</option>
+                </select>
+                <div style="display:flex;gap:6px;">
+                    <button id="loadConfigBtn"   class="btn btn-info"    style="flex:1;font-size:11px;">Load</button>
+                    <button id="deleteConfigBtn" class="btn btn-danger"  style="flex:1;font-size:11px;">Delete</button>
+                    <button id="saveConfigBtn"   class="btn btn-success" style="flex:1;font-size:11px;">💾 Save</button>
                 </div>
-                
-                <!-- Saved Configurations -->
-                <div style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
-                    <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Saved Configurations:</div>
-                    <div style="font-size:10px;color:#666;margin-bottom:4px;">Last used configuration will auto-load</div>
-                    <select id="savedConfigSelect" style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;margin-bottom:4px;">
-                        <option value="">-- Select a saved configuration --</option>
-                    </select>
-                    <div style="display:flex;gap:4px;">
-                        <button id="loadConfigBtn" style="flex:1;padding:4px 8px;background:#17a2b8;color:white;border:none;border-radius:2px;cursor:pointer;font-size:11px;">Load</button>
-                        <button id="deleteConfigBtn" style="flex:1;padding:4px 8px;background:#dc3545;color:white;border:none;border-radius:2px;cursor:pointer;font-size:11px;">Delete</button>
+            </div>
+
+            <div id="layerConfigContainer"></div>
+
+            <div style="display:flex;gap:6px;margin-top:10px;">
+                <button id="backToSelectionBtn" class="btn btn-secondary" style="flex:1;">← Back</button>
+                <button id="showSummaryBtn"     class="btn btn-primary"   style="flex:2;">Review & Start →</button>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:#a6adc8;cursor:pointer;">
+                <input type="checkbox" id="skipSummaryChk" style="accent-color:#cba6f7;">
+                Skip review — go straight to editing
+            </label>
+        </div>
+
+        <!-- ── Phase 3: Summary ────────────────────────────────────────────── -->
+        <div id="summaryPhase" style="display:none;">
+            <div style="font-weight:700;margin-bottom:8px;">Review Configuration</div>
+            <div id="summaryContent" class="card" style="margin-bottom:10px;"></div>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;background:#313244;padding:8px;border-radius:6px;">
+                <input type="checkbox" id="bulkEditMode" style="accent-color:#cba6f7;">
+                <div>
+                    <strong style="color:#f9e2af;">⚡ Bulk Edit Mode</strong>
+                    <div style="font-size:10px;color:#a6adc8;">Apply same values to all features at once</div>
+                </div>
+            </label>
+            <div style="display:flex;gap:6px;">
+                <button id="backToConfigBtn" class="btn btn-secondary" style="flex:1;">← Back</button>
+                <button id="startEditingBtn" class="btn btn-success"   style="flex:2;">▶ Start Editing</button>
+            </div>
+        </div>
+
+        <!-- ── Phase 4: Editing ────────────────────────────────────────────── -->
+        <div id="editingPhase" style="display:none;">
+            <div id="editingProgress" class="card" style="margin-bottom:8px;"></div>
+            <div id="featureInfo" class="card info-card" style="margin-bottom:10px;"></div>
+
+            <!-- Apply Previous button (shown only when lastSubmittedValues exists) -->
+            <div id="applyPrevRow" style="display:none;margin-bottom:8px;">
+                <button id="applyPrevBtn" class="btn btn-warning" style="width:100%;font-size:12px;">
+                    ↩ Apply Previous Values
+                </button>
+            </div>
+
+            <div id="editFormContainer" style="margin-bottom:10px;"></div>
+
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <button id="submitBtn" class="btn btn-success" style="flex:2;">Submit & Next ›</button>
+                <button id="skipBtn"   class="btn btn-warning" style="flex:1;">Skip</button>
+            </div>
+            <button id="prevBtn" class="btn btn-secondary" style="width:100%;margin-bottom:10px;">‹ Previous</button>
+
+            <!-- Attachments -->
+            <details style="border:1px solid #313244;border-radius:6px;overflow:hidden;">
+                <summary style="padding:8px 12px;cursor:pointer;background:#181825;color:#89b4fa;font-size:12px;">📎 Upload Attachments</summary>
+                <div style="padding:10px;">
+                    <div style="font-size:10px;color:#6c7086;margin-bottom:8px;">Supported: Images, PDF, XLSX, CSV</div>
+                    <div id="dropZone" style="border:2px dashed #45475a;padding:18px;text-align:center;background:#181825;cursor:pointer;border-radius:6px;transition:all .2s;color:#a6adc8;font-size:12px;">
+                        📁 Drag & Drop or <span style="color:#89b4fa;text-decoration:underline;">browse</span>
+                        <input type="file" id="fileInput" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;">
                     </div>
+                    <div id="fileList" style="margin-top:6px;"></div>
+                    <button id="uploadPhotosBtn" class="btn btn-info" style="display:none;width:100%;margin-top:8px;font-size:12px;">Upload Files to Feature</button>
                 </div>
-                
-                <div id="layerConfigContainer"></div>
-                
-                <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:12px;">
-                    <button id="saveConfigBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">💾 Save This Configuration</button>
-                    <button id="showSummaryBtn" style="width:100%;padding:8px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;font-weight:bold;">Review Configuration →</button>
-                </div>
-            </div>
-            
-            <!-- Phase 3: Confirmation Summary -->
-            <div id="summaryPhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;">Review Configuration</div>
-                
-                <div id="summaryContent" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
-                
-                <!-- Bulk Edit Option -->
-                <div style="margin-bottom:12px;padding:8px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:3px;">
-                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                        <input type="checkbox" id="bulkEditMode">
-                        <div>
-                            <strong>Enable Bulk Edit Mode</strong>
-                            <div style="font-size:10px;color:#666;">Apply the same values to all features at once (skip individual editing)</div>
-                        </div>
-                    </label>
-                </div>
-                
-                <div style="display:flex;gap:8px;">
-                    <button id="backToConfigBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">← Back</button>
-                    <button id="startEditingBtn" style="flex:1;padding:8px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;font-weight:bold;">Start Editing →</button>
-                </div>
-            </div>
-            
-            <!-- Phase 4: Editing -->
-            <div id="editingPhase" style="display:none;">
-                <div id="editingProgress" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
-                
-                <div id="featureInfo" style="margin-bottom:12px;padding:8px;background:#e3f2fd;border:1px solid #bbdefb;border-radius:3px;"></div>
-                
-                <div id="editFormContainer" style="margin-bottom:12px;"></div>
-                
-                <div style="display:flex;gap:8px;margin-bottom:8px;">
-                    <button id="submitBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Submit & Next</button>
-                    <button id="skipBtn" style="flex:1;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Skip</button>
-                </div>
-                
-                <button id="prevBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Previous</button>
-                
-                <!-- File Upload Section -->
-                <div style="border-top:1px solid #ddd;margin:12px 0;padding-top:12px;">
-                    <div style="font-weight:bold;margin-bottom:8px;">📎 Upload Attachments</div>
-                    <div style="font-size:10px;color:#888;margin-bottom:8px;">
-                        Supported: Images (JPG, PNG, GIF…), PDF, XLSX, CSV
-                    </div>
-                    <div id="uploadArea">
-                        <div style="border:2px dashed #ccc;padding:20px;text-align:center;background:#f9f9f9;cursor:pointer;transition:all 0.3s;border-radius:3px;" id="dropZone">
-                            <div style="margin-bottom:8px;">📁 Drag & Drop Files Here</div>
-                            <div style="font-size:11px;color:#666;">or click to browse</div>
-                            <input type="file" id="fileInput" multiple
-                                accept="image/*,.pdf,.xlsx,.xls,.csv"
-                                style="display:none;">
-                        </div>
-                        <div id="fileList" style="margin-top:8px;"></div>
-                        <button id="uploadPhotosBtn" style="display:none;width:100%;margin-top:8px;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;">Upload Files to This Feature</button>
-                    </div>
-                </div>
-                
-                <button id="clearHighlightsBtn" style="width:100%;padding:6px 12px;background:#ffc107;color:black;border:none;border-radius:3px;cursor:pointer;">Clear Highlights</button>
-            </div>
-            
-            <!-- Phase 4b: Bulk Edit -->
-            <div id="bulkEditPhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;color:#e67e22;">⚡ Bulk Edit Mode</div>
-                <div style="margin-bottom:12px;color:#666;font-size:11px;">
-                    Set values once and apply them to all selected features at the same time.
-                </div>
-                
-                <div id="bulkEditLayerSelector" style="margin-bottom:12px;"></div>
-                
-                <div id="bulkEditFormContainer" style="margin-bottom:12px;"></div>
-                
-                <div id="bulkEditPreview" style="margin-bottom:12px;padding:8px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:3px;display:none;"></div>
-                
-                <div style="display:flex;gap:8px;margin-bottom:8px;">
-                    <button id="applyBulkEditBtn" style="flex:1;padding:8px 12px;background:#e67e22;color:white;border:none;border-radius:3px;cursor:pointer;font-weight:bold;">Apply to All Features</button>
-                </div>
-                
-                <button id="backToSummaryBtn" style="width:100%;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">← Back to Summary</button>
-                
-                <div id="bulkEditResults" style="margin-top:12px;"></div>
-            </div>
-            
-            <!-- Phase 5: Complete -->
-            <div id="completePhase" style="display:none;">
-                <div style="font-weight:bold;margin-bottom:8px;color:#28a745;">✅ Editing Complete!</div>
-                <div style="margin-bottom:12px;color:#666;">All features have been processed.</div>
-                
-                <div id="editSummary" style="margin-bottom:12px;padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;"></div>
-                
-                <button id="exportReportBtn" style="width:100%;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:3px;cursor:pointer;margin-bottom:8px;">📄 Export Summary Report</button>
-                <button id="startOverBtn" style="width:100%;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Start Over</button>
-            </div>
-            
-            <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:8px;">
-                <button id="closeTool" style="width:100%;padding:6px;background:#d32f2f;color:white;border:none;border-radius:3px;cursor:pointer;">Close Tool</button>
-            </div>
-            
-            <div id="toolStatus" style="margin-top:8px;color:#3367d6;font-size:11px;"></div>
+            </details>
+
+            <button id="clearHighlightsBtn" class="btn btn-secondary" style="width:100%;margin-top:8px;font-size:11px;">Clear Map Highlights</button>
+        </div>
+
+        <!-- ── Phase 4b: Bulk Edit ─────────────────────────────────────────── -->
+        <div id="bulkEditPhase" style="display:none;">
+            <div style="font-weight:700;color:#f9e2af;margin-bottom:6px;">⚡ Bulk Edit Mode</div>
+            <div style="font-size:11px;color:#a6adc8;margin-bottom:10px;">Set values once and apply to all selected features.</div>
+            <div id="bulkEditLayerSelector" style="margin-bottom:10px;"></div>
+            <div id="bulkEditFormContainer" style="margin-bottom:10px;"></div>
+            <div id="bulkEditPreview" style="display:none;margin-bottom:10px;" class="card"></div>
+            <button id="applyBulkEditBtn" class="btn btn-warning" style="width:100%;margin-bottom:6px;">Apply to All Features</button>
+            <button id="backToSummaryBtn" class="btn btn-secondary" style="width:100%;">← Back to Summary</button>
+            <div id="bulkEditResults" style="margin-top:10px;"></div>
+        </div>
+
+        <!-- ── Phase 5: Complete ───────────────────────────────────────────── -->
+        <div id="completePhase" style="display:none;">
+            <div style="font-weight:700;color:#a6e3a1;font-size:16px;margin-bottom:6px;">✅ Editing Complete</div>
+            <div id="editSummary" class="card" style="margin-bottom:10px;"></div>
+            <button id="exportReportBtn" class="btn btn-info"    style="width:100%;margin-bottom:6px;">📄 Export Summary Report</button>
+            <button id="startOverBtn"   class="btn btn-success"  style="width:100%;">↩ Start Over</button>
+        </div>
+
+        </div><!-- /peBody -->
+
+        <!-- STATUS BAR -->
+        <div id="toolStatus" style="padding:5px 14px;font-size:10px;color:#89dceb;background:#181825;border-top:1px solid #313244;border-radius:0 0 10px 10px;min-height:22px;flex-shrink:0;"></div>
         `;
-        
-        document.body.appendChild(toolBox);
-        
-        const $ = (id) => toolBox.querySelector(id);
-        const status = $("#toolStatus");
-        
-        function updateStatus(message) {
-            status.textContent = message;
+
+        // ── Shared CSS injected once ──────────────────────────────────────────
+        if (!document.getElementById('peStyles')) {
+            const style = document.createElement('style');
+            style.id = 'peStyles';
+            style.textContent = `
+            #pathEditorToolbox .btn {
+                padding:6px 10px; border:none; border-radius:6px; cursor:pointer;
+                font-size:12px; font-weight:600; transition:opacity .15s;
+            }
+            #pathEditorToolbox .btn:hover { opacity:.85; }
+            #pathEditorToolbox .btn:disabled { opacity:.4; cursor:not-allowed; }
+            #pathEditorToolbox .btn-primary  { background:#cba6f7; color:#1e1e2e; }
+            #pathEditorToolbox .btn-success  { background:#a6e3a1; color:#1e1e2e; }
+            #pathEditorToolbox .btn-secondary{ background:#45475a; color:#cdd6f4; }
+            #pathEditorToolbox .btn-info     { background:#89b4fa; color:#1e1e2e; }
+            #pathEditorToolbox .btn-warning  { background:#f9e2af; color:#1e1e2e; }
+            #pathEditorToolbox .btn-danger   { background:#f38ba8; color:#1e1e2e; }
+            #pathEditorToolbox .card {
+                background:#181825; border:1px solid #313244; border-radius:8px; padding:10px;
+            }
+            #pathEditorToolbox .info-card { background:#1e3a5f; border-color:#2a5298; }
+            #pathEditorToolbox .card-label {
+                font-size:10px; font-weight:700; text-transform:uppercase;
+                color:#6c7086; letter-spacing:.05em; margin-bottom:6px;
+            }
+            #pathEditorToolbox .input-ctrl {
+                width:100%; padding:6px 8px; background:#313244; border:1px solid #45475a;
+                border-radius:6px; color:#cdd6f4; font-size:12px; box-sizing:border-box;
+            }
+            #pathEditorToolbox .input-ctrl:focus { outline:none; border-color:#cba6f7; }
+            #pathEditorToolbox .field-label {
+                font-size:11px; font-weight:700; color:#a6adc8; margin-bottom:3px;
+                display:flex; align-items:center; justify-content:space-between;
+            }
+            #pathEditorToolbox .current-hint {
+                font-size:10px; color:#6c7086; margin-bottom:2px;
+            }
+            /* Mode cards */
+            #pathEditorToolbox .modeCard {
+                display:flex; flex-direction:column; align-items:center; justify-content:center;
+                gap:4px; padding:10px 6px; background:#313244; border:2px solid #45475a;
+                border-radius:8px; cursor:pointer; transition:all .15s; text-align:center;
+            }
+            #pathEditorToolbox .modeCard:hover  { border-color:#89b4fa; background:#1e3a5f; }
+            #pathEditorToolbox .modeCard.active { border-color:#cba6f7; background:#2a1f3d; }
+            #pathEditorToolbox .modeIcon  { font-size:20px; }
+            #pathEditorToolbox .modeLabel { font-size:10px; font-weight:600; color:#a6adc8; }
+            /* Layer config cards */
+            #pathEditorToolbox .layerCard {
+                border:1px solid #45475a; border-radius:8px; margin-bottom:8px; overflow:hidden;
+            }
+            #pathEditorToolbox .layerCard.enabled { border-color:#cba6f7; }
+            #pathEditorToolbox .layerCardHeader {
+                padding:10px 12px; background:#313244; display:flex; align-items:center;
+                gap:8px; cursor:pointer;
+            }
+            #pathEditorToolbox .layerCardBody { padding:10px 12px; display:none; }
+            /* Toggle switch */
+            #pathEditorToolbox .toggle-wrap {
+                position:relative; width:32px; height:18px; flex-shrink:0;
+            }
+            #pathEditorToolbox .toggle-wrap input { display:none; }
+            #pathEditorToolbox .toggle-slider {
+                position:absolute; inset:0; background:#45475a; border-radius:10px;
+                cursor:pointer; transition:background .2s;
+            }
+            #pathEditorToolbox .toggle-slider::after {
+                content:''; position:absolute; width:12px; height:12px;
+                background:#cdd6f4; border-radius:50%; top:3px; left:3px; transition:left .2s;
+            }
+            #pathEditorToolbox .toggle-wrap input:checked + .toggle-slider { background:#cba6f7; }
+            #pathEditorToolbox .toggle-wrap input:checked + .toggle-slider::after { left:17px; }
+            /* Field list */
+            #pathEditorToolbox .fieldListContainer {
+                background:#0f0f17; border:1px solid #313244; border-radius:6px;
+                max-height:160px; overflow-y:auto;
+            }
+            #pathEditorToolbox .fieldItem {
+                display:flex; align-items:center; gap:8px;
+                padding:5px 8px; border-bottom:1px solid #1e1e2e; cursor:pointer;
+            }
+            #pathEditorToolbox .fieldItem:last-child { border-bottom:none; }
+            #pathEditorToolbox .fieldItem:hover { background:#1e1e2e; }
+            #pathEditorToolbox .fieldItem input[type=checkbox] { accent-color:#cba6f7; }
+            #pathEditorToolbox .fieldBadge {
+                font-size:9px; padding:1px 5px; border-radius:4px; background:#313244;
+                color:#a6adc8; white-space:nowrap;
+            }
+            /* Custom domain dropdown */
+            #pathEditorToolbox .domain-btn {
+                width:100%; padding:7px 10px; background:#313244; border:1px solid #45475a;
+                border-radius:6px; color:#cdd6f4; font-size:12px; text-align:left;
+                display:flex; justify-content:space-between; align-items:center;
+                cursor:pointer; box-sizing:border-box;
+            }
+            #pathEditorToolbox .domain-btn:hover, #pathEditorToolbox .domain-btn.open {
+                border-color:#cba6f7;
+            }
+            #pathEditorToolbox .domain-panel {
+                position:absolute; top:calc(100% + 2px); left:0; right:0; z-index:10000;
+                background:#1e1e2e; border:1px solid #45475a; border-radius:6px;
+                box-shadow:0 6px 20px rgba(0,0,0,.6); display:none;
+            }
+            #pathEditorToolbox .domain-search {
+                width:100%; padding:6px 8px; background:#313244; border:none;
+                border-bottom:1px solid #45475a; color:#cdd6f4; font-size:12px;
+                outline:none; border-radius:6px 6px 0 0; box-sizing:border-box;
+            }
+            #pathEditorToolbox .domain-list { max-height:180px; overflow-y:auto; }
+            #pathEditorToolbox .domain-item {
+                padding:7px 10px; cursor:pointer; font-size:12px; color:#cdd6f4;
+            }
+            #pathEditorToolbox .domain-item:hover    { background:#313244; }
+            #pathEditorToolbox .domain-item.selected { background:#2a1f3d; color:#cba6f7; font-weight:600; }
+            /* Progress bar */
+            #pathEditorToolbox .progress-bar-wrap {
+                background:#313244; border-radius:4px; height:6px; margin-top:6px; overflow:hidden;
+            }
+            #pathEditorToolbox .progress-bar-fill {
+                height:100%; background:#a6e3a1; border-radius:4px; transition:width .3s;
+            }
+            `;
+            document.head.appendChild(style);
         }
-        
+
+        document.body.appendChild(toolBox);
+
+        const $ = (id) => toolBox.querySelector(id);
+        const status = $('#toolStatus');
+        function updateStatus(msg) { status.textContent = msg; }
+
+        // ── Dragging ──────────────────────────────────────────────────────────
+        let isDragging = false, dragOX = 0, dragOY = 0;
+        const peHeader = $('#peHeader');
+        peHeader.addEventListener('mousedown', (e) => {
+            if (e.target.closest('#closeTool')) return;
+            isDragging = true;
+            const r = toolBox.getBoundingClientRect();
+            dragOX = e.clientX - r.left;
+            dragOY = e.clientY - r.top;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            toolBox.style.right = 'auto';
+            toolBox.style.left  = (e.clientX - dragOX) + 'px';
+            toolBox.style.top   = (e.clientY - dragOY) + 'px';
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; });
+
+        // ── Phase management ──────────────────────────────────────────────────
+        const phaseNames = {
+            selection:'Selection', configuration:'Configuration',
+            summary:'Review', editing:'Editing',
+            bulkEdit:'Bulk Edit', complete:'Complete'
+        };
         function setPhase(phase) {
             currentPhase = phase;
-            
-            $("#selectionPhase").style.display = "none";
-            $("#configurationPhase").style.display = "none";
-            $("#summaryPhase").style.display = "none";
-            $("#editingPhase").style.display = "none";
-            $("#bulkEditPhase").style.display = "none";
-            $("#completePhase").style.display = "none";
-            
-            switch(phase) {
-                case 'selection':
-                    $("#selectionPhase").style.display = "block";
-                    break;
-                case 'configuration':
-                    $("#configurationPhase").style.display = "block";
-                    loadSavedConfigurationsList();
-                    // Auto-load last used configuration
-                    autoLoadLastConfiguration();
-                    break;
-                case 'summary':
-                    $("#summaryPhase").style.display = "block";
-                    break;
-                case 'editing':
-                    $("#editingPhase").style.display = "block";
-                    break;
-                case 'bulkEdit':
-                    $("#bulkEditPhase").style.display = "block";
-                    break;
-                case 'complete':
-                    $("#completePhase").style.display = "block";
-                    break;
+            ['selection','configuration','summary','editing','bulkEdit','complete'].forEach(p => {
+                const el = $(`#${p}Phase`);
+                if (el) el.style.display = 'none';
+            });
+            const target = $(`#${phase}Phase`);
+            if (target) target.style.display = 'block';
+
+            const ind = $('#phaseIndicator');
+            if (ind) ind.textContent = phaseNames[phase] || phase;
+
+            if (phase === 'configuration') {
+                loadSavedConfigurationsList();
+                autoLoadLastConfiguration();
             }
         }
-        
-        function clearHighlights() {
-            highlightGraphics.forEach(g => {
-                try { mapView.graphics.remove(g); } catch(e) {}
+
+        // ── Selection Mode Cards ──────────────────────────────────────────────
+        function updateModeCards() {
+            toolBox.querySelectorAll('.modeCard').forEach(card => {
+                card.classList.toggle('active', card.dataset.mode === selectionMode);
             });
-            highlightGraphics = [];
-            
-            const graphicsToRemove = [];
-            mapView.graphics.forEach(graphic => {
-                if (graphic.symbol) {
-                    const symbol = graphic.symbol;
-                    if ((symbol.type === "simple-marker" && symbol.size >= 20) ||
-                        (symbol.type === "simple-line" && symbol.width >= 8) ||
-                        (symbol.type === "simple-fill" && (symbol.color[3] >= 0.3 || (symbol.outline && symbol.outline.width >= 4)))) {
-                        graphicsToRemove.push(graphic);
-                    }
-                }
-            });
-            
-            graphicsToRemove.forEach(graphic => {
-                try { mapView.graphics.remove(graphic); } catch(e) {}
-            });
-            
-            if (mapView.popup) {
-                mapView.popup.close();
-            }
         }
-        
+        toolBox.querySelectorAll('.modeCard').forEach(card => {
+            card.addEventListener('click', () => {
+                card.querySelector('input').checked = true;
+                selectionMode = card.dataset.mode;
+                updateModeCards();
+                if (selectionGraphic) { mapView.graphics.remove(selectionGraphic); selectionGraphic = null; }
+                if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler = null; }
+                if (sketchViewModel) { try { sketchViewModel.cancel(); } catch(e){} }
+                selectedFeaturesByLayer.clear();
+                $('#selectionResults').innerHTML = '';
+                $('#configureLayersBtn').style.display = 'none';
+                $('#clearSelectionBtn').disabled = true;
+                startSelection();
+            });
+        });
+        updateModeCards();
+
+        // ── Selection logic ───────────────────────────────────────────────────
         function startSelection() {
-            const selectedMode = document.querySelector('input[name="selectionMode"]:checked').value;
-            selectionMode = selectedMode;
             clearSelection();
-            
-            if (selectedMode === 'polygon') {
-                enablePolygonDrawing();
-            } else if (selectedMode === 'line') {
-                enableLineDrawing();
-            } else if (selectedMode === 'single') {
-                enableSingleFeatureSelection();
-            }
+            if (selectionMode === 'polygon') enablePolygonDrawing();
+            else if (selectionMode === 'line')   enableLineDrawing();
+            else                                  enableSingleFeatureSelection();
         }
-        
+
         function enablePolygonDrawing() {
-            if (!sketchViewModel) {
-                initializeSketchViewModel(() => {
-                    sketchViewModel.create('polygon');
-                    updateStatus("Draw a polygon by clicking points. Double-click to finish.");
-                });
-            } else {
+            initializeSketchViewModel(() => {
                 sketchViewModel.create('polygon');
-                updateStatus("Draw a polygon by clicking points. Double-click to finish.");
-            }
+                updateStatus('Draw polygon — click points, double-click to finish.');
+            });
         }
-        
         function enableLineDrawing() {
-            if (!sketchViewModel) {
-                initializeSketchViewModel(() => {
-                    sketchViewModel.create('polyline');
-                    updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
-                });
-            } else {
+            initializeSketchViewModel(() => {
                 sketchViewModel.create('polyline');
-                updateStatus("Draw a path by clicking points. Double-click to finish. Features will be ordered along the path.");
-            }
+                updateStatus('Draw path — click points, double-click to finish.');
+            });
         }
-        
         function enableSingleFeatureSelection() {
-            updateStatus("Click on the map to select all nearby features.");
-            
-            if (mapClickHandler) {
-                mapClickHandler.remove();
-                mapClickHandler = null;
-            }
-            
+            updateStatus('Click on the map to select nearby features.');
+            if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler = null; }
             mapClickHandler = mapView.on('click', async (event) => {
                 try {
-                    updateStatus("Selecting features near click point...");
-                    
-                    // Create a small buffer around the click point for selection tolerance
-                    // Use screen pixels to calculate buffer distance
+                    updateStatus('Selecting features…');
                     const screenPoint = mapView.toScreen(event.mapPoint);
-                    const tolerance = 10; // pixels
-                    const point1 = mapView.toMap({ x: screenPoint.x, y: screenPoint.y });
-                    const point2 = mapView.toMap({ x: screenPoint.x + tolerance, y: screenPoint.y });
-                    
-                    let bufferDistance = 0;
-                    if (window.geometryEngine) {
-                        bufferDistance = window.geometryEngine.distance(point1, point2, 'meters');
-                    } else {
-                        // Load geometryEngine if not available
-                        await new Promise((resolve) => {
-                            window.require(['esri/geometry/geometryEngine'], (ge) => {
-                                window.geometryEngine = ge;
-                                bufferDistance = ge.distance(point1, point2, 'meters');
-                                resolve();
-                            });
-                        });
+                    const tol = 10;
+                    const p1 = mapView.toMap({ x: screenPoint.x, y: screenPoint.y });
+                    const p2 = mapView.toMap({ x: screenPoint.x + tol, y: screenPoint.y });
+                    if (!window.geometryEngine) {
+                        await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine = ge; r(); }));
                     }
-                    
-                    // Create buffer geometry around click point
-                    const bufferGeometry = window.geometryEngine.buffer(event.mapPoint, bufferDistance, 'meters');
-                    
-                    // Show the click point - create proper Graphic object
-                    await new Promise((resolve) => {
-                        window.require(['esri/Graphic'], (Graphic) => {
-                            selectionGraphic = new Graphic({
-                                geometry: event.mapPoint,
-                                symbol: {
-                                    type: "simple-marker",
-                                    color: [255, 0, 0, 0.8],
-                                    size: 12,
-                                    outline: { color: [255, 255, 255, 1], width: 2 }
-                                }
-                            });
-                            mapView.graphics.add(selectionGraphic);
-                            resolve();
-                        });
-                    });
-                    
-                    // Query all visible feature layers
+                    const bufDist = window.geometryEngine.distance(p1, p2, 'meters');
+                    const bufGeom = window.geometryEngine.buffer(event.mapPoint, bufDist, 'meters');
+                    await new Promise(r => window.require(['esri/Graphic'], G => {
+                        selectionGraphic = new G({ geometry: event.mapPoint, symbol: { type:'simple-marker', color:[255,0,0,.8], size:12, outline:{color:[255,255,255,1],width:2} } });
+                        mapView.graphics.add(selectionGraphic);
+                        r();
+                    }));
                     selectedFeaturesByLayer.clear();
-                    const allFL = mapView.map.allLayers.filter(l => 
-                        l.type === "feature" && l.visible
-                    );
-                    
-                    const queries = allFL.map(async (layer) => {
-                        try {
-                            await layer.load();
-                            
-                            // Get the layer view to respect display filters
-                            let layerView = null;
-                            try {
-                                layerView = await mapView.whenLayerView(layer);
-                            } catch (lvError) {
-                                console.warn('Could not get layer view for:', layer.title, lvError);
-                            }
-                            
-                            // Build query with buffered geometry
-                            const queryParams = {
-                                geometry: bufferGeometry,
-                                spatialRelationship: 'intersects',
-                                returnGeometry: true,
-                                outFields: ['*']
-                            };
-                            
-                            // Add the layer's definition expression if it exists
-                            if (layerView && layerView.filter && layerView.filter.where) {
-                                queryParams.where = layerView.filter.where;
-                            } else if (layer.definitionExpression) {
-                                queryParams.where = layer.definitionExpression;
-                            }
-                            
-                            const result = await layer.queryFeatures(queryParams);
-                            
-                            if (result.features.length > 0) {
-                                selectedFeaturesByLayer.set(layer.layerId, {
-                                    layer: layer,
-                                    features: result.features
-                                });
-                            }
-                        } catch (e) {
-                            console.error('Error querying layer:', layer.title, e);
-                        }
-                    });
-                    
-                    await Promise.all(queries);
-                    
+                    await queryAllLayers(bufGeom, 'intersects', null);
                     if (selectedFeaturesByLayer.size > 0) {
                         displaySelectionResults();
-                        $("#clearSelectionBtn").disabled = false;
-                        
-                        // Remove click handler after selection
-                        if (mapClickHandler) {
-                            mapClickHandler.remove();
-                            mapClickHandler = null;
-                        }
+                        $('#clearSelectionBtn').disabled = false;
+                        if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler = null; }
                     } else {
-                        updateStatus("No features found near click location. Try again or click elsewhere.");
-                        // Keep the click handler active for another try
+                        updateStatus('No features found — try clicking elsewhere.');
                     }
-                    
-                } catch (error) {
-                    updateStatus("Error selecting features: " + error.message);
-                }
+                } catch(err) { updateStatus('Error: ' + err.message); }
             });
         }
-        
+
         function initializeSketchViewModel(callback) {
-            if (window.require) {
-                window.require(['esri/widgets/Sketch/SketchViewModel'], (SketchViewModel) => {
-                    sketchViewModel = new SketchViewModel({
-                        view: mapView,
-                        layer: mapView.graphics,
-                        polygonSymbol: {
-                            type: 'simple-fill',
-                            color: [255, 255, 0, 0.3],
-                            outline: {
-                                color: [255, 0, 0, 1],
-                                width: 2
-                            }
-                        },
-                        polylineSymbol: {
-                            type: 'simple-line',
-                            color: [255, 0, 0, 1],
-                            width: 3,
-                            style: 'solid'
-                        }
-                    });
-                    
-                    sketchViewModel.on('create', (event) => {
-                        if (event.state === 'complete') {
-                            selectionGraphic = event.graphic;
-                            
-                            if (selectionMode === 'polygon') {
-                                selectFeaturesInPolygon(selectionGraphic.geometry);
-                            } else if (selectionMode === 'line') {
-                                selectFeaturesAlongLine(selectionGraphic.geometry);
-                            }
-                            
-                            $("#clearSelectionBtn").disabled = false;
-                        }
-                    });
-                    
-                    // Call the callback if provided
-                    if (callback) {
-                        callback();
-                    }
+            if (!window.require) { updateStatus('Cannot load drawing tools.'); return; }
+            if (sketchViewModel) { if (callback) callback(); return; }
+            window.require(['esri/widgets/Sketch/SketchViewModel'], SVM => {
+                sketchViewModel = new SVM({
+                    view: mapView, layer: mapView.graphics,
+                    polygonSymbol: { type:'simple-fill', color:[255,255,0,.25], outline:{color:[203,166,247,1],width:2} },
+                    polylineSymbol: { type:'simple-line', color:[203,166,247,1], width:3 }
                 });
-            } else {
-                updateStatus('Unable to load selection drawing tools.');
-            }
-        }
-        
-        async function selectFeaturesInPolygon(polygon) {
-            try {
-                updateStatus("Selecting features within polygon...");
-                selectedFeaturesByLayer.clear();
-                
-                const allFL = mapView.map.allLayers.filter(l => 
-                    l.type === "feature" && l.visible
-                );
-                
-                const queries = allFL.map(async (layer) => {
-                    try {
-                        await layer.load();
-                        
-                        // Get the layer view to respect display filters
-                        let layerView = null;
-                        try {
-                            layerView = await mapView.whenLayerView(layer);
-                        } catch (lvError) {
-                            console.warn('Could not get layer view for:', layer.title, lvError);
-                        }
-                        
-                        // Build query with geometry
-                        const queryParams = {
-                            geometry: polygon,
-                            spatialRelationship: 'intersects',
-                            returnGeometry: true,
-                            outFields: ['*']
-                        };
-                        
-                        // Add the layer's definition expression if it exists
-                        if (layerView && layerView.filter && layerView.filter.where) {
-                            queryParams.where = layerView.filter.where;
-                        } else if (layer.definitionExpression) {
-                            queryParams.where = layer.definitionExpression;
-                        }
-                        
-                        const result = await layer.queryFeatures(queryParams);
-                        
-                        if (result.features.length > 0) {
-                            selectedFeaturesByLayer.set(layer.layerId, {
-                                layer: layer,
-                                features: result.features
-                            });
-                        }
-                    } catch (e) {
-                        // Skip layers that fail
-                        console.warn('Error querying layer:', layer.title, e);
-                    }
+                sketchViewModel.on('create', async evt => {
+                    if (evt.state !== 'complete') return;
+                    selectionGraphic = evt.graphic;
+                    if (selectionMode === 'polygon') await selectFeaturesInPolygon(selectionGraphic.geometry);
+                    else if (selectionMode === 'line') await selectFeaturesAlongLine(selectionGraphic.geometry);
+                    $('#clearSelectionBtn').disabled = false;
                 });
-                
-                await Promise.all(queries);
-                
-                displaySelectionResults();
-                
-            } catch (error) {
-                updateStatus("Error selecting features: " + error.message);
-            }
+                if (callback) callback();
+            });
         }
-        
-        async function selectFeaturesAlongLine(line) {
-            try {
-                updateStatus("Selecting features along line path...");
-                selectedFeaturesByLayer.clear();
-                
-                const allFL = mapView.map.allLayers.filter(l => 
-                    l.type === "feature" && l.visible
-                );
-                
-                if (!window.geometryEngine) {
-                    await new Promise((resolve) => {
-                        window.require(['esri/geometry/geometryEngine'], (ge) => {
-                            window.geometryEngine = ge;
-                            resolve();
-                        });
-                    });
-                }
-                
-                // Create a buffer around the line for selection
-                const mapWidth = mapView.extent.width;
-                const screenWidth = mapView.width;
-                const metersPerPixel = mapWidth / screenWidth;
-                const bufferPixels = 20;
-                const bufferDistance = metersPerPixel * bufferPixels;
-                
-                const bufferedGeometry = window.geometryEngine.buffer(line, bufferDistance, 'meters');
-                
-                updateStatus(`Selecting features within ${Math.round(bufferDistance)}m of line path...`);
-                
-                const queries = allFL.map(async (layer) => {
-                    try {
-                        await layer.load();
-                        
-                        // Get the layer view to respect display filters
-                        let layerView = null;
-                        try {
-                            layerView = await mapView.whenLayerView(layer);
-                        } catch (lvError) {
-                            console.warn('Could not get layer view for:', layer.title, lvError);
-                        }
-                        
-                        // Build query with buffered geometry
-                        const queryParams = {
-                            geometry: bufferedGeometry,
-                            spatialRelationship: 'intersects',
-                            returnGeometry: true,
-                            outFields: ['*']
-                        };
-                        
-                        // Add the layer's definition expression if it exists
-                        if (layerView && layerView.filter && layerView.filter.where) {
-                            queryParams.where = layerView.filter.where;
-                        } else if (layer.definitionExpression) {
-                            queryParams.where = layer.definitionExpression;
-                        }
-                        
-                        const result = await layer.queryFeatures(queryParams);
-                        
-                        if (result.features.length > 0) {
-                            const featuresWithDistance = result.features.map(feature => {
-                                let distance = 0;
-                                
-                                try {
-                                    let point;
-                                    if (feature.geometry.type === 'point') {
-                                        point = feature.geometry;
-                                    } else if (feature.geometry.type === 'polygon' && feature.geometry.centroid) {
-                                        point = feature.geometry.centroid;
-                                    } else if (feature.geometry.type === 'polyline') {
-                                        if (feature.geometry.paths && feature.geometry.paths[0]) {
-                                            const path = feature.geometry.paths[0];
-                                            const midIndex = Math.floor(path.length / 2);
-                                            point = {
-                                                type: 'point',
-                                                x: path[midIndex][0],
-                                                y: path[midIndex][1],
-                                                spatialReference: feature.geometry.spatialReference
-                                            };
-                                        }
-                                    }
-                                    
-                                    if (point && window.geometryEngine) {
-                                        const nearestCoordinate = window.geometryEngine.nearestCoordinate(line, point);
-                                        
-                                        if (nearestCoordinate && nearestCoordinate.coordinate) {
-                                            if (nearestCoordinate.vertexIndex !== undefined) {
-                                                let cumulativeDistance = 0;
-                                                for (let i = 0; i < nearestCoordinate.vertexIndex; i++) {
-                                                    const p1 = {
-                                                        type: 'point',
-                                                        x: line.paths[0][i][0],
-                                                        y: line.paths[0][i][1],
-                                                        spatialReference: line.spatialReference
-                                                    };
-                                                    const p2 = {
-                                                        type: 'point',
-                                                        x: line.paths[0][i + 1][0],
-                                                        y: line.paths[0][i + 1][1],
-                                                        spatialReference: line.spatialReference
-                                                    };
-                                                    cumulativeDistance += window.geometryEngine.distance(p1, p2, 'meters');
-                                                }
-                                                
-                                                const lastVertex = {
-                                                    type: 'point',
-                                                    x: line.paths[0][nearestCoordinate.vertexIndex][0],
-                                                    y: line.paths[0][nearestCoordinate.vertexIndex][1],
-                                                    spatialReference: line.spatialReference
-                                                };
-                                                cumulativeDistance += window.geometryEngine.distance(lastVertex, nearestCoordinate.coordinate, 'meters');
-                                                
-                                                distance = cumulativeDistance;
-                                            }
-                                        }
-                                    }
-                                } catch (e) {
-                                    console.warn('Error calculating distance for feature:', e);
-                                }
-                                
-                                return {
-                                    feature: feature,
-                                    distanceAlongLine: distance
-                                };
-                            });
-                            
-                            featuresWithDistance.sort((a, b) => a.distanceAlongLine - b.distanceAlongLine);
-                            
-                            const sortedFeatures = featuresWithDistance.map(item => item.feature);
-                            
-                            selectedFeaturesByLayer.set(layer.layerId, {
-                                layer: layer,
-                                features: sortedFeatures,
-                                orderedByLine: true
-                            });
-                        }
-                    } catch (e) {
-                        console.error('Error querying layer:', layer.title, e);
-                    }
-                });
-                
-                await Promise.all(queries);
-                
-                displaySelectionResults();
-                updateStatus(`Found features along line path (${Math.round(bufferDistance)}m buffer) in ${selectedFeaturesByLayer.size} layers.`);
-                
-            } catch (error) {
-                updateStatus("Error selecting features: " + error.message);
-            }
-        }
-        
-        function displaySelectionResults() {
-            let html = '<div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">';
-            html += '<strong>Features Found:</strong><br>';
-            
-            if (selectedFeaturesByLayer.size === 0) {
-                html += '<em>No features found in selection</em>';
-                $("#configureLayersBtn").style.display = "none";
-            } else {
-                selectedFeaturesByLayer.forEach((data, layerId) => {
-                    html += `${data.layer.title}: ${data.features.length}`;
-                    if (data.orderedByLine) {
-                        html += ' <span style="color:#17a2b8;font-size:10px;">↗ ordered by path</span>';
-                    }
-                    html += '<br>';
-                });
-                $("#configureLayersBtn").style.display = "block";
-            }
-            
-            html += '</div>';
-            $("#selectionResults").innerHTML = html;
-            updateStatus(`Found features in ${selectedFeaturesByLayer.size} layers.`);
-        }
-        
-        function clearSelection() {
-            if (selectionGraphic) {
-                mapView.graphics.remove(selectionGraphic);
-                selectionGraphic = null;
-            }
-            
-            if (mapClickHandler) {
-                mapClickHandler.remove();
-                mapClickHandler = null;
-            }
-            
-            clearHighlights();
-            $("#clearSelectionBtn").disabled = true;
-            selectedFeaturesByLayer.clear();
-            $("#selectionResults").innerHTML = "";
-            $("#configureLayersBtn").style.display = "none";
-            updateStatus("Selection cleared.");
-        }
-        
-        async function showLayerConfiguration() {
-            const container = $("#layerConfigContainer");
-            container.innerHTML = '';
-            
-            let order = 1;
-            for (const [layerId, data] of selectedFeaturesByLayer) {
-                const section = await createLayerConfigSection(data.layer, data.features, order);
-                container.appendChild(section);
-                order++;
-            }
-            
-            setPhase('configuration');
-            updateStatus("Configure which layers and fields to edit.");
-        }
-        
-        async function createLayerConfigSection(layer, features, order) {
-            const section = document.createElement('div');
-            section.style.cssText = `
-                margin-bottom: 12px;
-                border: 1px solid #dee2e6;
-                border-radius: 4px;
-                overflow: hidden;
-            `;
-            section.dataset.layerId = layer.layerId;
-            section.dataset.order = order;
-            
-            const header = document.createElement('div');
-            header.style.cssText = `
-                padding: 8px;
-                background: #e9ecef;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            `;
-            
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.id = `layer_${layer.layerId}_enabled`;
-            checkbox.checked = false;
-            
-            const label = document.createElement('label');
-            label.style.cssText = 'flex: 1; cursor: pointer; font-weight: bold;';
-            label.textContent = `${layer.title} (${features.length} features)`;
-            label.htmlFor = checkbox.id;
-            
-            const expandIcon = document.createElement('span');
-            expandIcon.textContent = '▼';
-            expandIcon.style.fontSize = '10px';
-            
-            header.appendChild(checkbox);
-            header.appendChild(label);
-            header.appendChild(expandIcon);
-            
-            const body = document.createElement('div');
-            body.style.cssText = `
-                padding: 8px;
-                display: none;
-                background: #fff;
-            `;
-            
-            const modeDiv = document.createElement('div');
-            modeDiv.style.marginBottom = '8px';
-            modeDiv.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:4px;">Mode:</div>
-                <label style="margin-right:12px;">
-                    <input type="radio" name="mode_${layer.layerId}" value="edit" checked>
-                    Edit Fields
-                </label>
-                <label>
-                    <input type="radio" name="mode_${layer.layerId}" value="view">
-                    View Only
-                </label>
-            `;
-            
-            const fieldsDiv = document.createElement('div');
-            fieldsDiv.id = `fields_${layer.layerId}`;
-            fieldsDiv.style.marginTop = '8px';
-            
-            await layer.load();
-            const editableFields = layer.fields.filter(f => f.editable && f.type !== 'oid' && f.type !== 'global-id');
-            
-            if (editableFields.length > 0) {
-                fieldsDiv.innerHTML = '<div style="font-weight:bold;margin-bottom:4px;">Fields to Edit:</div>';
-                
-                const fieldList = document.createElement('div');
-                fieldList.style.cssText = 'max-height:150px;overflow-y:auto;border:1px solid #dee2e6;padding:4px;border-radius:2px;background:#f8f9fa;';
-                
-                editableFields.forEach(field => {
-                    const fieldItem = document.createElement('label');
-                    fieldItem.style.cssText = 'display:block;padding:2px 4px;cursor:pointer;';
-                    
-                    const fieldCheck = document.createElement('input');
-                    fieldCheck.type = 'checkbox';
-                    fieldCheck.dataset.fieldName = field.name;
-                    fieldCheck.style.marginRight = '4px';
-                    
-                    const fieldLabel = document.createElement('span');
-                    const typeLabel = getFieldTypeLabel(field);
-                    fieldLabel.textContent = `${field.alias || field.name} (${typeLabel})`;
-                    
-                    fieldItem.appendChild(fieldCheck);
-                    fieldItem.appendChild(fieldLabel);
-                    fieldList.appendChild(fieldItem);
-                });
-                
-                fieldsDiv.appendChild(fieldList);
-            } else {
-                fieldsDiv.innerHTML = '<div style="color:#999;font-size:11px;">No editable fields available</div>';
-            }
-            
-            const optionsDiv = document.createElement('div');
-            optionsDiv.style.marginTop = '8px';
-            optionsDiv.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:4px;">Options:</div>
-                <label style="display:block;">
-                    <input type="checkbox" id="popup_${layer.layerId}" checked>
-                    Show popup for each feature
-                </label>
-                <label style="display:block;">
-                    <input type="checkbox" id="allowskip_${layer.layerId}" checked>
-                    Allow skip
-                </label>
-            `;
-            
-            const filterDiv = document.createElement('div');
-            filterDiv.style.cssText = 'margin-top:8px;padding:8px;background:#e8f4f8;border:1px solid #b3d9e6;border-radius:3px;';
-            filterDiv.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Filter Features (Optional):</div>
-                <label style="display:block;margin-bottom:4px;">
-                    <input type="checkbox" id="enableFilter_${layer.layerId}">
-                    <span style="font-size:11px;">Enable WHERE clause filter</span>
-                </label>
-                <div id="filterInputs_${layer.layerId}" style="display:none;">
-                    <textarea id="filterWhere_${layer.layerId}" 
-                        placeholder="Example: workflow_status = 'ASSG' AND fiber_count > 12"
-                        style="width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;font-size:11px;font-family:monospace;min-height:50px;margin-bottom:4px;"></textarea>
-                    <div style="font-size:10px;color:#666;">
-                        Enter a SQL WHERE clause to filter features. Leave empty to include all features.
-                    </div>
-                    <button class="testFilterBtn" data-layer-id="${layer.layerId}" 
-                        style="margin-top:4px;padding:3px 8px;background:#17a2b8;color:white;border:none;border-radius:2px;cursor:pointer;font-size:10px;">
-                        Test Filter
-                    </button>
-                    <span class="filterTestResult" style="margin-left:8px;font-size:10px;"></span>
-                </div>
-            `;
-            
-            const filterCheckbox = filterDiv.querySelector(`#enableFilter_${layer.layerId}`);
-            const filterInputs = filterDiv.querySelector(`#filterInputs_${layer.layerId}`);
-            filterCheckbox.onchange = () => {
-                filterInputs.style.display = filterCheckbox.checked ? 'block' : 'none';
-            };
-            
-            const testBtn = filterDiv.querySelector('.testFilterBtn');
-            const testResult = filterDiv.querySelector('.filterTestResult');
-            testBtn.onclick = async () => {
-                let whereClause = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim();
-                if (!whereClause) {
-                    testResult.textContent = 'Please enter a WHERE clause';
-                    testResult.style.color = '#dc3545';
-                    return;
-                }
-                
-                whereClause = whereClause.replace(/\\"/g, '"').replace(/\\'/g, "'");
-                
-                testResult.textContent = 'Testing...';
-                testResult.style.color = '#666';
-                
+
+        async function queryAllLayers(geometry, spatialRel, lineForOrder) {
+            const allFL = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+            await Promise.all(allFL.toArray().map(async layer => {
                 try {
                     await layer.load();
-                    
-                    const data = selectedFeaturesByLayer.get(layer.layerId);
-                    
-                    if (!data || !data.features) {
-                        testResult.textContent = '✗ No features selected yet';
-                        testResult.style.color = '#dc3545';
-                        return;
+                    let lv = null;
+                    try { lv = await mapView.whenLayerView(layer); } catch(e){}
+                    const qp = { geometry, spatialRelationship: spatialRel, returnGeometry:true, outFields:['*'] };
+                    if (lv?.filter?.where) qp.where = lv.filter.where;
+                    else if (layer.definitionExpression) qp.where = layer.definitionExpression;
+                    const res = await layer.queryFeatures(qp);
+                    if (!res.features.length) return;
+                    let features = res.features;
+                    let orderedByLine = false;
+                    if (lineForOrder) {
+                        features = orderFeaturesAlongLine(features, lineForOrder);
+                        orderedByLine = true;
                     }
-                    
-                    let queryParams = {
-                        where: whereClause,
-                        returnGeometry: false,
-                        returnCountOnly: true
-                    };
-                    
-                    if (selectionGraphic && selectionGraphic.geometry) {
-                        queryParams.geometry = selectionGraphic.geometry;
-                        queryParams.spatialRelationship = 'intersects';
+                    selectedFeaturesByLayer.set(layer.layerId, { layer, features, orderedByLine });
+                } catch(e) { console.warn('Layer query error:', layer.title, e); }
+            }));
+        }
+
+        function orderFeaturesAlongLine(features, line) {
+            return features.map(f => {
+                let dist = 0;
+                try {
+                    let pt = f.geometry.type === 'point' ? f.geometry
+                           : f.geometry.type === 'polygon' ? f.geometry.centroid
+                           : f.geometry.type === 'polyline' && f.geometry.paths?.[0]
+                             ? { type:'point', x:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][0],
+                                 y:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][1],
+                                 spatialReference:f.geometry.spatialReference }
+                             : null;
+                    if (pt) {
+                        const nc = window.geometryEngine.nearestCoordinate(line, pt);
+                        if (nc?.coordinate && nc.vertexIndex !== undefined) {
+                            let cum = 0;
+                            for (let i = 0; i < nc.vertexIndex; i++) {
+                                const a = { type:'point', x:line.paths[0][i][0],   y:line.paths[0][i][1],   spatialReference:line.spatialReference };
+                                const b = { type:'point', x:line.paths[0][i+1][0], y:line.paths[0][i+1][1], spatialReference:line.spatialReference };
+                                cum += window.geometryEngine.distance(a, b, 'meters');
+                            }
+                            const lastV = { type:'point', x:line.paths[0][nc.vertexIndex][0], y:line.paths[0][nc.vertexIndex][1], spatialReference:line.spatialReference };
+                            cum += window.geometryEngine.distance(lastV, nc.coordinate, 'meters');
+                            dist = cum;
+                        }
                     }
-                    
-                    const testQuery = await layer.queryFeatures(queryParams);
-                    
-                    const totalInSelection = data.features.length;
-                    testResult.textContent = `✓ Valid - ${testQuery.count} of ${totalInSelection} features match`;
-                    testResult.style.color = '#28a745';
-                } catch (error) {
-                    testResult.textContent = `✗ ${error.message}`;
-                    testResult.style.color = '#dc3545';
-                    console.error('Filter test error details:', error);
+                } catch(e){}
+                return { f, dist };
+            }).sort((a,b)=>a.dist-b.dist).map(x=>x.f);
+        }
+
+        async function selectFeaturesInPolygon(polygon) {
+            updateStatus('Selecting features in polygon…');
+            selectedFeaturesByLayer.clear();
+            await queryAllLayers(polygon, 'intersects', null);
+            displaySelectionResults();
+        }
+
+        async function selectFeaturesAlongLine(line) {
+            updateStatus('Selecting features along line…');
+            selectedFeaturesByLayer.clear();
+            if (!window.geometryEngine) {
+                await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine = ge; r(); }));
+            }
+            const mpp = mapView.extent.width / mapView.width;
+            const bufDist = mpp * 20;
+            const bufGeom = window.geometryEngine.buffer(line, bufDist, 'meters');
+            await queryAllLayers(bufGeom, 'intersects', line);
+            displaySelectionResults();
+            updateStatus(`Features selected along path (${Math.round(bufDist)}m buffer).`);
+        }
+
+        function displaySelectionResults() {
+            const div = $('#selectionResults');
+            if (selectedFeaturesByLayer.size === 0) {
+                div.innerHTML = '<div style="color:#f38ba8;font-size:11px;padding:6px 0;">No features found in selection.</div>';
+                $('#configureLayersBtn').style.display = 'none';
+            } else {
+                let html = '<div class="card" style="padding:8px;">';
+                selectedFeaturesByLayer.forEach((d) => {
+                    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #313244;">
+                        <span style="font-size:11px;color:#cdd6f4;">${d.layer.title}</span>
+                        <span style="font-size:11px;color:#a6e3a1;font-weight:700;">${d.features.length}
+                        ${d.orderedByLine ? '<span style="color:#89b4fa;font-size:9px;margin-left:4px;">↗ ordered</span>':''}</span>
+                    </div>`;
+                });
+                html += '</div>';
+                div.innerHTML = html;
+                $('#configureLayersBtn').style.display = 'block';
+            }
+            updateStatus(`Found features in ${selectedFeaturesByLayer.size} layer(s).`);
+        }
+
+        function clearSelection() {
+            if (selectionGraphic) { mapView.graphics.remove(selectionGraphic); selectionGraphic = null; }
+            if (mapClickHandler)  { mapClickHandler.remove(); mapClickHandler = null; }
+            clearHighlights();
+            $('#clearSelectionBtn').disabled = true;
+            selectedFeaturesByLayer.clear();
+            $('#selectionResults').innerHTML = '';
+            $('#configureLayersBtn').style.display = 'none';
+            updateStatus('Selection cleared.');
+        }
+
+        // ── Layer Configuration ───────────────────────────────────────────────
+        async function showLayerConfiguration() {
+            const container = $('#layerConfigContainer');
+            container.innerHTML = '';
+            let order = 1;
+            for (const [, data] of selectedFeaturesByLayer) {
+                const sec = await createLayerConfigSection(data.layer, data.features, order++);
+                container.appendChild(sec);
+            }
+            setPhase('configuration');
+            updateStatus('Configure layers and fields, then click Review & Start.');
+        }
+
+        async function createLayerConfigSection(layer, features, order) {
+            const card = document.createElement('div');
+            card.className = 'layerCard';
+            card.dataset.layerId = layer.layerId;
+            card.dataset.order   = order;
+
+            // Header (toggle switch + title)
+            const header = document.createElement('div');
+            header.className = 'layerCardHeader';
+
+            const toggleWrap = document.createElement('label');
+            toggleWrap.className = 'toggle-wrap';
+            const toggleInput = document.createElement('input');
+            toggleInput.type = 'checkbox';
+            toggleInput.id   = `layer_${layer.layerId}_enabled`;
+            const toggleSlider = document.createElement('div');
+            toggleSlider.className = 'toggle-slider';
+            toggleWrap.appendChild(toggleInput);
+            toggleWrap.appendChild(toggleSlider);
+
+            const titleSpan = document.createElement('span');
+            titleSpan.style.cssText = 'flex:1;font-weight:700;font-size:12px;';
+            titleSpan.textContent = `${layer.title}`;
+
+            const countBadge = document.createElement('span');
+            countBadge.className = 'fieldBadge';
+            countBadge.textContent = `${features.length} features`;
+
+            const chevron = document.createElement('span');
+            chevron.textContent = '▼';
+            chevron.style.fontSize = '10px';
+            chevron.style.color = '#6c7086';
+
+            header.appendChild(toggleWrap);
+            header.appendChild(titleSpan);
+            header.appendChild(countBadge);
+            header.appendChild(chevron);
+
+            // Body
+            const body = document.createElement('div');
+            body.className = 'layerCardBody';
+
+            // Mode selector
+            const modeRow = document.createElement('div');
+            modeRow.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;';
+            ['edit','view'].forEach(m => {
+                const lbl = document.createElement('label');
+                lbl.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#a6adc8;';
+                const rdo = document.createElement('input');
+                rdo.type='radio'; rdo.name=`mode_${layer.layerId}`; rdo.value=m;
+                if (m==='edit') rdo.checked=true;
+                rdo.style.accentColor='#cba6f7';
+                lbl.appendChild(rdo);
+                lbl.appendChild(document.createTextNode(m==='edit'?'✏️ Edit Fields':'👁 View Only'));
+                modeRow.appendChild(lbl);
+            });
+
+            // Fields section
+            await layer.load();
+            const editableFields = layer.fields
+                .filter(f => f.editable && f.type !== 'oid' && f.type !== 'global-id')
+                .sort((a,b) => (a.alias||a.name).localeCompare(b.alias||b.name)); // alphabetical
+
+            const fieldsSection = document.createElement('div');
+            fieldsSection.id = `fields_${layer.layerId}`;
+
+            if (editableFields.length > 0) {
+                // Search + sort bar
+                const searchSortRow = document.createElement('div');
+                searchSortRow.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
+                const fsearch = document.createElement('input');
+                fsearch.type='text'; fsearch.placeholder='Search fields…';
+                fsearch.className='input-ctrl'; fsearch.style.flex='1'; fsearch.style.fontSize='11px';
+                const sortBtn = document.createElement('button');
+                sortBtn.className='btn btn-secondary';
+                sortBtn.style.cssText='font-size:10px;padding:4px 8px;white-space:nowrap;';
+                sortBtn.textContent='A→Z';
+                let sortAsc = true;
+                searchSortRow.appendChild(fsearch);
+                searchSortRow.appendChild(sortBtn);
+
+                const fieldListContainer = document.createElement('div');
+                fieldListContainer.className = 'fieldListContainer';
+
+                function renderFieldList(filterText='', ascending=true) {
+                    fieldListContainer.innerHTML='';
+                    let flds = editableFields.filter(f => (f.alias||f.name).toLowerCase().includes(filterText.toLowerCase()));
+                    if (!ascending) flds = [...flds].reverse();
+                    flds.forEach(field => {
+                        const row = document.createElement('div');
+                        row.className='fieldItem';
+                        const chk = document.createElement('input');
+                        chk.type='checkbox'; chk.dataset.fieldName=field.name;
+                        chk.style.accentColor='#cba6f7';
+                        const lbl = document.createElement('span');
+                        lbl.style.cssText='flex:1;font-size:11px;';
+                        lbl.textContent = field.alias || field.name;
+                        const badge = document.createElement('span');
+                        badge.className='fieldBadge';
+                        badge.textContent = getFieldTypeLabel(field);
+                        row.appendChild(chk);
+                        row.appendChild(lbl);
+                        row.appendChild(badge);
+                        row.addEventListener('click', e => { if(e.target!==chk) chk.checked=!chk.checked; });
+                        fieldListContainer.appendChild(row);
+                    });
                 }
+                renderFieldList();
+
+                fsearch.oninput = () => renderFieldList(fsearch.value, sortAsc);
+                sortBtn.onclick = () => {
+                    sortAsc = !sortAsc;
+                    sortBtn.textContent = sortAsc ? 'A→Z' : 'Z→A';
+                    renderFieldList(fsearch.value, sortAsc);
+                };
+
+                // helper to get checked field names from rendered list (survives re-render)
+                fieldsSection.getCheckedFields = () => {
+                    return Array.from(fieldListContainer.querySelectorAll('input[type=checkbox]:checked'))
+                        .map(c=>c.dataset.fieldName);
+                };
+                fieldsSection.setCheckedFields = (names) => {
+                    fieldListContainer.querySelectorAll('input[type=checkbox]').forEach(c => {
+                        c.checked = names.includes(c.dataset.fieldName);
+                    });
+                };
+
+                fieldsSection.appendChild(searchSortRow);
+                fieldsSection.appendChild(fieldListContainer);
+            } else {
+                fieldsSection.innerHTML = '<div style="color:#6c7086;font-size:11px;">No editable fields.</div>';
+            }
+
+            // Options
+            const optDiv = document.createElement('div');
+            optDiv.style.cssText='display:flex;gap:12px;margin-top:8px;margin-bottom:8px;';
+            optDiv.innerHTML=`
+                <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;">
+                    <input type="checkbox" id="popup_${layer.layerId}" checked style="accent-color:#cba6f7;"> Show Popup
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;">
+                    <input type="checkbox" id="allowskip_${layer.layerId}" checked style="accent-color:#cba6f7;"> Allow Skip
+                </label>`;
+
+            // Filter
+            const filterDiv = document.createElement('div');
+            filterDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
+            filterDiv.innerHTML=`
+                <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:4px;">
+                    <input type="checkbox" id="enableFilter_${layer.layerId}" style="accent-color:#cba6f7;"> WHERE clause filter
+                </label>
+                <div id="filterInputs_${layer.layerId}" style="display:none;">
+                    <textarea id="filterWhere_${layer.layerId}" class="input-ctrl"
+                        placeholder="e.g. status = 'ASSG' AND count > 5"
+                        style="min-height:44px;font-family:monospace;font-size:10px;resize:vertical;"></textarea>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                        <button class="testFilterBtn btn btn-info" data-layer-id="${layer.layerId}" style="font-size:10px;padding:3px 8px;">Test</button>
+                        <span class="filterTestResult" style="font-size:10px;"></span>
+                    </div>
+                </div>`;
+
+            filterDiv.querySelector(`#enableFilter_${layer.layerId}`).onchange = (e) => {
+                filterDiv.querySelector(`#filterInputs_${layer.layerId}`).style.display = e.target.checked ? 'block' : 'none';
             };
-            
+            filterDiv.querySelector('.testFilterBtn').onclick = async () => {
+                const tr = filterDiv.querySelector('.filterTestResult');
+                const wh = filterDiv.querySelector(`#filterWhere_${layer.layerId}`).value.trim().replace(/\\"/g,'"').replace(/\\'/g,"'");
+                if (!wh) { tr.textContent='Enter a WHERE clause first'; tr.style.color='#f38ba8'; return; }
+                tr.textContent='Testing…'; tr.style.color='#a6adc8';
+                try {
+                    const d = selectedFeaturesByLayer.get(layer.layerId);
+                    const q = { where:wh, returnCountOnly:true, returnGeometry:false };
+                    if (selectionGraphic?.geometry) { q.geometry=selectionGraphic.geometry; q.spatialRelationship='intersects'; }
+                    const res = await layer.queryFeatures(q);
+                    tr.textContent=`✓ ${res.count} / ${d?.features.length||'?'} match`;
+                    tr.style.color='#a6e3a1';
+                } catch(err) { tr.textContent='✗ '+err.message; tr.style.color='#f38ba8'; }
+            };
+
+            // Order control
             const orderDiv = document.createElement('div');
-            orderDiv.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #dee2e6;';
-            orderDiv.innerHTML = `
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="font-weight:bold;">Processing Order:</span>
-                    <input type="number" min="1" value="${order}" style="width:50px;padding:2px;" class="orderInput">
-                    <button class="moveUp" style="padding:2px 6px;">↑</button>
-                    <button class="moveDown" style="padding:2px 6px;">↓</button>
-                </div>
-            `;
-            
-            body.appendChild(modeDiv);
-            body.appendChild(fieldsDiv);
-            body.appendChild(optionsDiv);
+            orderDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:8px;display:flex;align-items:center;gap:8px;';
+            orderDiv.innerHTML=`<span style="font-size:11px;color:#a6adc8;">Order:</span>
+                <input type="number" min="1" value="${order}" class="orderInput input-ctrl" style="width:50px;">
+                <button class="moveUp   btn btn-secondary" style="padding:3px 8px;">↑</button>
+                <button class="moveDown btn btn-secondary" style="padding:3px 8px;">↓</button>`;
+
+            body.appendChild(modeRow);
+            body.appendChild(fieldsSection);
+            body.appendChild(optDiv);
             body.appendChild(filterDiv);
             body.appendChild(orderDiv);
-            
-            section.appendChild(header);
-            section.appendChild(body);
-            
-            header.onclick = (e) => {
-                if (e.target !== checkbox) {
-                    const isExpanded = body.style.display === 'block';
-                    body.style.display = isExpanded ? 'none' : 'block';
-                    expandIcon.textContent = isExpanded ? '▼' : '▲';
-                }
-            };
-            
-            checkbox.onchange = () => {
-                if (checkbox.checked) {
-                    body.style.display = 'block';
-                    expandIcon.textContent = '▲';
-                }
-            };
-            
-            const modeRadios = modeDiv.querySelectorAll('input[type="radio"]');
-            modeRadios.forEach(radio => {
-                radio.onchange = () => {
-                    fieldsDiv.style.display = radio.value === 'edit' ? 'block' : 'none';
-                };
+
+            // Mode toggle hides fields section
+            modeRow.querySelectorAll('input[type=radio]').forEach(r => {
+                r.onchange = () => { fieldsSection.style.display = r.value==='edit' ? 'block':'none'; };
             });
-            
-            return section;
+
+            // Collapse toggle
+            header.addEventListener('click', (e) => {
+                if (e.target.closest('label.toggle-wrap')) return;
+                const open = body.style.display === 'block';
+                body.style.display = open ? 'none' : 'block';
+                chevron.textContent = open ? '▼' : '▲';
+            });
+            toggleInput.onchange = () => {
+                card.classList.toggle('enabled', toggleInput.checked);
+                if (toggleInput.checked) { body.style.display='block'; chevron.textContent='▲'; }
+            };
+
+            card.appendChild(header);
+            card.appendChild(body);
+            return card;
         }
-        
+
         function getFieldTypeLabel(field) {
-            if (field.domain && field.domain.type === 'coded-value') {
-                return 'Dropdown';
-            }
-            switch(field.type) {
-                case 'integer':
-                case 'small-integer':
-                    return 'Number';
-                case 'double':
-                case 'single':
-                    return 'Decimal';
-                case 'date':
-                    return 'Date';
-                case 'string':
-                    return 'Text';
-                default:
-                    return field.type;
-            }
+            if (field.domain?.type === 'coded-value') return 'Dropdown';
+            const map = { integer:'Int', 'small-integer':'Int', double:'Decimal', single:'Decimal', date:'Date', string:'Text' };
+            return map[field.type] || field.type;
         }
-        
+
+        // ── Summary / Build ───────────────────────────────────────────────────
         function buildSummary() {
             layerConfigs = [];
-            
-            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
+            const sections = $('#layerConfigContainer').querySelectorAll('[data-layer-id]');
             sections.forEach(section => {
                 const layerId = parseInt(section.dataset.layerId);
                 const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
-                
-                if (checkbox && checkbox.checked) {
-                    const data = selectedFeaturesByLayer.get(layerId);
-                    const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
-                    
-                    const config = {
-                        layerId: layerId,
-                        layer: data.layer,
-                        features: data.features,
-                        mode: mode,
-                        order: parseInt(section.dataset.order),
-                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
-                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-                        fields: [],
-                        filterEnabled: false,
-                        filterWhere: ''
-                    };
-                    
-                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
-                    if (filterEnabled && filterEnabled.checked) {
-                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
-                        if (filterWhere) {
-                            config.filterEnabled = true;
-                            config.filterWhere = filterWhere;
-                        }
-                    }
-                    
-                    if (mode === 'edit') {
-                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
-                        fieldChecks.forEach(check => {
-                            const fieldName = check.dataset.fieldName;
-                            const field = data.layer.fields.find(f => f.name === fieldName);
-                            if (field) {
-                                config.fields.push(field);
-                            }
-                        });
-                    }
-                    
-                    layerConfigs.push(config);
+                if (!checkbox?.checked) return;
+                const data = selectedFeaturesByLayer.get(layerId);
+                const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`)?.value || 'edit';
+                const config = {
+                    layerId, layer:data.layer, features:data.features, mode,
+                    order: parseInt(section.dataset.order || 1),
+                    showPopup: section.querySelector(`#popup_${layerId}`)?.checked ?? true,
+                    allowSkip: section.querySelector(`#allowskip_${layerId}`)?.checked ?? true,
+                    fields: [],
+                    filterEnabled:false, filterWhere:''
+                };
+                const filterEn = section.querySelector(`#enableFilter_${layerId}`);
+                if (filterEn?.checked) {
+                    const fw = section.querySelector(`#filterWhere_${layerId}`)?.value.trim();
+                    if (fw) { config.filterEnabled=true; config.filterWhere=fw; }
                 }
+                if (mode==='edit') {
+                    // Use getCheckedFields helper if available, else fallback
+                    const fieldsDiv = section.querySelector(`#fields_${layerId}`);
+                    const names = fieldsDiv?.getCheckedFields
+                        ? fieldsDiv.getCheckedFields()
+                        : Array.from(section.querySelectorAll(`#fields_${layerId} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);
+                    names.forEach(name => {
+                        const field = data.layer.fields.find(f=>f.name===name);
+                        if (field) config.fields.push(field);
+                    });
+                    // Sort fields alphabetically for the edit form
+                    config.fields.sort((a,b)=>(a.alias||a.name).localeCompare(b.alias||b.name));
+                }
+                layerConfigs.push(config);
             });
-            
-            layerConfigs.sort((a, b) => a.order - b.order);
-            
+            layerConfigs.sort((a,b)=>a.order-b.order);
             applyFiltersToConfigs().then(() => {
-                displaySummary();
+                if ($('#skipSummaryChk')?.checked) {
+                    startEditing();
+                } else {
+                    displaySummary();
+                }
             });
         }
-        
+
         async function applyFiltersToConfigs() {
-            for (let config of layerConfigs) {
-                if (config.filterEnabled && config.filterWhere) {
-                    try {
-                        const cleanWhere = config.filterWhere.replace(/\\"/g, '"').replace(/\\'/g, "'");
-                        
-                        const queryParams = {
-                            where: cleanWhere,
-                            returnGeometry: true,
-                            outFields: ['*']
-                        };
-                        
-                        if (selectionGraphic && selectionGraphic.geometry) {
-                            queryParams.geometry = selectionGraphic.geometry;
-                            queryParams.spatialRelationship = 'intersects';
-                        }
-                        
-                        const filteredResult = await config.layer.queryFeatures(queryParams);
-                        
-                        config.features = filteredResult.features;
-                        config.filterApplied = true;
-                        
-                    } catch (error) {
-                        config.filterError = error.message;
-                        config.filterApplied = false;
-                    }
-                } else {
-                    config.filterApplied = false;
-                }
+            for (const config of layerConfigs) {
+                if (!config.filterEnabled || !config.filterWhere) { config.filterApplied=false; continue; }
+                try {
+                    const clean = config.filterWhere.replace(/\\"/g,'"').replace(/\\'/g,"'");
+                    const qp = { where:clean, returnGeometry:true, outFields:['*'] };
+                    if (selectionGraphic?.geometry) { qp.geometry=selectionGraphic.geometry; qp.spatialRelationship='intersects'; }
+                    const res = await config.layer.queryFeatures(qp);
+                    config.features=res.features; config.filterApplied=true;
+                } catch(err) { config.filterError=err.message; config.filterApplied=false; }
             }
         }
-        
+
         function displaySummary() {
-            let html = '';
-            if (layerConfigs.length === 0) {
-                html = '<em style="color:#dc3545;">No layers selected. Please select at least one layer to process.</em>';
-                $("#startEditingBtn").disabled = true;
+            if (!layerConfigs.length) {
+                $('#summaryContent').innerHTML='<span style="color:#f38ba8;">No layers selected.</span>';
+                $('#startEditingBtn').disabled=true;
             } else {
-                $("#startEditingBtn").disabled = false;
-                
-                let totalFeatures = 0;
-                layerConfigs.forEach((config, idx) => {
-                    totalFeatures += config.features.length;
-                    
-                    html += `<div style="margin-bottom:8px;padding:6px;background:#fff;border:1px solid #dee2e6;border-radius:2px;">`;
-                    html += `<strong>${idx + 1}. ${config.mode === 'edit' ? 'Edit' : 'View'} ${config.layer.title}</strong><br>`;
-                    html += `<span style="font-size:11px;color:#666;">${config.features.length} features</span>`;
-                    
-                    if (config.filterEnabled && config.filterApplied) {
-                        html += ` <span style="font-size:10px;color:#17a2b8;">✓ Filtered</span>`;
-                    } else if (config.filterEnabled && config.filterError) {
-                        html += ` <span style="font-size:10px;color:#dc3545;">✗ Filter error: ${config.filterError}</span>`;
-                    }
-                    
-                    html += '<br>';
-                    
-                    if (config.mode === 'edit' && config.fields.length > 0) {
-                        html += `<span style="font-size:11px;">Fields: ${config.fields.map(f => f.alias || f.name).join(', ')}</span>`;
-                    } else if (config.mode === 'view') {
-                        html += `<span style="font-size:11px;">View only</span>`;
-                    }
-                    
-                    if (config.filterEnabled && config.filterWhere) {
-                        html += `<div style="font-size:10px;color:#666;margin-top:2px;font-family:monospace;background:#f8f9fa;padding:2px 4px;border-radius:2px;">WHERE: ${config.filterWhere}</div>`;
-                    }
-                    
-                    html += `</div>`;
+                $('#startEditingBtn').disabled=false;
+                let total=0, html='';
+                layerConfigs.forEach((c,i)=>{
+                    total+=c.features.length;
+                    html+=`<div style="padding:6px 0;border-bottom:1px solid #313244;">
+                        <div style="font-weight:700;font-size:12px;">${i+1}. ${c.mode==='edit'?'✏️':'👁'} ${c.layer.title}</div>
+                        <div style="font-size:11px;color:#a6adc8;">${c.features.length} features
+                            ${c.filterApplied?'<span style="color:#89b4fa;">· filtered</span>':''}
+                        </div>
+                        ${c.fields.length?`<div style="font-size:10px;color:#6c7086;margin-top:2px;">Fields: ${c.fields.map(f=>f.alias||f.name).join(', ')}</div>`:''}
+                    </div>`;
                 });
-                
-                html = `<div style="margin-bottom:12px;padding:6px;background:#d4edda;border:1px solid #c3e6cb;border-radius:2px;font-weight:bold;">
-                    Total: ${totalFeatures} features to process
-                </div>` + html;
+                $('#summaryContent').innerHTML=`<div style="font-size:13px;font-weight:700;color:#a6e3a1;margin-bottom:8px;">${total} features total</div>`+html;
             }
-            
-            $("#summaryContent").innerHTML = html;
             setPhase('summary');
-            updateStatus("Review your configuration before starting.");
+            updateStatus('Review your configuration before starting.');
         }
-        
+
+        // ── Editing ───────────────────────────────────────────────────────────
         function startEditing() {
-            const bulkEditEnabled = $("#bulkEditMode").checked;
+            const bulkEditEnabled = $('#bulkEditMode')?.checked;
             sessionStartTime = new Date();
             editLog = [];
-            
-            // Save the currently selected config as last used (if one is selected)
+            lastSubmittedValues = null;
             try {
-                const select = $("#savedConfigSelect");
-                if (select.value) {
-                    localStorage.setItem('pathEditorLastConfig', select.value);
-                }
-            } catch (e) {
-                console.warn('Could not save last used config:', e);
-            }
-            
-            if (bulkEditEnabled) {
-                startBulkEdit();
-                return;
-            }
-            
+                const sel = $('#savedConfigSelect');
+                if (sel?.value) localStorage.setItem('pathEditorLastConfig', sel.value);
+            } catch(e){}
+
+            if (bulkEditEnabled) { startBulkEdit(); return; }
+
             currentEditingQueue = [];
-            
             layerConfigs.forEach(config => {
                 config.features.forEach(feature => {
-                    currentEditingQueue.push({
-                        layer: config.layer,
-                        feature: feature,
-                        fields: config.fields,
-                        mode: config.mode,
-                        showPopup: config.showPopup,
-                        allowSkip: config.allowSkip
-                    });
+                    currentEditingQueue.push({ layer:config.layer, feature, fields:config.fields, mode:config.mode, showPopup:config.showPopup, allowSkip:config.allowSkip });
                 });
             });
-            
             currentIndex = 0;
             setPhase('editing');
             showCurrentFeature();
         }
-        
-        let currentBulkLayerIndex = 0;
-        
-        function startBulkEdit() {
-            currentBulkLayerIndex = 0;
-            setPhase('bulkEdit');
-            showBulkEditForm();
-        }
-        
-        function showBulkEditForm() {
-            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
-            
-            if (editLayers.length === 0) {
-                alert('No layers configured for editing. Please configure at least one layer with fields to edit.');
-                setPhase('summary');
-                return;
-            }
-            
-            if (currentBulkLayerIndex >= editLayers.length) {
-                setPhase('complete');
-                updateStatus('All bulk edits applied successfully!');
-                return;
-            }
-            
-            const config = editLayers[currentBulkLayerIndex];
-            
-            const selectorHTML = `
-                <div style="padding:8px;background:#f8f9fa;border:1px solid #dee2e6;border-radius:3px;">
-                    <strong>Layer ${currentBulkLayerIndex + 1} of ${editLayers.length}:</strong> ${config.layer.title}<br>
-                    <span style="font-size:11px;color:#666;">Features to update: ${config.features.length}</span>
-                </div>
-            `;
-            $("#bulkEditLayerSelector").innerHTML = selectorHTML;
-            
-            const formContainer = $("#bulkEditFormContainer");
-            formContainer.innerHTML = '<div style="font-weight:bold;margin-bottom:8px;">Set values to apply to all features:</div>';
-            
-            config.fields.forEach(field => {
-                const input = createFieldInput(field, null);
-                formContainer.appendChild(input);
-            });
-            
-            $("#applyBulkEditBtn").textContent = `Apply to ${config.features.length} Features`;
-            $("#bulkEditResults").innerHTML = '';
-            $("#bulkEditPreview").style.display = 'none';
-            
-            updateStatus(`Bulk editing ${config.layer.title} - Set values for ${config.features.length} features`);
-        }
-        
-        async function applyBulkEdit() {
-            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
-            const config = editLayers[currentBulkLayerIndex];
-            
-            const bulkValues = {};
-            let hasValues = false;
-            
-            const formContainer = $("#bulkEditFormContainer");
-            
-            formContainer.querySelectorAll('[data-field-name]').forEach(element => {
-                const fieldName = element.dataset.fieldName;
-                const fieldType = element.dataset.fieldType;
-                
-                let value;
-                if (element.dataset.selectedCode !== undefined) {
-                    value = element.dataset.selectedCode;
-                } else {
-                    value = element.value;
-                }
-                
-                if (value !== '') {
-                    hasValues = true;
-                    
-                    if (fieldType === 'integer' || fieldType === 'small-integer') {
-                        bulkValues[fieldName] = parseInt(value);
-                    } else if (fieldType === 'double' || fieldType === 'single') {
-                        bulkValues[fieldName] = parseFloat(value);
-                    } else if (fieldType === 'date') {
-                        bulkValues[fieldName] = new Date(value).getTime();
-                    } else {
-                        bulkValues[fieldName] = value;
-                    }
-                }
-            });
-            
-            if (!hasValues) {
-                alert('Please enter at least one value to apply.');
-                return;
-            }
-            
-            const fieldNames = Object.keys(bulkValues).join(', ');
-            if (!confirm(`Apply these values to ${config.features.length} features?\n\nFields: ${fieldNames}`)) {
-                return;
-            }
-            
-            updateStatus('Applying bulk edit...');
-            $("#applyBulkEditBtn").disabled = true;
-            
-            try {
-                const updateFeatures = config.features.map(feature => {
-                    const oidField = getObjectIdField(feature);
-                    const oid = feature.attributes[oidField];
-                    
-                    return {
-                        attributes: {
-                            [oidField]: oid,
-                            ...bulkValues
-                        }
-                    };
-                });
-                
-                const batchSize = 100;
-                let successCount = 0;
-                let errorCount = 0;
-                const errors = [];
-                
-                for (let i = 0; i < updateFeatures.length; i += batchSize) {
-                    const batch = updateFeatures.slice(i, i + batchSize);
-                    
-                    const result = await config.layer.applyEdits({
-                        updateFeatures: batch
-                    });
-                    
-                    if (result.updateFeatureResults) {
-                        result.updateFeatureResults.forEach((res, idx) => {
-                            const isSuccess = res.success === true || 
-                                            (res.success === undefined && 
-                                             res.error === null && 
-                                             (res.objectId || res.globalId));
-                            
-                            const featureOID = batch[idx].attributes[getObjectIdField(config.features[0])];
-                            
-                            if (isSuccess) {
-                                successCount++;
-                                
-                                const logEntry = {
-                                    timestamp: new Date(),
-                                    action: 'bulk_update',
-                                    layerName: config.layer.title,
-                                    featureOID: featureOID,
-                                    changes: {},
-                                    success: true
-                                };
-                                
-                                Object.keys(bulkValues).forEach(fieldName => {
-                                    const field = config.fields.find(f => f.name === fieldName);
-                                    logEntry.changes[fieldName] = {
-                                        fieldAlias: field ? (field.alias || field.name) : fieldName,
-                                        newValue: bulkValues[fieldName]
-                                    };
-                                });
-                                
-                                editLog.push(logEntry);
-                            } else {
-                                errorCount++;
-                                errors.push(`Feature ${featureOID}: ${res.error?.message || 'Unknown error'}`);
-                                
-                                editLog.push({
-                                    timestamp: new Date(),
-                                    action: 'bulk_update',
-                                    layerName: config.layer.title,
-                                    featureOID: featureOID,
-                                    success: false,
-                                    error: res.error?.message || 'Unknown error'
-                                });
-                            }
-                        });
-                    }
-                    
-                    updateStatus(`Processed ${Math.min(i + batchSize, updateFeatures.length)} of ${updateFeatures.length}...`);
-                }
-                
-                let resultsHTML = `
-                    <div style="padding:8px;background:#d4edda;border:1px solid #c3e6cb;border-radius:3px;margin-bottom:8px;">
-                        <strong>✓ Bulk Edit Complete</strong><br>
-                        Successfully updated: ${successCount}<br>
-                        ${errorCount > 0 ? `Failed: ${errorCount}<br>` : ''}
-                    </div>
-                `;
-                
-                if (errors.length > 0) {
-                    resultsHTML += `
-                        <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;max-height:150px;overflow-y:auto;">
-                            <strong>Errors:</strong><br>
-                            <div style="font-size:10px;">${errors.slice(0, 10).join('<br>')}</div>
-                            ${errors.length > 10 ? `<div style="font-size:10px;color:#666;">...and ${errors.length - 10} more</div>` : ''}
-                        </div>
-                    `;
-                }
-                
-                $("#bulkEditResults").innerHTML = resultsHTML;
-                
-                if (currentBulkLayerIndex < editLayers.length - 1) {
-                    updateStatus('Bulk edit applied. Moving to next layer...');
-                    setTimeout(() => {
-                        currentBulkLayerIndex++;
-                        showBulkEditForm();
-                    }, 2000);
-                } else {
-                    updateStatus('All bulk edits complete!');
-                    setTimeout(() => {
-                        setPhase('complete');
-                    }, 2000);
-                }
-                
-            } catch (error) {
-                $("#bulkEditResults").innerHTML = `
-                    <div style="padding:8px;background:#f8d7da;border:1px solid #f5c6cb;border-radius:3px;">
-                        <strong>Error:</strong> ${error.message}
-                    </div>
-                `;
-                updateStatus('Error applying bulk edit: ' + error.message);
-            } finally {
-                $("#applyBulkEditBtn").disabled = false;
-            }
-        }
-        
+
         function showCurrentFeature() {
             if (currentIndex >= currentEditingQueue.length) {
-                setPhase('complete');
-                clearHighlights();
-                displayEditSummary();
-                updateStatus("All features processed!");
+                setPhase('complete'); clearHighlights(); displayEditSummary();
+                updateStatus('All features processed!');
                 return;
             }
-            
             const item = currentEditingQueue[currentIndex];
-            
-            $("#editingProgress").innerHTML = `
-                <strong>Progress:</strong> ${currentIndex + 1} of ${currentEditingQueue.length}<br>
-                <strong>Layer:</strong> ${item.layer.title}
-            `;
-            
+            const pct = Math.round((currentIndex / currentEditingQueue.length) * 100);
+            $('#editingProgress').innerHTML=`
+                <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span><strong>${currentIndex+1}</strong> / ${currentEditingQueue.length}</span>
+                    <span style="color:#a6adc8;font-size:11px;">${item.layer.title}</span>
+                </div>
+                <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`;
+
             const oidField = getObjectIdField(item.feature);
             const oid = item.feature.attributes[oidField];
-            
-            $("#featureInfo").innerHTML = `
-                <strong>Current Feature:</strong><br>
-                Object ID: ${oid}<br>
-                Mode: ${item.mode === 'edit' ? 'Editing' : 'View Only'}
-            `;
-            
-            const formContainer = $("#editFormContainer");
-            formContainer.innerHTML = '';
-            
-            if (item.mode === 'edit' && item.fields.length > 0) {
-                item.fields.forEach(field => {
-                    const input = createFieldInput(field, item.feature.attributes[field.name]);
-                    formContainer.appendChild(input);
-                });
-            } else {
-                formContainer.innerHTML = '<div style="color:#666;font-style:italic;">View only - no fields to edit</div>';
-            }
-            
-            $("#prevBtn").disabled = currentIndex === 0;
-            $("#skipBtn").style.display = item.allowSkip ? 'block' : 'none';
+            $('#featureInfo').innerHTML=`<strong>OID:</strong> ${oid} &nbsp;|&nbsp; <strong>Mode:</strong> ${item.mode==='edit'?'Editing':'View Only'}`;
 
-            // Clear any leftover files from the previous feature
-            filesToUpload = [];
-            updateFileList();
-            
-            highlightFeature(item.feature, item.showPopup);
-            
-            updateStatus(`${item.mode === 'edit' ? 'Editing' : 'Viewing'} feature ${currentIndex + 1} of ${currentEditingQueue.length}`);
-        }
-        
-        function getObjectIdField(feature) {
-            if (feature.attributes.objectid !== undefined) return 'objectid';
-            if (feature.attributes.OBJECTID !== undefined) return 'OBJECTID';
-            if (feature.layer && feature.layer.objectIdField) return feature.layer.objectIdField;
-            
-            const attrs = Object.keys(feature.attributes);
-            const oidKey = attrs.find(k => k.toUpperCase() === 'OBJECTID');
-            return oidKey || 'objectid';
-        }
-        
-        function createFieldInput(field, currentValue) {
-            const container = document.createElement('div');
-            container.style.marginBottom = '8px';
-            
-            const label = document.createElement('label');
-            label.textContent = field.alias || field.name;
-            label.style.display = 'block';
-            label.style.fontWeight = 'bold';
-            label.style.marginBottom = '4px';
-            
-            let input;
-            
-            if (field.domain && field.domain.type === 'coded-value') {
-                const dropdownContainer = document.createElement('div');
-                dropdownContainer.style.position = 'relative';
-                
-                const searchInput = document.createElement('input');
-                searchInput.type = 'text';
-                searchInput.placeholder = 'Search or select...';
-                searchInput.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
-                searchInput.dataset.fieldName = field.name;
-                searchInput.dataset.fieldType = field.type;
-                
-                const dropdownList = document.createElement('div');
-                dropdownList.style.cssText = `
-                    position:absolute;
-                    top:100%;
-                    left:0;
-                    right:0;
-                    max-height:200px;
-                    overflow-y:auto;
-                    background:#fff;
-                    border:1px solid #ccc;
-                    border-top:none;
-                    display:none;
-                    z-index:1000;
-                    box-shadow:0 2px 4px rgba(0,0,0,0.2);
-                `;
-                
-                const options = field.domain.codedValues.map(cv => ({
-                    code: cv.code,
-                    name: cv.name
-                }));
-                
-                options.unshift({ code: '', name: '-- Select --' });
-                
-                function renderOptions(filterText = '') {
-                    dropdownList.innerHTML = '';
-                    const filter = filterText.toLowerCase();
-                    
-                    const filtered = options.filter(opt => 
-                        opt.name.toLowerCase().includes(filter) || 
-                        String(opt.code).toLowerCase().includes(filter)
-                    );
-                    
-                    if (filtered.length === 0) {
-                        const noResults = document.createElement('div');
-                        noResults.style.padding = '8px';
-                        noResults.style.color = '#999';
-                        noResults.textContent = 'No matches found';
-                        dropdownList.appendChild(noResults);
-                    } else {
-                        filtered.forEach(opt => {
-                            const optDiv = document.createElement('div');
-                            optDiv.style.cssText = 'padding:6px 8px;cursor:pointer;';
-                            optDiv.textContent = opt.name;
-                            optDiv.dataset.code = opt.code;
-                            
-                            optDiv.onmouseenter = () => {
-                                optDiv.style.background = '#e3f2fd';
-                            };
-                            optDiv.onmouseleave = () => {
-                                optDiv.style.background = '#fff';
-                            };
-                            
-                            optDiv.onclick = () => {
-                                searchInput.value = opt.name;
-                                searchInput.dataset.selectedCode = opt.code;
-                                dropdownList.style.display = 'none';
-                            };
-                            
-                            dropdownList.appendChild(optDiv);
-                        });
-                    }
-                }
-                
-                searchInput.onfocus = () => {
-                    renderOptions(searchInput.value);
-                    dropdownList.style.display = 'block';
-                };
-                
-                searchInput.oninput = () => {
-                    renderOptions(searchInput.value);
-                    dropdownList.style.display = 'block';
-                    searchInput.dataset.selectedCode = '';
-                };
-                
-                searchInput.onblur = () => {
-                    setTimeout(() => {
-                        dropdownList.style.display = 'none';
-                    }, 200);
-                };
-                
-                if (currentValue !== null && currentValue !== undefined) {
-                    const matchingOption = options.find(opt => opt.code === currentValue);
-                    if (matchingOption) {
-                        searchInput.value = matchingOption.name;
-                        searchInput.dataset.selectedCode = matchingOption.code;
-                    }
-                }
-                
-                searchInput.getValue = () => searchInput.dataset.selectedCode || '';
-                
-                dropdownContainer.appendChild(searchInput);
-                dropdownContainer.appendChild(dropdownList);
-                input = dropdownContainer;
-                
-            } else if (field.type === 'date') {
-                input = document.createElement('input');
-                input.type = 'date';
-                if (currentValue) {
-                    input.value = new Date(currentValue).toISOString().split('T')[0];
-                }
-                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
-                input.dataset.fieldName = field.name;
-                input.dataset.fieldType = field.type;
-                
-            } else if (field.type === 'integer' || field.type === 'small-integer') {
-                input = document.createElement('input');
-                input.type = 'number';
-                input.step = '1';
-                input.value = currentValue ?? '';
-                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
-                input.dataset.fieldName = field.name;
-                input.dataset.fieldType = field.type;
-                
-            } else if (field.type === 'double' || field.type === 'single') {
-                input = document.createElement('input');
-                input.type = 'number';
-                input.step = 'any';
-                input.value = currentValue ?? '';
-                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
-                input.dataset.fieldName = field.name;
-                input.dataset.fieldType = field.type;
-                
+            const fc = $('#editFormContainer');
+            fc.innerHTML='';
+            if (item.mode==='edit' && item.fields.length>0) {
+                item.fields.forEach(field => fc.appendChild(createFieldInput(field, item.feature.attributes[field.name])));
             } else {
-                input = document.createElement('input');
-                input.type = 'text';
-                input.value = currentValue ?? '';
-                if (field.length) input.maxLength = field.length;
-                input.style.cssText = 'width:100%;padding:4px;border:1px solid #ccc;border-radius:2px;';
-                input.dataset.fieldName = field.name;
-                input.dataset.fieldType = field.type;
+                fc.innerHTML='<div style="color:#6c7086;font-style:italic;font-size:12px;">View only — no fields to edit.</div>';
             }
-            
-            if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
-                const hint = document.createElement('div');
-                hint.style.fontSize = '10px';
-                hint.style.color = '#666';
-                hint.style.marginBottom = '2px';
-                hint.textContent = `Current: ${currentValue}`;
-                container.appendChild(hint);
+
+            $('#prevBtn').disabled = currentIndex===0;
+            $('#skipBtn').style.display = item.allowSkip ? 'block':'none';
+
+            // Apply Previous button
+            const prevRow = $('#applyPrevRow');
+            if (lastSubmittedValues && item.mode==='edit' && item.fields.length>0) {
+                prevRow.style.display='block';
+            } else {
+                prevRow.style.display='none';
             }
-            
-            container.appendChild(label);
-            container.appendChild(input);
-            
-            return container;
+
+            filesToUpload=[]; updateFileList();
+            highlightFeature(item.feature, item.showPopup);
+            updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
         }
-        
-        function highlightFeature(feature, showPopup) {
-            clearHighlights();
-            
-            let symbol;
-            if (feature.geometry.type === "point") {
-                symbol = {
-                    type: "simple-marker",
-                    color: [255, 255, 0, 0.8],
-                    size: 20,
-                    outline: { color: [255, 255, 255, 1], width: 4 }
-                };
-            } else if (feature.geometry.type === "polyline") {
-                symbol = {
-                    type: "simple-line",
-                    color: [255, 255, 0, 0.8],
-                    width: 8,
-                    style: "solid"
-                };
-            } else if (feature.geometry.type === "polygon") {
-                symbol = {
-                    type: "simple-fill",
-                    color: [255, 255, 0, 0.5],
-                    outline: { color: [255, 255, 255, 1], width: 4 }
-                };
-            }
-            
-            const graphic = {
-                geometry: feature.geometry,
-                symbol: symbol
-            };
-            
-            mapView.graphics.add(graphic);
-            highlightGraphics.push(graphic);
-            
-            mapView.goTo({
-                target: feature.geometry,
-                scale: Math.min(mapView.scale, 2000)
-            }, {duration: 800}).then(() => {
-                if (showPopup && mapView.popup) {
-                    showFeaturePopup(feature);
-                }
-            }).catch(() => {
-                if (showPopup && mapView.popup) {
-                    showFeaturePopup(feature);
-                }
-            });
-        }
-        
-        async function showFeaturePopup(feature) {
-            try {
-                const oidField = getObjectIdField(feature);
-                const oid = feature.attributes[oidField];
-                
-                const queryResult = await feature.layer.queryFeatures({
-                    where: `${oidField} = ${oid}`,
-                    outFields: ['*'],
-                    returnGeometry: true
-                });
-                
-                if (queryResult.features.length > 0) {
-                    mapView.popup.open({
-                        features: queryResult.features,
-                        location: getPopupLocation(feature.geometry)
-                    });
-                }
-            } catch (error) {
-                mapView.popup.open({
-                    features: [{
-                        geometry: feature.geometry,
-                        attributes: feature.attributes
-                    }],
-                    location: getPopupLocation(feature.geometry)
-                });
-            }
-        }
-        
-        function getPopupLocation(geometry) {
-            try {
-                if (geometry.type === "point") {
-                    return geometry;
-                } else if (geometry.type === "polyline") {
-                    if (geometry.paths && geometry.paths[0] && geometry.paths[0].length > 0) {
-                        const path = geometry.paths[0];
-                        const midIndex = Math.floor(path.length / 2);
-                        return {
-                            type: "point",
-                            x: path[midIndex][0],
-                            y: path[midIndex][1],
-                            spatialReference: geometry.spatialReference
-                        };
-                    }
-                } else if (geometry.type === "polygon") {
-                    if (geometry.centroid) {
-                        return geometry.centroid;
-                    } else if (geometry.rings && geometry.rings[0] && geometry.rings[0].length > 0) {
-                        const ring = geometry.rings[0];
-                        let sumX = 0, sumY = 0;
-                        for (let i = 0; i < ring.length - 1; i++) {
-                            sumX += ring[i][0];
-                            sumY += ring[i][1];
-                        }
-                        return {
-                            type: "point",
-                            x: sumX / (ring.length - 1),
-                            y: sumY / (ring.length - 1),
-                            spatialReference: geometry.spatialReference
-                        };
-                    }
-                }
-                
-                if (geometry.extent && geometry.extent.center) {
-                    return geometry.extent.center;
-                }
-                
-                return geometry;
-            } catch (error) {
-                return geometry;
-            }
-        }
-        
-        async function submitFeature() {
-            const item = currentEditingQueue[currentIndex];
-            
-            if (item.mode === 'view') {
-                currentIndex++;
-                showCurrentFeature();
-                return;
-            }
-            
-            try {
-                updateStatus("Updating feature...");
-                
-                const oidField = getObjectIdField(item.feature);
-                const oid = item.feature.attributes[oidField];
-                
-                const updateAttributes = {
-                    [oidField]: oid
-                };
-                
-                const formContainer = $("#editFormContainer");
-                
-                formContainer.querySelectorAll('[data-field-name]').forEach(element => {
-                    const fieldName = element.dataset.fieldName;
-                    const fieldType = element.dataset.fieldType;
-                    
-                    let value;
-                    if (element.dataset.selectedCode !== undefined) {
-                        value = element.dataset.selectedCode;
-                    } else {
-                        value = element.value;
-                    }
-                    
-                    if (value !== '') {
-                        if (fieldType === 'integer' || fieldType === 'small-integer') {
-                            updateAttributes[fieldName] = parseInt(value);
-                        } else if (fieldType === 'double' || fieldType === 'single') {
-                            updateAttributes[fieldName] = parseFloat(value);
-                        } else if (fieldType === 'date') {
-                            updateAttributes[fieldName] = new Date(value).getTime();
-                        } else {
-                            updateAttributes[fieldName] = value;
-                        }
-                    }
-                });
-                
-                const updateFeature = {
-                    attributes: updateAttributes
-                };
-                
-                const result = await item.layer.applyEdits({
-                    updateFeatures: [updateFeature]
-                });
-                
-                if (result.updateFeatureResults && result.updateFeatureResults.length > 0) {
-                    const updateResult = result.updateFeatureResults[0];
-                    
-                    const isSuccess = updateResult.success === true || 
-                                    (updateResult.success === undefined && 
-                                     updateResult.error === null && 
-                                     (updateResult.objectId || updateResult.globalId));
-                    
-                    if (isSuccess) {
-                        const logEntry = {
-                            timestamp: new Date(),
-                            action: 'update',
-                            layerName: item.layer.title,
-                            featureOID: oid,
-                            changes: {},
-                            success: true
-                        };
-                        
-                        Object.keys(updateAttributes).forEach(key => {
-                            if (key !== oidField) {
-                                const field = item.fields.find(f => f.name === key);
-                                logEntry.changes[key] = {
-                                    fieldAlias: field ? (field.alias || field.name) : key,
-                                    oldValue: item.feature.attributes[key],
-                                    newValue: updateAttributes[key]
-                                };
-                            }
-                        });
-                        
-                        editLog.push(logEntry);
-                        
-                        updateStatus("Feature updated successfully!");
-                        currentIndex++;
-                        setTimeout(() => showCurrentFeature(), 500);
-                    } else {
-                        let errorMessage = "Unknown error";
-                        if (updateResult.error && updateResult.error.message) {
-                            errorMessage = updateResult.error.message;
-                        }
-                        throw new Error(`Update failed: ${errorMessage}`);
+
+        function applyPreviousValues() {
+            if (!lastSubmittedValues) return;
+            const fc = $('#editFormContainer');
+            fc.querySelectorAll('[data-field-name]').forEach(el => {
+                const name = el.dataset.fieldName;
+                if (!(name in lastSubmittedValues)) return;
+                const val = lastSubmittedValues[name];
+                if (el.classList.contains('domain-btn')) {
+                    // domain button
+                    const wrap = el.closest('[data-domain-wrap]') || el.parentElement;
+                    const item = currentEditingQueue[currentIndex];
+                    const field = item.fields.find(f=>f.name===name);
+                    if (field?.domain?.codedValues) {
+                        const opt = field.domain.codedValues.find(cv=>cv.code==val);
+                        el.querySelector('.domain-display-text').textContent = opt ? opt.name : val;
+                        el.dataset.selectedCode = val;
                     }
                 } else {
-                    throw new Error('No update results returned from server');
+                    el.value = val;
                 }
-                
-            } catch (error) {
-                updateStatus("Error updating feature: " + error.message);
-                alert("Error updating feature: " + error.message);
-            }
+            });
+            updateStatus('Previous values applied.');
         }
-        
+
+        function collectFormValues(fc) {
+            const vals = {};
+            fc.querySelectorAll('[data-field-name]').forEach(el => {
+                const name = el.dataset.fieldName;
+                const type = el.dataset.fieldType;
+                const raw = el.dataset.selectedCode !== undefined ? el.dataset.selectedCode : el.value;
+                if (raw === '') return;
+                if (type==='integer'||type==='small-integer') vals[name]=parseInt(raw);
+                else if (type==='double'||type==='single')    vals[name]=parseFloat(raw);
+                else if (type==='date')                        vals[name]=new Date(raw).getTime();
+                else                                           vals[name]=raw;
+            });
+            return vals;
+        }
+
+        async function submitFeature() {
+            const item = currentEditingQueue[currentIndex];
+            if (item.mode==='view') { currentIndex++; showCurrentFeature(); return; }
+            try {
+                updateStatus('Updating feature…');
+                const oidField = getObjectIdField(item.feature);
+                const oid = item.feature.attributes[oidField];
+                const fc = $('#editFormContainer');
+                const vals = collectFormValues(fc);
+                const updateAttrs = { [oidField]:oid, ...vals };
+                const result = await item.layer.applyEdits({ updateFeatures:[{ attributes:updateAttrs }] });
+                const ur = result.updateFeatureResults?.[0];
+                const ok = ur?.success===true || (ur?.success===undefined && ur?.error===null && (ur?.objectId||ur?.globalId));
+                if (!ok) throw new Error(ur?.error?.message || 'Update failed');
+
+                // Store for "Apply Previous"
+                lastSubmittedValues = { ...vals };
+
+                const log = { timestamp:new Date(), action:'update', layerName:item.layer.title, featureOID:oid, changes:{}, success:true };
+                Object.keys(vals).forEach(k => {
+                    const field = item.fields.find(f=>f.name===k);
+                    log.changes[k] = { fieldAlias: field ? (field.alias||field.name) : k, oldValue:item.feature.attributes[k], newValue:vals[k] };
+                });
+                editLog.push(log);
+                updateStatus('Feature updated!');
+                currentIndex++;
+                setTimeout(()=>showCurrentFeature(), 400);
+            } catch(err) { updateStatus('Error: '+err.message); alert('Error updating feature: '+err.message); }
+        }
+
         function skipFeature() {
             const item = currentEditingQueue[currentIndex];
             const oidField = getObjectIdField(item.feature);
-            const oid = item.feature.attributes[oidField];
-            
-            editLog.push({
-                timestamp: new Date(),
-                action: 'skip',
-                layerName: item.layer.title,
-                featureOID: oid,
-                success: true
-            });
-            
+            editLog.push({ timestamp:new Date(), action:'skip', layerName:item.layer.title, featureOID:item.feature.attributes[oidField], success:true });
             currentIndex++;
             showCurrentFeature();
         }
-        
-        function prevFeature() {
-            if (currentIndex > 0) {
-                currentIndex--;
-                showCurrentFeature();
+        function prevFeature() { if (currentIndex>0) { currentIndex--; showCurrentFeature(); } }
+
+        // ── Field Input Builders ──────────────────────────────────────────────
+        function getObjectIdField(feature) {
+            if (feature.attributes.objectid !== undefined) return 'objectid';
+            if (feature.attributes.OBJECTID !== undefined) return 'OBJECTID';
+            if (feature.layer?.objectIdField) return feature.layer.objectIdField;
+            return Object.keys(feature.attributes).find(k=>k.toUpperCase()==='OBJECTID') || 'objectid';
+        }
+
+        function createFieldInput(field, currentValue) {
+            const container = document.createElement('div');
+            container.style.marginBottom='10px';
+
+            const labelRow = document.createElement('div');
+            labelRow.className='field-label';
+            labelRow.innerHTML=`<span>${field.alias||field.name}</span><span class="fieldBadge">${getFieldTypeLabel(field)}</span>`;
+            container.appendChild(labelRow);
+
+            if (currentValue!==null && currentValue!==undefined && currentValue!=='') {
+                const hint = document.createElement('div');
+                hint.className='current-hint';
+                hint.textContent='Current: '+currentValue;
+                container.appendChild(hint);
             }
-        }
-        
-        function startOver() {
-            currentIndex = 0;
-            currentBulkLayerIndex = 0;
-            layerConfigs = [];
-            currentEditingQueue = [];
-            editLog = [];
-            sessionStartTime = null;
-            
-            clearHighlights();
-            clearSelection();
-            
-            setPhase('selection');
-            updateStatus("Ready to start over. Choose a selection method and select features.");
-        }
-        
-        function saveConfiguration() {
-            const config = {
-                layers: []
-            };
-            
-            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
-            sections.forEach(section => {
-                const layerId = parseInt(section.dataset.layerId);
-                const checkbox = section.querySelector(`#layer_${layerId}_enabled`);
-                
-                if (checkbox && checkbox.checked) {
-                    const data = selectedFeaturesByLayer.get(layerId);
-                    const mode = section.querySelector(`input[name="mode_${layerId}"]:checked`).value;
-                    
-                    const layerConfig = {
-                        layerId: layerId,
-                        layerTitle: data.layer.title,
-                        mode: mode,
-                        order: parseInt(section.dataset.order),
-                        showPopup: section.querySelector(`#popup_${layerId}`).checked,
-                        allowSkip: section.querySelector(`#allowskip_${layerId}`).checked,
-                        fields: [],
-                        filterEnabled: false,
-                        filterWhere: ''
-                    };
-                    
-                    const filterEnabled = section.querySelector(`#enableFilter_${layerId}`);
-                    if (filterEnabled && filterEnabled.checked) {
-                        const filterWhere = section.querySelector(`#filterWhere_${layerId}`).value.trim();
-                        layerConfig.filterEnabled = true;
-                        layerConfig.filterWhere = filterWhere;
-                    }
-                    
-                    if (mode === 'edit') {
-                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]:checked`);
-                        fieldChecks.forEach(check => {
-                            layerConfig.fields.push(check.dataset.fieldName);
+
+            let input;
+
+            if (field.domain?.type==='coded-value') {
+                // ── True dropdown with search ──
+                const wrap = document.createElement('div');
+                wrap.style.position='relative';
+
+                const options = field.domain.codedValues.map(cv=>({code:cv.code, name:cv.name}));
+                let selectedCode = (currentValue!==null && currentValue!==undefined) ? currentValue : '';
+                const currentOpt = options.find(o=>o.code==selectedCode);
+
+                const btn = document.createElement('button');
+                btn.type='button';
+                btn.className='domain-btn';
+                btn.dataset.fieldName=field.name;
+                btn.dataset.fieldType=field.type;
+                btn.dataset.selectedCode=selectedCode;
+
+                const dispText = document.createElement('span');
+                dispText.className='domain-display-text';
+                dispText.textContent = currentOpt ? currentOpt.name : '— Select —';
+                const arrow = document.createElement('span');
+                arrow.textContent='▼'; arrow.style.fontSize='10px';
+                btn.appendChild(dispText);
+                btn.appendChild(arrow);
+
+                const panel = document.createElement('div');
+                panel.className='domain-panel';
+
+                const srch = document.createElement('input');
+                srch.type='text'; srch.placeholder='Search…'; srch.className='domain-search';
+
+                const list = document.createElement('div');
+                list.className='domain-list';
+
+                function renderList(filter='') {
+                    list.innerHTML='';
+                    const f=filter.toLowerCase();
+                    [{ code:'', name:'— Select —' }, ...options]
+                        .filter(o=>!f || o.name.toLowerCase().includes(f) || String(o.code).toLowerCase().includes(f))
+                        .forEach(opt=>{
+                            const it=document.createElement('div');
+                            it.className='domain-item'+(opt.code==selectedCode?' selected':'');
+                            it.textContent=opt.name;
+                            it.onmousedown=(e)=>{
+                                e.preventDefault();
+                                selectedCode=opt.code;
+                                btn.dataset.selectedCode=opt.code;
+                                dispText.textContent=opt.name;
+                                panel.style.display='none';
+                                btn.classList.remove('open');
+                                arrow.textContent='▼';
+                            };
+                            list.appendChild(it);
                         });
-                    }
-                    
-                    config.layers.push(layerConfig);
                 }
-            });
-            
-            if (config.layers.length === 0) {
-                alert('No layers configured. Please configure at least one layer before saving.');
-                return;
+                renderList();
+                panel.appendChild(srch);
+                panel.appendChild(list);
+
+                btn.addEventListener('click', ()=>{
+                    const isOpen=panel.style.display==='block';
+                    // close all other open domain panels
+                    document.querySelectorAll('.domain-panel').forEach(p=>{ p.style.display='none'; });
+                    document.querySelectorAll('.domain-btn').forEach(b=>b.classList.remove('open'));
+                    if (!isOpen) {
+                        panel.style.display='block';
+                        btn.classList.add('open');
+                        arrow.textContent='▲';
+                        srch.value='';
+                        renderList('');
+                        setTimeout(()=>srch.focus(),50);
+                    } else {
+                        arrow.textContent='▼';
+                    }
+                });
+                srch.oninput=()=>renderList(srch.value);
+
+                document.addEventListener('click', e=>{
+                    if (!wrap.contains(e.target)) {
+                        panel.style.display='none';
+                        btn.classList.remove('open');
+                        arrow.textContent='▼';
+                    }
+                }, true);
+
+                wrap.appendChild(btn);
+                wrap.appendChild(panel);
+                input=wrap;
+
+            } else if (field.type==='date') {
+                input=document.createElement('input');
+                input.type='date';
+                if (currentValue) input.value=new Date(currentValue).toISOString().split('T')[0];
+                input.className='input-ctrl';
+                input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
+
+            } else if (field.type==='integer'||field.type==='small-integer') {
+                input=document.createElement('input');
+                input.type='number'; input.step='1'; input.value=currentValue??'';
+                input.className='input-ctrl';
+                input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
+
+            } else if (field.type==='double'||field.type==='single') {
+                input=document.createElement('input');
+                input.type='number'; input.step='any'; input.value=currentValue??'';
+                input.className='input-ctrl';
+                input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
+
+            } else {
+                input=document.createElement('input');
+                input.type='text'; input.value=currentValue??'';
+                if (field.length) input.maxLength=field.length;
+                input.className='input-ctrl';
+                input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
             }
-            
-            const configName = prompt('Enter a name for this configuration:', 'My Configuration');
-            if (!configName) return;
-            
-            config.name = configName;
-            config.savedAt = new Date().toISOString();
-            
-            const savedConfigs = getSavedConfigurations();
-            const configId = 'config_' + Date.now();
-            savedConfigs[configId] = config;
-            
+
+            container.appendChild(input);
+            return container;
+        }
+
+        // ── Highlighting / Popups ─────────────────────────────────────────────
+        function clearHighlights() {
+            highlightGraphics.forEach(g=>{ try{ mapView.graphics.remove(g); }catch(e){} });
+            highlightGraphics=[];
+            const toRemove=[];
+            mapView.graphics.forEach(g=>{
+                if (!g.symbol) return;
+                const s=g.symbol;
+                if ((s.type==='simple-marker'&&s.size>=20)||(s.type==='simple-line'&&s.width>=8)||
+                    (s.type==='simple-fill'&&(s.color?.[3]>=0.3||(s.outline?.width>=4)))) toRemove.push(g);
+            });
+            toRemove.forEach(g=>{ try{ mapView.graphics.remove(g); }catch(e){} });
+            mapView.popup?.close();
+        }
+
+        function highlightFeature(feature, showPopup) {
+            clearHighlights();
+            let symbol;
+            if (feature.geometry.type==='point') symbol={ type:'simple-marker', color:[203,166,247,.85], size:22, outline:{color:[255,255,255,1],width:3} };
+            else if (feature.geometry.type==='polyline') symbol={ type:'simple-line', color:[203,166,247,.85], width:8 };
+            else symbol={ type:'simple-fill', color:[203,166,247,.35], outline:{color:[203,166,247,1],width:4} };
+            const g={ geometry:feature.geometry, symbol };
+            mapView.graphics.add(g); highlightGraphics.push(g);
+            mapView.goTo({ target:feature.geometry, scale:Math.min(mapView.scale,2000) }, { duration:700 })
+                .then(()=>{ if (showPopup&&mapView.popup) showFeaturePopup(feature); })
+                .catch(()=>{ if (showPopup&&mapView.popup) showFeaturePopup(feature); });
+        }
+
+        async function showFeaturePopup(feature) {
             try {
-                localStorage.setItem('sequentialEditorConfigs', JSON.stringify(savedConfigs));
-                updateStatus(`Configuration "${configName}" saved successfully!`);
-                loadSavedConfigurationsList();
-            } catch (e) {
-                alert('Error saving configuration: ' + e.message);
+                const oF=getObjectIdField(feature), oid=feature.attributes[oF];
+                const res=await feature.layer.queryFeatures({ where:`${oF}=${oid}`, outFields:['*'], returnGeometry:true });
+                const feats=res.features.length>0?res.features:[{ geometry:feature.geometry, attributes:feature.attributes }];
+                mapView.popup.open({ features:feats, location:getPopupLocation(feature.geometry) });
+            } catch(e) {
+                mapView.popup.open({ features:[feature], location:getPopupLocation(feature.geometry) });
             }
         }
-        
+
+        function getPopupLocation(geom) {
+            try {
+                if (geom.type==='point') return geom;
+                if (geom.type==='polyline'&&geom.paths?.[0]?.length>0) {
+                    const p=geom.paths[0], mid=Math.floor(p.length/2);
+                    return { type:'point',x:p[mid][0],y:p[mid][1],spatialReference:geom.spatialReference };
+                }
+                if (geom.type==='polygon') return geom.centroid||geom.extent?.center||geom;
+                return geom.extent?.center||geom;
+            } catch(e){ return geom; }
+        }
+
+        // ── Bulk Edit ─────────────────────────────────────────────────────────
+        let currentBulkLayerIndex=0;
+        function startBulkEdit() { currentBulkLayerIndex=0; setPhase('bulkEdit'); showBulkEditForm(); }
+
+        function showBulkEditForm() {
+            const editLayers=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0);
+            if (!editLayers.length) { alert('No layers configured for editing.'); setPhase('summary'); return; }
+            if (currentBulkLayerIndex>=editLayers.length) { setPhase('complete'); return; }
+            const config=editLayers[currentBulkLayerIndex];
+            $('#bulkEditLayerSelector').innerHTML=`
+                <div class="card"><strong>${currentBulkLayerIndex+1}/${editLayers.length}:</strong> ${config.layer.title}
+                <div style="font-size:11px;color:#a6adc8;">${config.features.length} features to update</div></div>`;
+            const fc=$('#bulkEditFormContainer');
+            fc.innerHTML='<div style="font-weight:700;font-size:12px;margin-bottom:8px;">Set values for all features:</div>';
+            config.fields.forEach(field=>fc.appendChild(createFieldInput(field,null)));
+            $('#applyBulkEditBtn').textContent=`Apply to ${config.features.length} Features`;
+            $('#bulkEditResults').innerHTML='';
+        }
+
+        async function applyBulkEdit() {
+            const editLayers=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0);
+            const config=editLayers[currentBulkLayerIndex];
+            const vals=collectFormValues($('#bulkEditFormContainer'));
+            if (!Object.keys(vals).length) { alert('Enter at least one value.'); return; }
+            if (!confirm(`Apply to ${config.features.length} features?`)) return;
+            updateStatus('Applying bulk edit…');
+            $('#applyBulkEditBtn').disabled=true;
+            try {
+                let ok=0,fail=0,errs=[];
+                const batches=[];
+                const oidF=getObjectIdField(config.features[0]);
+                config.features.forEach(f=>batches.push({ attributes:{ [oidF]:f.attributes[oidF], ...vals } }));
+                for (let i=0;i<batches.length;i+=100) {
+                    const res=await config.layer.applyEdits({ updateFeatures:batches.slice(i,i+100) });
+                    res.updateFeatureResults?.forEach((r,idx)=>{
+                        const success=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId));
+                        const oid=batches[i+idx].attributes[oidF];
+                        if (success) { ok++; editLog.push({timestamp:new Date(),action:'bulk_update',layerName:config.layer.title,featureOID:oid,changes:vals,success:true}); }
+                        else { fail++; errs.push(`OID ${oid}: ${r.error?.message||'Unknown'}`); editLog.push({timestamp:new Date(),action:'bulk_update',layerName:config.layer.title,featureOID:oid,success:false,error:r.error?.message}); }
+                    });
+                    updateStatus(`Processed ${Math.min(i+100,batches.length)} / ${batches.length}`);
+                }
+                $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail?` | ✗ ${fail} failed`:''}</div>`;
+                if (currentBulkLayerIndex<editLayers.length-1) {
+                    updateStatus('Bulk edit applied. Moving to next layer…');
+                    setTimeout(()=>{ currentBulkLayerIndex++; showBulkEditForm(); },2000);
+                } else { setTimeout(()=>setPhase('complete'),2000); }
+            } catch(err) {
+                $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#f38ba8;color:#f38ba8;">Error: ${err.message}</div>`;
+            } finally { $('#applyBulkEditBtn').disabled=false; }
+        }
+
+        // ── Saved Configurations ──────────────────────────────────────────────
         function getSavedConfigurations() {
-            try {
-                const saved = localStorage.getItem('sequentialEditorConfigs');
-                return saved ? JSON.parse(saved) : {};
-            } catch (e) {
-                return {};
-            }
+            try { return JSON.parse(localStorage.getItem('sequentialEditorConfigs')||'{}'); } catch(e){ return {}; }
         }
-        
         function loadSavedConfigurationsList() {
-            const select = $("#savedConfigSelect");
-            select.innerHTML = '<option value="">-- Select a saved configuration --</option>';
-            
-            const savedConfigs = getSavedConfigurations();
-            
-            Object.keys(savedConfigs).forEach(configId => {
-                const config = savedConfigs[configId];
-                const option = document.createElement('option');
-                option.value = configId;
-                
-                const date = new Date(config.savedAt);
-                const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-                
-                option.textContent = `${config.name} (${dateStr})`;
-                select.appendChild(option);
+            const sel=$('#savedConfigSelect');
+            sel.innerHTML='<option value="">-- Select saved config --</option>';
+            const cfgs=getSavedConfigurations();
+            Object.keys(cfgs).forEach(id=>{
+                const c=cfgs[id], d=new Date(c.savedAt);
+                const opt=document.createElement('option');
+                opt.value=id; opt.textContent=`${c.name} (${d.toLocaleDateString()} ${d.toLocaleTimeString()})`;
+                sel.appendChild(opt);
             });
         }
-        
         function autoLoadLastConfiguration() {
             try {
-                const lastConfigId = localStorage.getItem('pathEditorLastConfig');
-                
-                if (!lastConfigId) {
-                    return; // No last config saved
-                }
-                
-                const savedConfigs = getSavedConfigurations();
-                const config = savedConfigs[lastConfigId];
-                
-                if (!config) {
-                    return; // Last config no longer exists
-                }
-                
-                // Check if we have layer configuration sections available
-                const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
-                if (!sections || sections.length === 0) {
-                    return; // No layers to configure yet
-                }
-                
-                // Set the dropdown to show this config
-                const select = $("#savedConfigSelect");
-                select.value = lastConfigId;
-                
-                // Apply the configuration
-                applyConfigurationToUI(config);
-                
-                updateStatus(`Auto-loaded configuration: "${config.name}"`);
-                
-            } catch (e) {
-                console.warn('Could not auto-load last configuration:', e);
-            }
+                const id=localStorage.getItem('pathEditorLastConfig');
+                if (!id) return;
+                const cfg=getSavedConfigurations()[id];
+                if (!cfg) return;
+                const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');
+                if (!sections?.length) return;
+                $('#savedConfigSelect').value=id;
+                applyConfigurationToUI(cfg);
+                updateStatus(`Auto-loaded: "${cfg.name}"`);
+            } catch(e){ console.warn('Auto-load failed:', e); }
         }
-        
-        function applyConfigurationToUI(config) {
-            const sections = $("#layerConfigContainer").querySelectorAll('[data-layer-id]');
-            
-            if (!sections || sections.length === 0) {
-                alert('No layer configuration sections found. Please select features first.');
-                return;
-            }
-            
-            let appliedCount = 0;
-            let skippedCount = 0;
-            const skippedLayers = [];
-            
-            sections.forEach(section => {
-                const layerId = parseInt(section.dataset.layerId);
-                
-                const layerConfig = config.layers.find(lc => lc.layerId === layerId);
-                
-                if (layerConfig) {
-                    let checkbox = section.querySelector(`#layer_${layerId}_enabled`);
-                    
-                    if (!checkbox) {
-                        const inputs = section.querySelectorAll('input[type="checkbox"]');
-                        checkbox = Array.from(inputs).find(input => 
-                            input.id === `layer_${layerId}_enabled`
-                        );
-                    }
-                    
-                    if (!checkbox) {
-                        console.warn(`Checkbox not found for layer ${layerId} (${layerConfig.layerTitle})`);
-                        skippedCount++;
-                        skippedLayers.push(layerConfig.layerTitle);
-                        return;
-                    }
-                    
-                    checkbox.checked = true;
-                    
-                    const body = section.querySelector('div[style*="padding"]') || 
-                                 section.querySelector('div:nth-child(2)');
-                    
-                    if (body) {
-                        body.style.display = 'block';
-                        const expandIcon = section.querySelector('span[style*="font-size"]');
-                        if (expandIcon) expandIcon.textContent = '▲';
-                    }
-                    
-                    const modeRadio = section.querySelector(`input[name="mode_${layerId}"][value="${layerConfig.mode}"]`);
-                    if (modeRadio) {
-                        modeRadio.checked = true;
-                        
-                        const fieldsDiv = section.querySelector(`#fields_${layerId}`);
-                        if (fieldsDiv) {
-                            fieldsDiv.style.display = layerConfig.mode === 'edit' ? 'block' : 'none';
-                        }
-                    }
-                    
-                    section.dataset.order = layerConfig.order;
-                    const orderInput = section.querySelector('.orderInput');
-                    if (orderInput) orderInput.value = layerConfig.order;
-                    
-                    const popupCheck = section.querySelector(`#popup_${layerId}`);
-                    if (popupCheck) popupCheck.checked = layerConfig.showPopup;
-                    
-                    const skipCheck = section.querySelector(`#allowskip_${layerId}`);
-                    if (skipCheck) skipCheck.checked = layerConfig.allowSkip;
-                    
-                    if (layerConfig.filterEnabled) {
-                        const filterEnabledCheck = section.querySelector(`#enableFilter_${layerId}`);
-                        if (filterEnabledCheck) {
-                            filterEnabledCheck.checked = true;
-                            
-                            const filterInputs = section.querySelector(`#filterInputs_${layerId}`);
-                            if (filterInputs) {
-                                filterInputs.style.display = 'block';
-                            }
-                            
-                            const filterWhere = section.querySelector(`#filterWhere_${layerId}`);
-                            if (filterWhere && layerConfig.filterWhere) {
-                                filterWhere.value = layerConfig.filterWhere;
-                            }
-                        }
-                    }
-                    
-                    if (layerConfig.mode === 'edit' && layerConfig.fields && layerConfig.fields.length > 0) {
-                        const fieldChecks = section.querySelectorAll(`#fields_${layerId} input[type="checkbox"]`);
-                        fieldChecks.forEach(check => {
-                            if (check.dataset.fieldName && layerConfig.fields.includes(check.dataset.fieldName)) {
-                                check.checked = true;
-                            }
-                        });
-                    }
-                    
-                    appliedCount++;
+        function saveConfiguration() {
+            const config={ layers:[] };
+            const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');
+            sections.forEach(section=>{
+                const layerId=parseInt(section.dataset.layerId);
+                const chk=section.querySelector(`#layer_${layerId}_enabled`);
+                if (!chk?.checked) return;
+                const data=selectedFeaturesByLayer.get(layerId);
+                const mode=section.querySelector(`input[name="mode_${layerId}"]:checked`)?.value||'edit';
+                const lc={ layerId, layerTitle:data.layer.title, mode, order:parseInt(section.dataset.order||1),
+                    showPopup:section.querySelector(`#popup_${layerId}`)?.checked??true,
+                    allowSkip:section.querySelector(`#allowskip_${layerId}`)?.checked??true,
+                    fields:[], filterEnabled:false, filterWhere:'' };
+                const filterEn=section.querySelector(`#enableFilter_${layerId}`);
+                if (filterEn?.checked) { lc.filterEnabled=true; lc.filterWhere=section.querySelector(`#filterWhere_${layerId}`)?.value.trim()||''; }
+                if (mode==='edit') {
+                    const fieldsDiv=section.querySelector(`#fields_${layerId}`);
+                    lc.fields = fieldsDiv?.getCheckedFields
+                        ? fieldsDiv.getCheckedFields()
+                        : Array.from(section.querySelectorAll(`#fields_${layerId} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);
                 }
+                config.layers.push(lc);
             });
-            
-            if (appliedCount === 0) {
-                alert(`Configuration "${config.name}" could not be applied. None of the saved layers are in your current selection.`);
-            } else if (skippedCount > 0) {
-                updateStatus(`Configuration "${config.name}" partially loaded (${appliedCount} applied, ${skippedCount} skipped: ${skippedLayers.join(', ')})`);
-            } else {
-                updateStatus(`Configuration "${config.name}" loaded successfully! Applied to ${appliedCount} layer(s).`);
-            }
+            if (!config.layers.length) { alert('No layers configured to save.'); return; }
+            const name=prompt('Configuration name:','My Configuration');
+            if (!name) return;
+            config.name=name; config.savedAt=new Date().toISOString();
+            const all=getSavedConfigurations(), id='config_'+Date.now();
+            all[id]=config;
+            try { localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all)); updateStatus(`Saved "${name}"`); loadSavedConfigurationsList(); } catch(e){ alert('Save error: '+e.message); }
         }
-        
         function loadConfiguration() {
-            const select = $("#savedConfigSelect");
-            const configId = select.value;
-            
-            if (!configId) {
-                alert('Please select a configuration to load.');
-                return;
-            }
-            
-            const savedConfigs = getSavedConfigurations();
-            const config = savedConfigs[configId];
-            
-            if (!config) {
-                alert('Configuration not found.');
-                return;
-            }
-            
-            // Save this as the last used configuration
-            try {
-                localStorage.setItem('pathEditorLastConfig', configId);
-            } catch (e) {
-                console.warn('Could not save last used config:', e);
-            }
-            
-            applyConfigurationToUI(config);
+            const id=$('#savedConfigSelect').value;
+            if (!id) { alert('Select a configuration first.'); return; }
+            const cfg=getSavedConfigurations()[id];
+            if (!cfg) { alert('Configuration not found.'); return; }
+            try { localStorage.setItem('pathEditorLastConfig',id); } catch(e){}
+            applyConfigurationToUI(cfg);
         }
-        
         function deleteConfiguration() {
-            const select = $("#savedConfigSelect");
-            const configId = select.value;
-            
-            if (!configId) {
-                alert('Please select a configuration to delete.');
-                return;
-            }
-            
-            const savedConfigs = getSavedConfigurations();
-            const config = savedConfigs[configId];
-            
-            if (!config) {
-                alert('Configuration not found.');
-                return;
-            }
-            
-            if (!confirm(`Are you sure you want to delete the configuration "${config.name}"?`)) {
-                return;
-            }
-            
-            delete savedConfigs[configId];
-            
-            try {
-                localStorage.setItem('sequentialEditorConfigs', JSON.stringify(savedConfigs));
-                updateStatus(`Configuration "${config.name}" deleted.`);
-                loadSavedConfigurationsList();
-            } catch (e) {
-                alert('Error deleting configuration: ' + e.message);
-            }
+            const sel=$('#savedConfigSelect'), id=sel.value;
+            if (!id) { alert('Select a configuration to delete.'); return; }
+            const all=getSavedConfigurations(), cfg=all[id];
+            if (!cfg||!confirm(`Delete "${cfg.name}"?`)) return;
+            delete all[id];
+            try { localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all)); updateStatus(`Deleted "${cfg.name}"`); loadSavedConfigurationsList(); } catch(e){ alert('Delete error: '+e.message); }
         }
-        
+        function applyConfigurationToUI(config) {
+            const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');
+            let applied=0, skipped=[];
+            sections.forEach(section=>{
+                const layerId=parseInt(section.dataset.layerId);
+                const lc=config.layers.find(l=>l.layerId===layerId);
+                if (!lc) return;
+                const chk=section.querySelector(`#layer_${layerId}_enabled`);
+                if (!chk) { skipped.push(lc.layerTitle); return; }
+                chk.checked=true; section.classList.add('enabled');
+                const body=section.querySelector('.layerCardBody');
+                if (body) { body.style.display='block'; const ch=section.querySelector('.layerCardHeader span:last-child'); if(ch)ch.textContent='▲'; }
+                const modeR=section.querySelector(`input[name="mode_${layerId}"][value="${lc.mode}"]`);
+                if (modeR) { modeR.checked=true; const fd=section.querySelector(`#fields_${layerId}`); if(fd) fd.style.display=lc.mode==='edit'?'block':'none'; }
+                section.dataset.order=lc.order;
+                const oi=section.querySelector('.orderInput'); if(oi) oi.value=lc.order;
+                const pc=section.querySelector(`#popup_${layerId}`); if(pc) pc.checked=lc.showPopup;
+                const sc=section.querySelector(`#allowskip_${layerId}`); if(sc) sc.checked=lc.allowSkip;
+                if (lc.filterEnabled) {
+                    const fe=section.querySelector(`#enableFilter_${layerId}`); if(fe) fe.checked=true;
+                    const fi=section.querySelector(`#filterInputs_${layerId}`); if(fi) fi.style.display='block';
+                    const fw=section.querySelector(`#filterWhere_${layerId}`); if(fw&&lc.filterWhere) fw.value=lc.filterWhere;
+                }
+                if (lc.mode==='edit'&&lc.fields?.length) {
+                    const fieldsDiv=section.querySelector(`#fields_${layerId}`);
+                    if (fieldsDiv?.setCheckedFields) fieldsDiv.setCheckedFields(lc.fields);
+                    else section.querySelectorAll(`#fields_${layerId} input[type=checkbox]`).forEach(c=>{ c.checked=lc.fields.includes(c.dataset.fieldName); });
+                }
+                applied++;
+            });
+            if (applied===0) alert(`Configuration "${config.name}" could not be applied — no matching layers.`);
+            else updateStatus(`Loaded "${config.name}" (${applied} layer${applied>1?'s':''}${skipped.length?`, skipped: ${skipped.join(', ')}`:''}).`);
+        }
+
+        // ── Complete / Report ─────────────────────────────────────────────────
         function displayEditSummary() {
-            const summary = $("#editSummary");
-            
-            const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
-            const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
-            const skipped = editLog.filter(e => e.action === 'skip').length;
-            const failed = editLog.filter(e => !e.success).length;
-            
-            const duration = sessionStartTime ? Math.round((new Date() - sessionStartTime) / 1000) : 0;
-            const minutes = Math.floor(duration / 60);
-            const seconds = duration % 60;
-            
-            summary.innerHTML = `
-                <strong>Session Summary:</strong><br>
-                Total Edits: ${totalEdits}<br>
-                Successful: ${successfulEdits}<br>
-                ${skipped > 0 ? `Skipped: ${skipped}<br>` : ''}
-                ${failed > 0 ? `Failed: ${failed}<br>` : ''}
-                Duration: ${minutes}m ${seconds}s
-            `;
+            const edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update');
+            const ok=edits.filter(e=>e.success).length, skip=editLog.filter(e=>e.action==='skip').length;
+            const fail=edits.filter(e=>!e.success).length;
+            const dur=sessionStartTime?Math.round((new Date()-sessionStartTime)/1000):0;
+            $('#editSummary').innerHTML=`
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#a6e3a1;">${ok}</div><div style="font-size:10px;color:#a6adc8;">Updated</div></div>
+                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f9e2af;">${skip}</div><div style="font-size:10px;color:#a6adc8;">Skipped</div></div>
+                    ${fail?`<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f38ba8;">${fail}</div><div style="font-size:10px;color:#a6adc8;">Failed</div></div>`:''}
+                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#89b4fa;">${Math.floor(dur/60)}m ${dur%60}s</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div>
+                </div>`;
+            // inject stat-box style if needed
+            if (!document.getElementById('peStatBoxStyle')) {
+                const s=document.createElement('style'); s.id='peStatBoxStyle';
+                s.textContent=`#pathEditorToolbox .stat-box{background:#313244;border-radius:6px;padding:8px;text-align:center;}`;
+                document.head.appendChild(s);
+            }
         }
-        
+
         function exportSummaryReport() {
-            if (editLog.length === 0) {
-                alert('No edits to export. The edit log is empty.');
-                return;
-            }
-            
-            const sessionEnd = new Date();
-            const duration = sessionStartTime ? Math.round((sessionEnd - sessionStartTime) / 1000) : 0;
-            
-            let report = '='.repeat(80) + '\n';
-            report += 'PATH EDITOR - EDIT SUMMARY REPORT\n';
-            report += '='.repeat(80) + '\n\n';
-            
-            report += 'SESSION INFORMATION\n';
-            report += '-'.repeat(80) + '\n';
-            report += `Start Time: ${sessionStartTime ? sessionStartTime.toLocaleString() : 'Unknown'}\n`;
-            report += `End Time: ${sessionEnd.toLocaleString()}\n`;
-            report += `Duration: ${Math.floor(duration / 60)}m ${duration % 60}s\n\n`;
-            
-            const totalEdits = editLog.filter(e => e.action === 'update' || e.action === 'bulk_update').length;
-            const successfulEdits = editLog.filter(e => (e.action === 'update' || e.action === 'bulk_update') && e.success).length;
-            const skipped = editLog.filter(e => e.action === 'skip').length;
-            const failed = editLog.filter(e => !e.success).length;
-            
-            report += 'SUMMARY STATISTICS\n';
-            report += '-'.repeat(80) + '\n';
-            report += `Total Edits Attempted: ${totalEdits}\n`;
-            report += `Successful Edits: ${successfulEdits}\n`;
-            report += `Skipped Features: ${skipped}\n`;
-            report += `Failed Edits: ${failed}\n`;
-            report += `Success Rate: ${totalEdits > 0 ? Math.round((successfulEdits / totalEdits) * 100) : 0}%\n\n`;
-            
-            const layerStats = {};
-            editLog.forEach(entry => {
-                if (!layerStats[entry.layerName]) {
-                    layerStats[entry.layerName] = {
-                        updates: 0,
-                        skips: 0,
-                        failures: 0
-                    };
-                }
-                
-                if (entry.action === 'update' || entry.action === 'bulk_update') {
-                    if (entry.success) {
-                        layerStats[entry.layerName].updates++;
-                    } else {
-                        layerStats[entry.layerName].failures++;
-                    }
-                } else if (entry.action === 'skip') {
-                    layerStats[entry.layerName].skips++;
-                }
+            if (!editLog.length) { alert('No edits to export.'); return; }
+            const end=new Date(), dur=sessionStartTime?Math.round((end-sessionStartTime)/1000):0;
+            const edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update');
+            let r='='.repeat(70)+'\nPATH EDITOR — EDIT SUMMARY REPORT\n'+'='.repeat(70)+'\n\n';
+            r+=`Session: ${sessionStartTime?.toLocaleString()||'Unknown'} → ${end.toLocaleString()}\n`;
+            r+=`Duration: ${Math.floor(dur/60)}m ${dur%60}s\n\n`;
+            r+=`Updated: ${edits.filter(e=>e.success).length}  Skipped: ${editLog.filter(e=>e.action==='skip').length}  Failed: ${edits.filter(e=>!e.success).length}\n\n`;
+            r+='DETAILED LOG\n'+'-'.repeat(70)+'\n';
+            editLog.forEach((e,i)=>{
+                r+=`[${i+1}] ${e.timestamp.toLocaleTimeString()} | ${e.layerName} | OID:${e.featureOID} | ${e.action.toUpperCase()} | ${e.success?'OK':'FAIL'}\n`;
+                if (e.changes) Object.entries(e.changes).forEach(([k,v])=>{ r+=`    ${k}: ${v.oldValue??''}→${v.newValue??v}\n`; });
+                if (e.error) r+=`    Error: ${e.error}\n`;
             });
-            
-            report += 'BY LAYER\n';
-            report += '-'.repeat(80) + '\n';
-            Object.keys(layerStats).forEach(layerName => {
-                const stats = layerStats[layerName];
-                report += `${layerName}:\n`;
-                report += `  Updated: ${stats.updates}\n`;
-                if (stats.skips > 0) report += `  Skipped: ${stats.skips}\n`;
-                if (stats.failures > 0) report += `  Failed: ${stats.failures}\n`;
-            });
-            report += '\n';
-            
-            report += 'DETAILED EDIT LOG\n';
-            report += '='.repeat(80) + '\n\n';
-            
-            editLog.forEach((entry, idx) => {
-                report += `[${idx + 1}] ${entry.timestamp.toLocaleTimeString()}\n`;
-                report += `Layer: ${entry.layerName}\n`;
-                report += `Feature OID: ${entry.featureOID}\n`;
-                report += `Action: ${entry.action.toUpperCase()}\n`;
-                report += `Status: ${entry.success ? 'SUCCESS' : 'FAILED'}\n`;
-                
-                if (entry.changes && Object.keys(entry.changes).length > 0) {
-                    report += 'Changes:\n';
-                    Object.keys(entry.changes).forEach(fieldName => {
-                        const change = entry.changes[fieldName];
-                        if (change.oldValue !== undefined) {
-                            report += `  ${change.fieldAlias}: ${change.oldValue} → ${change.newValue}\n`;
-                        } else {
-                            report += `  ${change.fieldAlias}: ${change.newValue}\n`;
-                        }
-                    });
-                }
-                
-                if (entry.error) {
-                    report += `Error: ${entry.error}\n`;
-                }
-                
-                report += '\n';
-            });
-            
-            report += '='.repeat(80) + '\n';
-            report += 'END OF REPORT\n';
-            report += '='.repeat(80) + '\n';
-            
-            const blob = new Blob([report], { type: 'text/plain' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `edit-summary-${sessionEnd.toISOString().split('T')[0]}-${sessionEnd.getHours()}${sessionEnd.getMinutes()}.txt`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
-            
-            updateStatus('Summary report exported successfully!');
+            const blob=new Blob([r],{type:'text/plain'});
+            const url=URL.createObjectURL(blob);
+            const a=document.createElement('a'); a.href=url; a.download=`path-editor-report-${end.toISOString().split('T')[0]}.txt`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            updateStatus('Report exported.');
         }
-        
-        // ── File upload ───────────────────────────────────────────────────────────
 
+        function startOver() {
+            currentIndex=0; currentBulkLayerIndex=0; layerConfigs=[]; currentEditingQueue=[]; editLog=[]; sessionStartTime=null; lastSubmittedValues=null;
+            clearHighlights(); clearSelection();
+            setPhase('selection'); updateStatus('Ready — choose a selection mode.');
+        }
+
+        // ── File Upload ───────────────────────────────────────────────────────
         function setupFileUpload() {
-            const dropZone = $("#dropZone");
-            const fileInput = $("#fileInput");
-            
-            if (!dropZone || !fileInput) {
-                console.warn('Upload elements not found');
-                return;
-            }
-            
-            dropZone.addEventListener('click', () => fileInput.click());
-            
-            dropZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dropZone.style.borderColor = "#007acc";
-                dropZone.style.backgroundColor = "#f0f8ff";
-            });
-            
-            dropZone.addEventListener('dragleave', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dropZone.style.borderColor = "#ccc";
-                dropZone.style.backgroundColor = "#f9f9f9";
-            });
-            
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dropZone.style.borderColor = "#ccc";
-                dropZone.style.backgroundColor = "#f9f9f9";
-                addFilesToUpload(Array.from(e.dataTransfer.files));
-            });
-            
-            fileInput.addEventListener('change', (e) => {
-                addFilesToUpload(Array.from(e.target.files));
-                e.target.value = ''; // reset so same file can be re-selected
-            });
+            const dz=$('#dropZone'), fi=$('#fileInput');
+            if (!dz||!fi) return;
+            dz.addEventListener('click',()=>fi.click());
+            dz.addEventListener('dragover',e=>{ e.preventDefault(); dz.style.borderColor='#89b4fa'; dz.style.background='#1e3a5f'; });
+            dz.addEventListener('dragleave',e=>{ e.preventDefault(); dz.style.borderColor='#45475a'; dz.style.background='#181825'; });
+            dz.addEventListener('drop',e=>{ e.preventDefault(); dz.style.borderColor='#45475a'; dz.style.background='#181825'; addFilesToUpload(Array.from(e.dataTransfer.files)); });
+            fi.addEventListener('change',e=>{ addFilesToUpload(Array.from(e.target.files)); e.target.value=''; });
         }
-        
         function addFilesToUpload(files) {
-            const rejected = [];
-            let addedCount = 0;
-
-            files.forEach(file => {
-                if (!isAllowedFile(file)) {
-                    rejected.push(file.name);
-                    return;
-                }
-                // Deduplicate by name + size
-                if (!filesToUpload.find(f => f.name === file.name && f.size === file.size)) {
-                    filesToUpload.push(file);
-                    addedCount++;
-                }
-            });
-
+            const rej=[], added=[];
+            files.forEach(f=>{ if (!isAllowedFile(f)) { rej.push(f.name); return; } if (!filesToUpload.find(x=>x.name===f.name&&x.size===f.size)) { filesToUpload.push(f); added.push(f.name); } });
             updateFileList();
-
-            if (rejected.length > 0) {
-                updateStatus(`Skipped unsupported file(s): ${rejected.join(', ')}`);
-            } else if (addedCount > 0) {
-                updateStatus(`${addedCount} file(s) ready to upload`);
-            }
+            if (rej.length) updateStatus('Skipped: '+rej.join(', '));
+            else if (added.length) updateStatus(added.length+' file(s) ready');
         }
-        
         function updateFileList() {
-            const fileListDiv = $("#fileList");
-            const uploadBtn = $("#uploadPhotosBtn");
-            
-            if (!fileListDiv) return;
-            
-            if (filesToUpload.length === 0) {
-                fileListDiv.innerHTML = "";
-                if (uploadBtn) uploadBtn.style.display = "none";
-                return;
-            }
-            
-            let html = `<div style='font-weight:bold;margin-bottom:4px;font-size:11px;'>Files to upload (${filesToUpload.length}):</div>`;
-            filesToUpload.forEach((file, index) => {
-                html += `
-                    <div style='display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;background:#fff;border-radius:2px;'>
-                        <span style='font-size:11px;'>${fileTypeLabel(file)} ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
-                        <button class="removeFileBtn" data-index="${index}"
-                            style='background:#ff4444;color:white;border:none;padding:2px 6px;font-size:10px;cursor:pointer;border-radius:2px;'>×</button>
-                    </div>
-                `;
-            });
-            fileListDiv.innerHTML = html;
-            if (uploadBtn) uploadBtn.style.display = "block";
-            
-            fileListDiv.querySelectorAll('.removeFileBtn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    filesToUpload.splice(parseInt(e.target.dataset.index), 1);
-                    updateFileList();
-                });
-            });
+            const fl=$('#fileList'), ub=$('#uploadPhotosBtn');
+            if (!fl) return;
+            if (!filesToUpload.length) { fl.innerHTML=''; if(ub) ub.style.display='none'; return; }
+            fl.innerHTML=filesToUpload.map((f,i)=>`
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 6px;background:#313244;border-radius:4px;margin:3px 0;font-size:11px;">
+                    <span>${fileTypeLabel(f)} ${f.name} <span style="color:#6c7086;">(${(f.size/1024).toFixed(1)}KB)</span></span>
+                    <button class="removeFileBtn" data-index="${i}" style="background:#f38ba8;color:#1e1e2e;border:none;border-radius:3px;padding:1px 6px;cursor:pointer;font-size:11px;">×</button>
+                </div>`).join('');
+            if (ub) ub.style.display='block';
+            fl.querySelectorAll('.removeFileBtn').forEach(btn=>btn.addEventListener('click',e=>{ filesToUpload.splice(parseInt(e.target.dataset.index),1); updateFileList(); }));
         }
-        
         async function uploadPhotos() {
-            try {
-                if (currentIndex >= currentEditingQueue.length) {
-                    alert("No feature currently selected.");
-                    return;
-                }
-                if (filesToUpload.length === 0) {
-                    alert("Please select files to upload.");
-                    return;
-                }
-                
-                const item = currentEditingQueue[currentIndex];
-                const { layer, feature } = item;
-                
-                await layer.load();
-                if (!layer.capabilities?.operations?.supportsAdd) {
-                    alert("This layer does not support adding attachments.");
-                    return;
-                }
-                
-                updateStatus("Uploading files...");
-                $("#uploadPhotosBtn").disabled = true;
-                
-                let uploadedCount = 0;
-                let failedCount = 0;
-                const results = [];
-                
-                for (let i = 0; i < filesToUpload.length; i++) {
-                    const file = filesToUpload[i];
-                    try {
-                        updateStatus(`Uploading: ${file.name} (${i + 1}/${filesToUpload.length})...`);
-                        
-                        const formData = new FormData();
-                        formData.append('attachment', file);
-                        
-                        const result = await layer.addAttachment(feature, formData);
-                        
-                        if (result && (result.addAttachmentResult || result.objectId)) {
-                            results.push({ fileName: file.name, success: true });
-                            uploadedCount++;
-                        } else {
-                            throw new Error('Upload did not return expected result');
-                        }
-                    } catch (error) {
-                        console.error(`Error uploading ${file.name}:`, error);
-                        results.push({ fileName: file.name, success: false, error: error.message || String(error) });
-                        failedCount++;
-                    }
-                    
-                    await new Promise(r => setTimeout(r, 300));
-                }
-                
-                let message = `Upload complete!\n\n✓ ${uploadedCount} file(s) uploaded successfully`;
-                if (failedCount > 0) {
-                    message += `\n✗ ${failedCount} file(s) failed\n\nFailed files:\n`;
-                    results.filter(r => !r.success).forEach(r => {
-                        message += `  • ${r.fileName}: ${r.error}\n`;
-                    });
-                }
-                alert(message);
-                
-                updateStatus(`Files uploaded: ${uploadedCount} successful${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
-                filesToUpload = [];
-                updateFileList();
-                
-            } catch (error) {
-                console.error("Upload error:", error);
-                updateStatus("Error uploading files: " + error.message);
-                alert("Error uploading files: " + error.message);
-            } finally {
-                $("#uploadPhotosBtn").disabled = false;
+            if (currentIndex>=currentEditingQueue.length) { alert('No feature selected.'); return; }
+            if (!filesToUpload.length) { alert('No files to upload.'); return; }
+            const item=currentEditingQueue[currentIndex];
+            await item.layer.load();
+            if (!item.layer.capabilities?.operations?.supportsAdd) { alert('Layer does not support attachments.'); return; }
+            updateStatus('Uploading…'); $('#uploadPhotosBtn').disabled=true;
+            let ok=0,fail=0;
+            for (let i=0;i<filesToUpload.length;i++) {
+                const f=filesToUpload[i];
+                try {
+                    updateStatus(`Uploading ${f.name} (${i+1}/${filesToUpload.length})…`);
+                    const fd=new FormData(); fd.append('attachment',f);
+                    const res=await item.layer.addAttachment(item.feature,fd);
+                    if (res?.addAttachmentResult||res?.objectId) ok++;
+                    else throw new Error('Unexpected result');
+                } catch(e){ fail++; }
+                await new Promise(r=>setTimeout(r,300));
             }
+            alert(`Upload complete!\n✓ ${ok} succeeded${fail?' | ✗ '+fail+' failed':''}`);
+            updateStatus(`Uploaded ${ok}${fail?' | Failed '+fail:''}`);
+            filesToUpload=[]; updateFileList(); $('#uploadPhotosBtn').disabled=false;
         }
-        
-        function cleanup() {
-            if (sketchViewModel) {
-                sketchViewModel.destroy();
-                sketchViewModel = null;
-            }
-            if (mapClickHandler) {
-                mapClickHandler.remove();
-                mapClickHandler = null;
-            }
-            clearHighlights();
-            if (selectionGraphic) {
-                mapView.graphics.remove(selectionGraphic);
-            }
-            toolBox.remove();
-        }
-        
-        // ── Event listeners ───────────────────────────────────────────────────────
 
-        toolBox.querySelectorAll('input[name="selectionMode"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                if (selectionGraphic) {
-                    mapView.graphics.remove(selectionGraphic);
-                    selectionGraphic = null;
-                }
-                if (mapClickHandler) {
-                    mapClickHandler.remove();
-                    mapClickHandler = null;
-                }
-                if (sketchViewModel) {
-                    try { sketchViewModel.cancel(); } catch (e) {}
-                }
-                selectedFeaturesByLayer.clear();
-                $("#selectionResults").innerHTML = "";
-                $("#configureLayersBtn").style.display = "none";
-                $("#clearSelectionBtn").disabled = true;
-                startSelection();
-            });
-        });
-        
-        $("#clearSelectionBtn").onclick = clearSelection;
-        $("#configureLayersBtn").onclick = showLayerConfiguration;
-        $("#saveConfigBtn").onclick = saveConfiguration;
-        $("#loadConfigBtn").onclick = loadConfiguration;
-        $("#deleteConfigBtn").onclick = deleteConfiguration;
-        $("#showSummaryBtn").onclick = buildSummary;
-        $("#backToConfigBtn").onclick = () => setPhase('configuration');
-        $("#startEditingBtn").onclick = startEditing;
-        
-        $("#submitBtn").onclick = submitFeature;
-        $("#skipBtn").onclick = skipFeature;
-        $("#prevBtn").onclick = prevFeature;
-        $("#clearHighlightsBtn").onclick = clearHighlights;
-        $("#uploadPhotosBtn").onclick = uploadPhotos;
-        
-        $("#applyBulkEditBtn").onclick = applyBulkEdit;
-        $("#backToSummaryBtn").onclick = () => setPhase('summary');
-        $("#exportReportBtn").onclick = exportSummaryReport;
-        $("#startOverBtn").onclick = startOver;
-        
-        $("#closeTool").onclick = () => {
-            window.gisToolHost.closeTool('path-editor');
-        };
-        
+        // ── Cleanup ───────────────────────────────────────────────────────────
+        function cleanup() {
+            if (sketchViewModel) { sketchViewModel.destroy(); sketchViewModel=null; }
+            if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler=null; }
+            clearHighlights();
+            if (selectionGraphic) mapView.graphics.remove(selectionGraphic);
+            toolBox.remove();
+            const ps=document.getElementById('peStyles'); if(ps) ps.remove();
+            const pss=document.getElementById('peStatBoxStyle'); if(pss) pss.remove();
+        }
+
+        // ── Event Wiring ──────────────────────────────────────────────────────
+        $('#clearSelectionBtn').onclick  = clearSelection;
+        $('#configureLayersBtn').onclick  = showLayerConfiguration;
+        $('#backToSelectionBtn').onclick  = () => setPhase('selection');
+        $('#saveConfigBtn').onclick       = saveConfiguration;
+        $('#loadConfigBtn').onclick       = loadConfiguration;
+        $('#deleteConfigBtn').onclick     = deleteConfiguration;
+        $('#showSummaryBtn').onclick      = buildSummary;
+        $('#backToConfigBtn').onclick     = () => setPhase('configuration');
+        $('#startEditingBtn').onclick     = startEditing;
+        $('#submitBtn').onclick           = submitFeature;
+        $('#skipBtn').onclick             = skipFeature;
+        $('#prevBtn').onclick             = prevFeature;
+        $('#applyPrevBtn').onclick        = applyPreviousValues;
+        $('#clearHighlightsBtn').onclick  = clearHighlights;
+        $('#uploadPhotosBtn').onclick     = uploadPhotos;
+        $('#applyBulkEditBtn').onclick    = applyBulkEdit;
+        $('#backToSummaryBtn').onclick    = () => setPhase('summary');
+        $('#exportReportBtn').onclick     = exportSummaryReport;
+        $('#startOverBtn').onclick        = startOver;
+        $('#closeTool').onclick           = () => window.gisToolHost.closeTool('path-editor');
+
+        // ── Init ──────────────────────────────────────────────────────────────
         setPhase('selection');
         setupFileUpload();
         startSelection();
-        
-        window.gisToolHost.activeTools.set('path-editor', {
-            cleanup: cleanup,
-            toolBox: toolBox
-        });
-        
-    } catch (error) {
-        alert("Error creating Path Editor Tool: " + (error.message || error));
+
+        window.gisToolHost.activeTools.set('path-editor', { cleanup, toolBox });
+
+    } catch(error) {
+        alert('Error creating Path Editor Tool: ' + (error.message || error));
     }
 })();
