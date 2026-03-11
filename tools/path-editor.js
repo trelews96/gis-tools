@@ -1062,10 +1062,11 @@
             let input;
             if (field.domain?.type === 'coded-value') {
                 const wrap = document.createElement('div');
-                wrap.style.position = 'relative';
                 const options = field.domain.codedValues.map(cv => ({ code:cv.code, name:cv.name }));
                 let selectedCode = (currentValue !== null && currentValue !== undefined) ? currentValue : '';
                 const currentOpt = options.find(o => o.code == selectedCode);
+
+                // Trigger button
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'domain-btn';
@@ -1079,40 +1080,82 @@
                 arrow.textContent = '▼'; arrow.style.fontSize = '10px';
                 btn.appendChild(dispText);
                 btn.appendChild(arrow);
+
+                // Inline panel — sits in normal flow so peBody scrolls to fit it,
+                // nothing gets covered, no positioning math needed.
                 const panel = document.createElement('div');
-                panel.className = 'domain-panel';
+                panel.style.cssText = `
+                    display:none; margin-top:2px;
+                    background:#1e1e2e; border:1px solid #45475a; border-radius:6px;
+                    overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,.5);
+                `;
+
                 const srch = document.createElement('input');
-                srch.type = 'text'; srch.placeholder = 'Search…'; srch.className = 'domain-search';
+                srch.type = 'text'; srch.placeholder = 'Type to search…';
+                srch.style.cssText = `
+                    width:100%; padding:7px 10px; background:#313244; border:none;
+                    border-bottom:1px solid #45475a; color:#cdd6f4; font-size:12px;
+                    outline:none; box-sizing:border-box;
+                `;
+
                 const list = document.createElement('div');
-                list.className = 'domain-list';
+                list.style.cssText = 'max-height:200px; overflow-y:auto;';
+
                 function renderList(filter='') {
                     list.innerHTML = '';
                     const f = filter.toLowerCase();
-                    [{ code:'', name:'— Select —' }, ...options]
-                        .filter(o => !f || o.name.toLowerCase().includes(f) || String(o.code).toLowerCase().includes(f))
-                        .forEach(opt => {
-                            const it = document.createElement('div');
-                            it.className = 'domain-item' + (opt.code == selectedCode ? ' selected' : '');
-                            it.textContent = opt.name;
-                            it.onmousedown = (e) => {
-                                e.preventDefault();
-                                selectedCode = opt.code;
-                                btn.dataset.selectedCode = opt.code;
-                                dispText.textContent = opt.name;
-                                panel.style.display = 'none';
-                                btn.classList.remove('open');
-                                arrow.textContent = '▼';
-                            };
-                            list.appendChild(it);
+                    const filtered = [{ code:'', name:'— Select —' }, ...options]
+                        .filter(o => !f || o.name.toLowerCase().includes(f) || String(o.code).toLowerCase().includes(f));
+                    filtered.forEach(opt => {
+                        const it = document.createElement('div');
+                        const isSelected = opt.code == selectedCode;
+                        it.style.cssText = `
+                            padding:8px 10px; cursor:pointer; font-size:12px;
+                            color:${isSelected ? '#cba6f7' : '#cdd6f4'};
+                            background:${isSelected ? '#2a1f3d' : 'transparent'};
+                            font-weight:${isSelected ? '600' : 'normal'};
+                            border-bottom:1px solid #313244;
+                        `;
+                        it.textContent = opt.name;
+                        it.addEventListener('mouseenter', () => {
+                            if (opt.code != selectedCode) it.style.background = '#313244';
                         });
+                        it.addEventListener('mouseleave', () => {
+                            it.style.background = opt.code == selectedCode ? '#2a1f3d' : 'transparent';
+                        });
+                        it.addEventListener('mousedown', e => {
+                            e.preventDefault();
+                            selectedCode = opt.code;
+                            btn.dataset.selectedCode = opt.code;
+                            dispText.textContent = opt.name;
+                            panel.style.display = 'none';
+                            btn.classList.remove('open');
+                            arrow.textContent = '▼';
+                        });
+                        list.appendChild(it);
+                    });
+                    if (!filtered.length) {
+                        const empty = document.createElement('div');
+                        empty.style.cssText = 'padding:10px;font-size:11px;color:#6c7086;text-align:center;';
+                        empty.textContent = 'No matches found';
+                        list.appendChild(empty);
+                    }
                 }
+
                 renderList();
                 panel.appendChild(srch);
                 panel.appendChild(list);
+
                 btn.addEventListener('click', () => {
                     const isOpen = panel.style.display === 'block';
-                    document.querySelectorAll('.domain-panel').forEach(p => { p.style.display = 'none'; });
-                    document.querySelectorAll('.domain-btn').forEach(b => b.classList.remove('open'));
+                    // Close any other open domain panels in this form
+                    $('#editFormContainer').querySelectorAll('.domain-panel-inline').forEach(p => {
+                        p.style.display = 'none';
+                    });
+                    toolBox.querySelectorAll('.domain-btn').forEach(b => {
+                        b.classList.remove('open');
+                        b.querySelector('span:last-child').textContent = '▼';
+                    });
                     if (!isOpen) {
                         panel.style.display = 'block';
                         btn.classList.add('open');
@@ -1120,18 +1163,14 @@
                         srch.value = '';
                         renderList('');
                         setTimeout(() => srch.focus(), 50);
-                    } else {
-                        arrow.textContent = '▼';
+                        // Scroll peBody so the panel is visible
+                        setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'nearest' }), 60);
                     }
                 });
-                srch.oninput = () => renderList(srch.value);
-                document.addEventListener('click', e => {
-                    if (!wrap.contains(e.target)) {
-                        panel.style.display = 'none';
-                        btn.classList.remove('open');
-                        arrow.textContent = '▼';
-                    }
-                }, true);
+
+                srch.addEventListener('input', () => renderList(srch.value));
+
+                panel.className = 'domain-panel-inline';
                 wrap.appendChild(btn);
                 wrap.appendChild(panel);
                 input = wrap;
