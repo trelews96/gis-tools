@@ -3,6 +3,12 @@
 
 (function() {
     try {
+        // Restore activeTools if it has lost its Map type during tool switching
+        if (!(window.gisToolHost.activeTools instanceof Map)) {
+            console.warn('activeTools was corrupted, restoring Map...');
+            window.gisToolHost.activeTools = new Map();
+        }
+
         if (window.gisToolHost.activeTools.has('path-editor')) return;
 
         const existingToolbox = document.getElementById('pathEditorToolbox');
