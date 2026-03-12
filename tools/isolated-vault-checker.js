@@ -507,12 +507,20 @@
                 // ── Build results HTML ─────────────────────────────────────
                 let html = '';
 
+                // Totals
+                const totalTrackingQty = exportData.reduce((s, r) => s + (r.trackingQty || 0), 0);
+                const totalFootage     = exportData.reduce((s, r) => s + (typeof r.footage === 'number' ? r.footage : 0), 0);
+
                 // Summary cards
                 const totalLinked = guids.length;
                 const nMatch   = matched.length;
                 const nMismatch = mismatches.length;
                 html +=
                     `<div class="phqc-sec-title">Summary — Work Order: <span class="phqc-chip">${selectedWO}</span></div>` +
+                    `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">` +
+                    sumCard('Total Tracking Qty', totalTrackingQty, '#6366f1', '#eef2ff') +
+                    sumCard('Total Footage',      totalFootage,     '#0ea5e9', '#e0f2fe') +
+                    `</div>` +
                     `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">` +
                     sumCard('Linked', totalLinked, '#6366f1', '#eef2ff') +
                     sumCard('Match',  nMatch,      '#059669', '#d1fae5') +
@@ -554,55 +562,6 @@
                 } else {
                     html += `<div class="phqc-ok-msg">✓ All ${potholeFeats.length} pothole features match their tracking quantities</div>`;
                 }
-
-                // Feature-by-feature breakdown
-                html += `<div class="phqc-sec-title" style="margin-top:12px;">Feature Breakdown <span style="font-size:9px;font-weight:400;color:#94a3b8;text-transform:none;letter-spacing:0;">${potholeFeats.length} feature${potholeFeats.length !== 1 ? 's' : ''}</span></div>`;
-                html += `<div id="phqcFeatureList" style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px;">`;
-
-                const allRows = [...mismatches, ...matched].sort((a, b) => String(a.potholeGisId).localeCompare(String(b.potholeGisId)));
-                for (const row of allRows) {
-                    const isMatch    = row.status === 'Match';
-                    const noFootage  = row.status === 'No Footage';
-                    const borderCol  = isMatch ? '#6ee7b7' : noFootage ? '#fcd34d' : '#fca5a5';
-                    const bgCol      = isMatch ? '#f0fdf4' : noFootage ? '#fffbeb' : '#fff5f5';
-                    const badgeCol   = isMatch ? '#059669' : noFootage ? '#d97706' : '#dc2626';
-                    const badgeBg    = isMatch ? '#d1fae5' : noFootage ? '#fef3c7' : '#fee2e2';
-                    const badgeTxt   = isMatch ? '✓ Match' : noFootage ? '⚠ No Footage' : '✕ Mismatch';
-                    const diffTxt    = noFootage ? '—' : (row.difference > 0 ? '+' : '') + row.difference;
-                    const diffColor  = isMatch ? '#059669' : (Math.abs(row.difference) <= 5 ? '#d97706' : '#dc2626');
-
-                    html +=
-                        `<div style="border:1.5px solid ${borderCol};border-radius:6px;background:${bgCol};padding:7px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">` +
-                            // ID + badge
-                            `<div style="flex:1;min-width:100px;">` +
-                                `<div style="font-size:11px;font-weight:700;color:#1e293b;">${row.potholeGisId}</div>` +
-                                `<div style="font-size:9px;color:#64748b;margin-top:1px;"><span class="phqc-chip">${row.laborCode}</span></div>` +
-                            `</div>` +
-                            // Qty pill
-                            `<div style="text-align:center;min-width:52px;">` +
-                                `<div style="font-size:15px;font-weight:700;color:#6366f1;">${row.trackingQty}</div>` +
-                                `<div style="font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.4px;">Tracking Qty</div>` +
-                            `</div>` +
-                            // vs divider
-                            `<div style="color:#cbd5e1;font-size:13px;font-weight:300;">vs</div>` +
-                            // Footage pill
-                            `<div style="text-align:center;min-width:52px;">` +
-                                `<div style="font-size:15px;font-weight:700;color:${noFootage ? '#d97706' : '#0ea5e9'};">${noFootage ? 'NULL' : row.footage}</div>` +
-                                `<div style="font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.4px;">Footage</div>` +
-                            `</div>` +
-                            // Diff
-                            `<div style="text-align:center;min-width:40px;">` +
-                                `<div style="font-size:15px;font-weight:700;color:${diffColor};">${diffTxt}</div>` +
-                                `<div style="font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.4px;">Diff</div>` +
-                            `</div>` +
-                            // Status badge + zoom
-                            `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;margin-left:auto;">` +
-                                `<span style="font-size:9px;font-weight:700;background:${badgeBg};color:${badgeCol};padding:2px 7px;border-radius:10px;white-space:nowrap;">${badgeTxt}</span>` +
-                                `<button class="phqc-zbtn" style="background:#f59e0b;font-size:9px;padding:2px 7px;" onclick="phqcZoomTo(${row.potholeOid})">Zoom</button>` +
-                            `</div>` +
-                        `</div>`;
-                }
-                html += `</div>`;
 
                 // Orphaned GUIDs
                 if (orphaned.length) {
