@@ -1,14 +1,10 @@
 // tools/path-editor.js - Sequential Feature Editor with Multiple Selection Modes
-// Supports polygon, line path (ordered), and single feature selection
-
 (function() {
     try {
-        // Restore activeTools if it has lost its Map type during tool switching
         if (!(window.gisToolHost.activeTools instanceof Map)) {
             console.warn('activeTools was corrupted, restoring Map...');
             window.gisToolHost.activeTools = new Map();
         }
-
         if (window.gisToolHost.activeTools.has('path-editor')) return;
 
         const existingToolbox = document.getElementById('pathEditorToolbox');
@@ -20,10 +16,9 @@
         const mapView = utils.getMapView();
         const z = 99999;
 
-        // Tool state
         let sketchViewModel   = null;
         let selectionGraphic  = null;
-        let selectedFeaturesByLayer = new Map(); // keyed by layer.uid (sanitized)
+        let selectedFeaturesByLayer = new Map();
         let layerConfigs      = [];
         let currentEditingQueue = [];
         let currentIndex      = 0;
@@ -36,9 +31,6 @@
         let filesToUpload     = [];
         let lastSubmittedValues = null;
 
-        // Returns a safe HTML-ID-compatible key unique to this layer instance.
-        // Uses layer.uid (per-instance, always unique even for duplicates) rather
-        // than layer.layerId (per-service, shared by duplicated layers).
         function layerKey(layer) {
             return 'L' + String(layer.uid).replace(/\W/g, '_');
         }
@@ -47,8 +39,7 @@
             'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/tiff',
             'application/pdf',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/vnd.ms-excel',
-            'text/csv','text/plain',
+            'application/vnd.ms-excel','text/csv','text/plain',
         ]);
         const ALLOWED_EXTENSIONS = new Set([
             'jpg','jpeg','png','gif','webp','bmp','tiff','tif','pdf','xlsx','xls','csv',
@@ -66,7 +57,7 @@
             return '📎';
         }
 
-        // ── Toolbox HTML ──────────────────────────────────────────────────────────
+        // ── Toolbox HTML ──────────────────────────────────────────────────────
         const toolBox = document.createElement('div');
         toolBox.id = 'pathEditorToolbox';
         toolBox.style.cssText = `
@@ -100,18 +91,15 @@
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;" id="modeCards">
                 <label class="modeCard" data-mode="single">
                     <input type="radio" name="selectionMode" value="single" checked style="display:none;">
-                    <div class="modeIcon">🖱️</div>
-                    <div class="modeLabel">Single Click</div>
+                    <div class="modeIcon">🖱️</div><div class="modeLabel">Single Click</div>
                 </label>
                 <label class="modeCard" data-mode="line">
                     <input type="radio" name="selectionMode" value="line" style="display:none;">
-                    <div class="modeIcon">📏</div>
-                    <div class="modeLabel">Line Path</div>
+                    <div class="modeIcon">📏</div><div class="modeLabel">Line Path</div>
                 </label>
                 <label class="modeCard" data-mode="polygon">
                     <input type="radio" name="selectionMode" value="polygon" style="display:none;">
-                    <div class="modeIcon">⬡</div>
-                    <div class="modeLabel">Polygon</div>
+                    <div class="modeIcon">⬡</div><div class="modeLabel">Polygon</div>
                 </label>
             </div>
             <div id="selectionResults" style="margin-bottom:10px;"></div>
@@ -170,24 +158,26 @@
                 <button id="applyPrevBtn" class="btn btn-warning" style="width:100%;font-size:12px;">↩ Apply Previous Values</button>
             </div>
             <div id="editFormContainer" style="margin-bottom:10px;"></div>
+
+            <!-- Attachments: inline, no dropdown wrapper, uploads automatically on Submit -->
+            <div style="margin-bottom:10px;">
+                <div style="font-size:11px;font-weight:700;color:#89b4fa;margin-bottom:6px;">
+                    📎 Attachments
+                    <span style="font-size:10px;color:#6c7086;font-weight:normal;"> — optional, uploads with Submit</span>
+                </div>
+                <div id="dropZone" style="border:2px dashed #45475a;padding:14px;text-align:center;background:#181825;cursor:pointer;border-radius:6px;transition:all .2s;color:#a6adc8;font-size:12px;">
+                    📁 Drag &amp; Drop or <span style="color:#89b4fa;text-decoration:underline;">browse</span>
+                    <input type="file" id="fileInput" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;">
+                </div>
+                <div id="fileList" style="margin-top:6px;"></div>
+            </div>
+
             <div style="display:flex;gap:6px;margin-bottom:6px;">
                 <button id="submitBtn" class="btn btn-success" style="flex:2;">Submit & Next ›</button>
                 <button id="skipBtn"   class="btn btn-warning" style="flex:1;">Skip</button>
             </div>
-            <button id="prevBtn" class="btn btn-secondary" style="width:100%;margin-bottom:10px;">‹ Previous</button>
-            <details style="border:1px solid #313244;border-radius:6px;overflow:hidden;">
-                <summary style="padding:8px 12px;cursor:pointer;background:#181825;color:#89b4fa;font-size:12px;">📎 Upload Attachments</summary>
-                <div style="padding:10px;">
-                    <div style="font-size:10px;color:#6c7086;margin-bottom:8px;">Supported: Images, PDF, XLSX, CSV</div>
-                    <div id="dropZone" style="border:2px dashed #45475a;padding:18px;text-align:center;background:#181825;cursor:pointer;border-radius:6px;transition:all .2s;color:#a6adc8;font-size:12px;">
-                        📁 Drag & Drop or <span style="color:#89b4fa;text-decoration:underline;">browse</span>
-                        <input type="file" id="fileInput" multiple accept="image/*,.pdf,.xlsx,.xls,.csv" style="display:none;">
-                    </div>
-                    <div id="fileList" style="margin-top:6px;"></div>
-                    <button id="uploadPhotosBtn" class="btn btn-info" style="display:none;width:100%;margin-top:8px;font-size:12px;">Upload Files to Feature</button>
-                </div>
-            </details>
-            <button id="clearHighlightsBtn" class="btn btn-secondary" style="width:100%;margin-top:8px;font-size:11px;">Clear Map Highlights</button>
+            <button id="prevBtn" class="btn btn-secondary" style="width:100%;margin-bottom:8px;">‹ Previous</button>
+            <button id="clearHighlightsBtn" class="btn btn-secondary" style="width:100%;font-size:11px;">Clear Map Highlights</button>
         </div>
 
         <!-- Phase 4b: Bulk Edit -->
@@ -211,7 +201,6 @@
         </div>
 
         </div><!-- /peBody -->
-
         <div id="toolStatus" style="padding:5px 14px;font-size:10px;color:#89dceb;background:#181825;border-top:1px solid #313244;border-radius:0 0 10px 10px;min-height:22px;flex-shrink:0;"></div>
         `;
 
@@ -268,9 +257,7 @@
                 gap:8px; cursor:pointer;
             }
             #pathEditorToolbox .layerCardBody { padding:10px 12px; display:none; }
-            #pathEditorToolbox .toggle-wrap {
-                position:relative; width:32px; height:18px; flex-shrink:0;
-            }
+            #pathEditorToolbox .toggle-wrap { position:relative; width:32px; height:18px; flex-shrink:0; }
             #pathEditorToolbox .toggle-wrap input { display:none; }
             #pathEditorToolbox .toggle-slider {
                 position:absolute; inset:0; background:#45475a; border-radius:10px;
@@ -303,21 +290,8 @@
                 display:flex; justify-content:space-between; align-items:center;
                 cursor:pointer; box-sizing:border-box;
             }
-            #pathEditorToolbox .domain-btn:hover, #pathEditorToolbox .domain-btn.open { border-color:#cba6f7; }
-            #pathEditorToolbox .domain-panel {
-                position:absolute; top:calc(100% + 2px); left:0; right:0; z-index:10000;
-                background:#1e1e2e; border:1px solid #45475a; border-radius:6px;
-                box-shadow:0 6px 20px rgba(0,0,0,.6); display:none;
-            }
-            #pathEditorToolbox .domain-search {
-                width:100%; padding:6px 8px; background:#313244; border:none;
-                border-bottom:1px solid #45475a; color:#cdd6f4; font-size:12px;
-                outline:none; border-radius:6px 6px 0 0; box-sizing:border-box;
-            }
-            #pathEditorToolbox .domain-list { max-height:180px; overflow-y:auto; }
-            #pathEditorToolbox .domain-item { padding:7px 10px; cursor:pointer; font-size:12px; color:#cdd6f4; }
-            #pathEditorToolbox .domain-item:hover    { background:#313244; }
-            #pathEditorToolbox .domain-item.selected { background:#2a1f3d; color:#cba6f7; font-weight:600; }
+            #pathEditorToolbox .domain-btn:hover,
+            #pathEditorToolbox .domain-btn.open { border-color:#cba6f7; }
             #pathEditorToolbox .progress-bar-wrap {
                 background:#313244; border-radius:4px; height:6px; margin-top:6px; overflow:hidden;
             }
@@ -339,13 +313,11 @@
 
         // ── Dragging ──────────────────────────────────────────────────────────
         let isDragging = false, dragOX = 0, dragOY = 0;
-        const peHeader = $('#peHeader');
-        peHeader.addEventListener('mousedown', (e) => {
+        $('#peHeader').addEventListener('mousedown', (e) => {
             if (e.target.closest('#closeTool')) return;
             isDragging = true;
             const r = toolBox.getBoundingClientRect();
-            dragOX = e.clientX - r.left;
-            dragOY = e.clientY - r.top;
+            dragOX = e.clientX - r.left; dragOY = e.clientY - r.top;
             e.preventDefault();
         });
         document.addEventListener('mousemove', (e) => {
@@ -357,27 +329,18 @@
         document.addEventListener('mouseup', () => { isDragging = false; });
 
         // ── Phase management ──────────────────────────────────────────────────
-        const phaseNames = {
-            selection:'Selection', configuration:'Configuration',
-            summary:'Review', editing:'Editing', bulkEdit:'Bulk Edit', complete:'Complete'
-        };
+        const phaseNames = { selection:'Selection', configuration:'Configuration', summary:'Review', editing:'Editing', bulkEdit:'Bulk Edit', complete:'Complete' };
         function setPhase(phase) {
             currentPhase = phase;
             ['selection','configuration','summary','editing','bulkEdit','complete'].forEach(p => {
-                const el = $(`#${p}Phase`);
-                if (el) el.style.display = 'none';
+                const el = $(`#${p}Phase`); if (el) el.style.display = 'none';
             });
-            const target = $(`#${phase}Phase`);
-            if (target) target.style.display = 'block';
-            const ind = $('#phaseIndicator');
-            if (ind) ind.textContent = phaseNames[phase] || phase;
-            if (phase === 'configuration') {
-                loadSavedConfigurationsList();
-                autoLoadLastConfiguration();
-            }
+            const target = $(`#${phase}Phase`); if (target) target.style.display = 'block';
+            const ind = $('#phaseIndicator'); if (ind) ind.textContent = phaseNames[phase] || phase;
+            if (phase === 'configuration') { loadSavedConfigurationsList(); autoLoadLastConfiguration(); }
         }
 
-        // ── Selection Mode Cards ──────────────────────────────────────────────
+        // ── Mode Cards ────────────────────────────────────────────────────────
         function updateModeCards() {
             toolBox.querySelectorAll('.modeCard').forEach(card => {
                 card.classList.toggle('active', card.dataset.mode === selectionMode);
@@ -407,18 +370,11 @@
             else if (selectionMode === 'line') enableLineDrawing();
             else enableSingleFeatureSelection();
         }
-
         function enablePolygonDrawing() {
-            initializeSketchViewModel(() => {
-                sketchViewModel.create('polygon');
-                updateStatus('Draw polygon — click points, double-click to finish.');
-            });
+            initializeSketchViewModel(() => { sketchViewModel.create('polygon'); updateStatus('Draw polygon — click points, double-click to finish.'); });
         }
         function enableLineDrawing() {
-            initializeSketchViewModel(() => {
-                sketchViewModel.create('polyline');
-                updateStatus('Draw path — click points, double-click to finish.');
-            });
+            initializeSketchViewModel(() => { sketchViewModel.create('polyline'); updateStatus('Draw path — click points, double-click to finish.'); });
         }
         function enableSingleFeatureSelection() {
             updateStatus('Click on the map to select nearby features.');
@@ -426,544 +382,281 @@
             mapClickHandler = mapView.on('click', async (event) => {
                 try {
                     updateStatus('Selecting features…');
-                    const screenPoint = mapView.toScreen(event.mapPoint);
-                    const tol = 10;
-                    const p1 = mapView.toMap({ x: screenPoint.x, y: screenPoint.y });
-                    const p2 = mapView.toMap({ x: screenPoint.x + tol, y: screenPoint.y });
-                    if (!window.geometryEngine) {
-                        await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine = ge; r(); }));
-                    }
+                    const sp = mapView.toScreen(event.mapPoint);
+                    const p1 = mapView.toMap({ x:sp.x, y:sp.y });
+                    const p2 = mapView.toMap({ x:sp.x+10, y:sp.y });
+                    if (!window.geometryEngine) await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine=ge; r(); }));
                     const bufDist = window.geometryEngine.distance(p1, p2, 'meters');
                     const bufGeom = window.geometryEngine.buffer(event.mapPoint, bufDist, 'meters');
                     await new Promise(r => window.require(['esri/Graphic'], G => {
-                        selectionGraphic = new G({
-                            geometry: event.mapPoint,
-                            symbol: { type:'simple-marker', color:[255,0,0,.8], size:12, outline:{color:[255,255,255,1],width:2} }
-                        });
-                        mapView.graphics.add(selectionGraphic);
-                        r();
+                        selectionGraphic = new G({ geometry:event.mapPoint, symbol:{type:'simple-marker',color:[255,0,0,.8],size:12,outline:{color:[255,255,255,1],width:2}} });
+                        mapView.graphics.add(selectionGraphic); r();
                     }));
                     selectedFeaturesByLayer.clear();
                     await queryAllLayers(bufGeom, 'intersects', null);
                     if (selectedFeaturesByLayer.size > 0) {
-                        displaySelectionResults();
-                        $('#clearSelectionBtn').disabled = false;
+                        displaySelectionResults(); $('#clearSelectionBtn').disabled = false;
                         if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler = null; }
-                    } else {
-                        updateStatus('No features found — try clicking elsewhere.');
-                    }
-                } catch(err) { updateStatus('Error: ' + err.message); }
+                    } else { updateStatus('No features found — try clicking elsewhere.'); }
+                } catch(err) { updateStatus('Error: '+err.message); }
             });
         }
-
         function initializeSketchViewModel(callback) {
             if (!window.require) { updateStatus('Cannot load drawing tools.'); return; }
             if (sketchViewModel) { if (callback) callback(); return; }
             window.require(['esri/widgets/Sketch/SketchViewModel'], SVM => {
                 sketchViewModel = new SVM({
-                    view: mapView, layer: mapView.graphics,
+                    view:mapView, layer:mapView.graphics,
                     polygonSymbol: { type:'simple-fill', color:[255,255,0,.25], outline:{color:[203,166,247,1],width:2} },
-                    polylineSymbol: { type:'simple-line', color:[203,166,247,1], width:3 }
+                    polylineSymbol:{ type:'simple-line', color:[203,166,247,1], width:3 }
                 });
                 sketchViewModel.on('create', async evt => {
                     if (evt.state !== 'complete') return;
                     selectionGraphic = evt.graphic;
-                    if (selectionMode === 'polygon') await selectFeaturesInPolygon(selectionGraphic.geometry);
-                    else if (selectionMode === 'line') await selectFeaturesAlongLine(selectionGraphic.geometry);
+                    if (selectionMode==='polygon') await selectFeaturesInPolygon(selectionGraphic.geometry);
+                    else if (selectionMode==='line') await selectFeaturesAlongLine(selectionGraphic.geometry);
                     $('#clearSelectionBtn').disabled = false;
                 });
                 if (callback) callback();
             });
         }
-
-        // Key fix: use layer.uid (via layerKey()) so duplicate layers each get
-        // their own entry in the Map instead of overwriting each other.
         async function queryAllLayers(geometry, spatialRel, lineForOrder) {
-            const allFL = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+            const allFL = mapView.map.allLayers.filter(l => l.type==='feature' && l.visible);
             await Promise.all(allFL.toArray().map(async layer => {
                 try {
                     await layer.load();
-                    let lv = null;
-                    try { lv = await mapView.whenLayerView(layer); } catch(e){}
-                    const qp = { geometry, spatialRelationship: spatialRel, returnGeometry:true, outFields:['*'] };
+                    let lv = null; try { lv = await mapView.whenLayerView(layer); } catch(e){}
+                    const qp = { geometry, spatialRelationship:spatialRel, returnGeometry:true, outFields:['*'] };
                     if (lv?.filter?.where) qp.where = lv.filter.where;
                     else if (layer.definitionExpression) qp.where = layer.definitionExpression;
                     const res = await layer.queryFeatures(qp);
                     if (!res.features.length) return;
-                    let features = res.features;
-                    let orderedByLine = false;
-                    if (lineForOrder) {
-                        features = orderFeaturesAlongLine(features, lineForOrder);
-                        orderedByLine = true;
-                    }
-                    // Use layerKey(layer) — unique per instance — as the Map key.
+                    let features = res.features, orderedByLine = false;
+                    if (lineForOrder) { features = orderFeaturesAlongLine(features, lineForOrder); orderedByLine = true; }
                     selectedFeaturesByLayer.set(layerKey(layer), { layer, features, orderedByLine });
                 } catch(e) { console.warn('Layer query error:', layer.title, e); }
             }));
         }
-
         function orderFeaturesAlongLine(features, line) {
             return features.map(f => {
                 let dist = 0;
                 try {
-                    let pt = f.geometry.type === 'point' ? f.geometry
-                           : f.geometry.type === 'polygon' ? f.geometry.centroid
-                           : f.geometry.type === 'polyline' && f.geometry.paths?.[0]
-                             ? { type:'point', x:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][0],
-                                 y:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][1],
-                                 spatialReference:f.geometry.spatialReference }
+                    let pt = f.geometry.type==='point' ? f.geometry
+                           : f.geometry.type==='polygon' ? f.geometry.centroid
+                           : f.geometry.type==='polyline' && f.geometry.paths?.[0]
+                             ? { type:'point', x:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][0], y:f.geometry.paths[0][Math.floor(f.geometry.paths[0].length/2)][1], spatialReference:f.geometry.spatialReference }
                              : null;
                     if (pt) {
                         const nc = window.geometryEngine.nearestCoordinate(line, pt);
                         if (nc?.coordinate && nc.vertexIndex !== undefined) {
                             let cum = 0;
-                            for (let i = 0; i < nc.vertexIndex; i++) {
+                            for (let i=0; i<nc.vertexIndex; i++) {
                                 const a = { type:'point', x:line.paths[0][i][0],   y:line.paths[0][i][1],   spatialReference:line.spatialReference };
                                 const b = { type:'point', x:line.paths[0][i+1][0], y:line.paths[0][i+1][1], spatialReference:line.spatialReference };
                                 cum += window.geometryEngine.distance(a, b, 'meters');
                             }
-                            const lastV = { type:'point', x:line.paths[0][nc.vertexIndex][0], y:line.paths[0][nc.vertexIndex][1], spatialReference:line.spatialReference };
-                            cum += window.geometryEngine.distance(lastV, nc.coordinate, 'meters');
+                            const lv = { type:'point', x:line.paths[0][nc.vertexIndex][0], y:line.paths[0][nc.vertexIndex][1], spatialReference:line.spatialReference };
+                            cum += window.geometryEngine.distance(lv, nc.coordinate, 'meters');
                             dist = cum;
                         }
                     }
                 } catch(e){}
                 return { f, dist };
-            }).sort((a,b) => a.dist - b.dist).map(x => x.f);
+            }).sort((a,b)=>a.dist-b.dist).map(x=>x.f);
         }
-
         async function selectFeaturesInPolygon(polygon) {
-            updateStatus('Selecting features in polygon…');
-            selectedFeaturesByLayer.clear();
-            await queryAllLayers(polygon, 'intersects', null);
-            displaySelectionResults();
+            updateStatus('Selecting features in polygon…'); selectedFeaturesByLayer.clear();
+            await queryAllLayers(polygon, 'intersects', null); displaySelectionResults();
         }
-
         async function selectFeaturesAlongLine(line) {
-            updateStatus('Selecting features along line…');
-            selectedFeaturesByLayer.clear();
-            if (!window.geometryEngine) {
-                await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine = ge; r(); }));
-            }
-            const mpp = mapView.extent.width / mapView.width;
-            const bufDist = mpp * 20;
+            updateStatus('Selecting features along line…'); selectedFeaturesByLayer.clear();
+            if (!window.geometryEngine) await new Promise(r => window.require(['esri/geometry/geometryEngine'], ge => { window.geometryEngine=ge; r(); }));
+            const bufDist = (mapView.extent.width / mapView.width) * 20;
             const bufGeom = window.geometryEngine.buffer(line, bufDist, 'meters');
             await queryAllLayers(bufGeom, 'intersects', line);
             displaySelectionResults();
             updateStatus(`Features selected along path (${Math.round(bufDist)}m buffer).`);
         }
-
         function displaySelectionResults() {
             const div = $('#selectionResults');
-            if (selectedFeaturesByLayer.size === 0) {
-                div.innerHTML = '<div style="color:#f38ba8;font-size:11px;padding:6px 0;">No features found in selection.</div>';
+            if (!selectedFeaturesByLayer.size) {
+                div.innerHTML = '<div style="color:#f38ba8;font-size:11px;padding:6px 0;">No features found.</div>';
                 $('#configureLayersBtn').style.display = 'none';
             } else {
                 let html = '<div class="card" style="padding:8px;">';
-                selectedFeaturesByLayer.forEach((d) => {
+                selectedFeaturesByLayer.forEach(d => {
                     html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #313244;">
                         <span style="font-size:11px;color:#cdd6f4;">${d.layer.title}</span>
                         <span style="font-size:11px;color:#a6e3a1;font-weight:700;">${d.features.length}
-                        ${d.orderedByLine ? '<span style="color:#89b4fa;font-size:9px;margin-left:4px;">↗ ordered</span>' : ''}</span>
-                    </div>`;
+                        ${d.orderedByLine?'<span style="color:#89b4fa;font-size:9px;margin-left:4px;">↗ ordered</span>':''}</span></div>`;
                 });
-                html += '</div>';
-                div.innerHTML = html;
+                div.innerHTML = html + '</div>';
                 $('#configureLayersBtn').style.display = 'block';
             }
             updateStatus(`Found features in ${selectedFeaturesByLayer.size} layer(s).`);
         }
-
         function clearSelection() {
             if (selectionGraphic) { mapView.graphics.remove(selectionGraphic); selectionGraphic = null; }
             if (mapClickHandler)  { mapClickHandler.remove(); mapClickHandler = null; }
-            clearHighlights();
-            $('#clearSelectionBtn').disabled = true;
-            selectedFeaturesByLayer.clear();
-            $('#selectionResults').innerHTML = '';
-            $('#configureLayersBtn').style.display = 'none';
-            updateStatus('Selection cleared.');
+            clearHighlights(); $('#clearSelectionBtn').disabled = true;
+            selectedFeaturesByLayer.clear(); $('#selectionResults').innerHTML = '';
+            $('#configureLayersBtn').style.display = 'none'; updateStatus('Selection cleared.');
         }
 
         // ── Layer Configuration ───────────────────────────────────────────────
         async function showLayerConfiguration() {
-            const container = $('#layerConfigContainer');
-            container.innerHTML = '';
+            const container = $('#layerConfigContainer'); container.innerHTML = '';
             let order = 1;
             for (const [, data] of selectedFeaturesByLayer) {
-                const sec = await createLayerConfigSection(data.layer, data.features, order++);
-                container.appendChild(sec);
+                container.appendChild(await createLayerConfigSection(data.layer, data.features, order++));
             }
-            setPhase('configuration');
-            updateStatus('Configure layers and fields, then click Review & Start.');
+            setPhase('configuration'); updateStatus('Configure layers and fields, then click Review & Start.');
         }
-
         async function createLayerConfigSection(layer, features, order) {
-            // lid is the unique per-instance key used for Map lookups AND element IDs.
             const lid = layerKey(layer);
-
             const card = document.createElement('div');
-            card.className = 'layerCard';
-            card.dataset.layerId = lid;   // stores the uid-based key, NOT the numeric layerId
-            card.dataset.order   = order;
+            card.className='layerCard'; card.dataset.layerId=lid; card.dataset.order=order;
 
-            const header = document.createElement('div');
-            header.className = 'layerCardHeader';
+            const header = document.createElement('div'); header.className='layerCardHeader';
+            const toggleWrap = document.createElement('label'); toggleWrap.className='toggle-wrap';
+            const toggleInput = document.createElement('input'); toggleInput.type='checkbox'; toggleInput.id=`layer_${lid}_enabled`;
+            const toggleSlider = document.createElement('div'); toggleSlider.className='toggle-slider';
+            toggleWrap.appendChild(toggleInput); toggleWrap.appendChild(toggleSlider);
+            const titleSpan = document.createElement('span'); titleSpan.style.cssText='flex:1;font-weight:700;font-size:12px;'; titleSpan.textContent=layer.title;
+            const countBadge = document.createElement('span'); countBadge.className='fieldBadge'; countBadge.textContent=`${features.length} features`;
+            const chevron = document.createElement('span'); chevron.textContent='▼'; chevron.style.cssText='font-size:10px;color:#6c7086;';
+            header.appendChild(toggleWrap); header.appendChild(titleSpan); header.appendChild(countBadge); header.appendChild(chevron);
 
-            const toggleWrap = document.createElement('label');
-            toggleWrap.className = 'toggle-wrap';
-            const toggleInput = document.createElement('input');
-            toggleInput.type = 'checkbox';
-            toggleInput.id   = `layer_${lid}_enabled`;
-            const toggleSlider = document.createElement('div');
-            toggleSlider.className = 'toggle-slider';
-            toggleWrap.appendChild(toggleInput);
-            toggleWrap.appendChild(toggleSlider);
+            const body = document.createElement('div'); body.className='layerCardBody';
 
-            const titleSpan = document.createElement('span');
-            titleSpan.style.cssText = 'flex:1;font-weight:700;font-size:12px;';
-            titleSpan.textContent = layer.title;
-
-            const countBadge = document.createElement('span');
-            countBadge.className = 'fieldBadge';
-            countBadge.textContent = `${features.length} features`;
-
-            const chevron = document.createElement('span');
-            chevron.textContent = '▼';
-            chevron.style.cssText = 'font-size:10px;color:#6c7086;';
-
-            header.appendChild(toggleWrap);
-            header.appendChild(titleSpan);
-            header.appendChild(countBadge);
-            header.appendChild(chevron);
-
-            const body = document.createElement('div');
-            body.className = 'layerCardBody';
-
-            // Mode selector
-            const modeRow = document.createElement('div');
-            modeRow.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;';
+            const modeRow = document.createElement('div'); modeRow.style.cssText='display:flex;gap:8px;margin-bottom:10px;';
             ['edit','view'].forEach(m => {
-                const lbl = document.createElement('label');
-                lbl.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#a6adc8;';
-                const rdo = document.createElement('input');
-                rdo.type = 'radio'; rdo.name = `mode_${lid}`; rdo.value = m;
-                if (m === 'edit') rdo.checked = true;
-                rdo.style.accentColor = '#cba6f7';
-                lbl.appendChild(rdo);
-                lbl.appendChild(document.createTextNode(m === 'edit' ? '✏️ Edit Fields' : '👁 View Only'));
-                modeRow.appendChild(lbl);
+                const lbl = document.createElement('label'); lbl.style.cssText='display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:#a6adc8;';
+                const rdo = document.createElement('input'); rdo.type='radio'; rdo.name=`mode_${lid}`; rdo.value=m; if(m==='edit') rdo.checked=true; rdo.style.accentColor='#cba6f7';
+                lbl.appendChild(rdo); lbl.appendChild(document.createTextNode(m==='edit'?'✏️ Edit Fields':'👁 View Only')); modeRow.appendChild(lbl);
             });
 
-            // Fields section
             await layer.load();
-            const editableFields = layer.fields
-                .filter(f => f.editable && f.type !== 'oid' && f.type !== 'global-id')
-                .sort((a,b) => (a.alias||a.name).localeCompare(b.alias||b.name));
+            const editableFields = layer.fields.filter(f=>f.editable&&f.type!=='oid'&&f.type!=='global-id').sort((a,b)=>(a.alias||a.name).localeCompare(b.alias||b.name));
+            const fieldsSection = document.createElement('div'); fieldsSection.id=`fields_${lid}`;
 
-            const fieldsSection = document.createElement('div');
-            fieldsSection.id = `fields_${lid}`;
-
-            if (editableFields.length > 0) {
-                const searchSortRow = document.createElement('div');
-                searchSortRow.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
-                const fsearch = document.createElement('input');
-                fsearch.type = 'text'; fsearch.placeholder = 'Search fields…';
-                fsearch.className = 'input-ctrl'; fsearch.style.flex = '1'; fsearch.style.fontSize = '11px';
-                const sortBtn = document.createElement('button');
-                sortBtn.className = 'btn btn-secondary';
-                sortBtn.style.cssText = 'font-size:10px;padding:4px 8px;white-space:nowrap;';
-                sortBtn.textContent = 'A→Z';
-                let sortAsc = true;
-                searchSortRow.appendChild(fsearch);
-                searchSortRow.appendChild(sortBtn);
-
-                const fieldListContainer = document.createElement('div');
-                fieldListContainer.className = 'fieldListContainer';
+            if (editableFields.length>0) {
+                const searchSortRow = document.createElement('div'); searchSortRow.style.cssText='display:flex;gap:6px;margin-bottom:6px;';
+                const fsearch = document.createElement('input'); fsearch.type='text'; fsearch.placeholder='Search fields…'; fsearch.className='input-ctrl'; fsearch.style.flex='1'; fsearch.style.fontSize='11px';
+                const sortBtn = document.createElement('button'); sortBtn.className='btn btn-secondary'; sortBtn.style.cssText='font-size:10px;padding:4px 8px;white-space:nowrap;'; sortBtn.textContent='A→Z';
+                let sortAsc=true; searchSortRow.appendChild(fsearch); searchSortRow.appendChild(sortBtn);
+                const fieldListContainer = document.createElement('div'); fieldListContainer.className='fieldListContainer';
 
                 function renderFieldList(filterText='', ascending=true) {
-                    // Preserve existing checked state before re-rendering
-                    const prevChecked = new Set(
-                        Array.from(fieldListContainer.querySelectorAll('input[type=checkbox]:checked'))
-                            .map(c => c.dataset.fieldName)
-                    );
-                    fieldListContainer.innerHTML = '';
-                    let flds = editableFields.filter(f => (f.alias||f.name).toLowerCase().includes(filterText.toLowerCase()));
-                    if (!ascending) flds = [...flds].reverse();
-                    flds.forEach(field => {
-                        const row = document.createElement('div');
-                        row.className = 'fieldItem';
-                        const chk = document.createElement('input');
-                        chk.type = 'checkbox'; chk.dataset.fieldName = field.name;
-                        chk.style.accentColor = '#cba6f7';
-                        chk.checked = prevChecked.has(field.name);
-                        const lbl = document.createElement('span');
-                        lbl.style.cssText = 'flex:1;font-size:11px;';
-                        lbl.textContent = field.alias || field.name;
-                        const badge = document.createElement('span');
-                        badge.className = 'fieldBadge';
-                        badge.textContent = getFieldTypeLabel(field);
-                        row.appendChild(chk);
-                        row.appendChild(lbl);
-                        row.appendChild(badge);
-                        row.addEventListener('click', e => { if (e.target !== chk) chk.checked = !chk.checked; });
+                    const prevChecked = new Set(Array.from(fieldListContainer.querySelectorAll('input[type=checkbox]:checked')).map(c=>c.dataset.fieldName));
+                    fieldListContainer.innerHTML='';
+                    let flds = editableFields.filter(f=>(f.alias||f.name).toLowerCase().includes(filterText.toLowerCase()));
+                    if (!ascending) flds=[...flds].reverse();
+                    flds.forEach(field=>{
+                        const row=document.createElement('div'); row.className='fieldItem';
+                        const chk=document.createElement('input'); chk.type='checkbox'; chk.dataset.fieldName=field.name; chk.style.accentColor='#cba6f7'; chk.checked=prevChecked.has(field.name);
+                        const lbl=document.createElement('span'); lbl.style.cssText='flex:1;font-size:11px;'; lbl.textContent=field.alias||field.name;
+                        const badge=document.createElement('span'); badge.className='fieldBadge'; badge.textContent=getFieldTypeLabel(field);
+                        row.appendChild(chk); row.appendChild(lbl); row.appendChild(badge);
+                        row.addEventListener('click',e=>{ if(e.target!==chk) chk.checked=!chk.checked; });
                         fieldListContainer.appendChild(row);
                     });
                 }
                 renderFieldList();
+                fsearch.oninput=()=>renderFieldList(fsearch.value,sortAsc);
+                sortBtn.onclick=()=>{ sortAsc=!sortAsc; sortBtn.textContent=sortAsc?'A→Z':'Z→A'; renderFieldList(fsearch.value,sortAsc); };
+                fieldsSection.getCheckedFields=()=>Array.from(fieldListContainer.querySelectorAll('input[type=checkbox]:checked')).map(c=>c.dataset.fieldName);
+                fieldsSection.setCheckedFields=(names)=>{ fieldListContainer.querySelectorAll('input[type=checkbox]').forEach(c=>{ c.checked=names.includes(c.dataset.fieldName); }); };
+                fieldsSection.appendChild(searchSortRow); fieldsSection.appendChild(fieldListContainer);
+            } else { fieldsSection.innerHTML='<div style="color:#6c7086;font-size:11px;">No editable fields.</div>'; }
 
-                fsearch.oninput = () => renderFieldList(fsearch.value, sortAsc);
-                sortBtn.onclick = () => {
-                    sortAsc = !sortAsc;
-                    sortBtn.textContent = sortAsc ? 'A→Z' : 'Z→A';
-                    renderFieldList(fsearch.value, sortAsc);
-                };
+            const optDiv=document.createElement('div'); optDiv.style.cssText='display:flex;gap:12px;margin-top:8px;margin-bottom:8px;';
+            optDiv.innerHTML=`<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="popup_${lid}" checked style="accent-color:#cba6f7;"> Show Popup</label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="allowskip_${lid}" checked style="accent-color:#cba6f7;"> Allow Skip</label>`;
 
-                fieldsSection.getCheckedFields = () =>
-                    Array.from(fieldListContainer.querySelectorAll('input[type=checkbox]:checked'))
-                        .map(c => c.dataset.fieldName);
-
-                fieldsSection.setCheckedFields = (names) => {
-                    fieldListContainer.querySelectorAll('input[type=checkbox]').forEach(c => {
-                        c.checked = names.includes(c.dataset.fieldName);
-                    });
-                };
-
-                fieldsSection.appendChild(searchSortRow);
-                fieldsSection.appendChild(fieldListContainer);
-            } else {
-                fieldsSection.innerHTML = '<div style="color:#6c7086;font-size:11px;">No editable fields.</div>';
-            }
-
-            // Options
-            const optDiv = document.createElement('div');
-            optDiv.style.cssText = 'display:flex;gap:12px;margin-top:8px;margin-bottom:8px;';
-            optDiv.innerHTML = `
-                <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;">
-                    <input type="checkbox" id="popup_${lid}" checked style="accent-color:#cba6f7;"> Show Popup
-                </label>
-                <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;">
-                    <input type="checkbox" id="allowskip_${lid}" checked style="accent-color:#cba6f7;"> Allow Skip
-                </label>`;
-
-            // Filter
-            const filterDiv = document.createElement('div');
-            filterDiv.style.cssText = 'border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
-            filterDiv.innerHTML = `
-                <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:4px;">
-                    <input type="checkbox" id="enableFilter_${lid}" style="accent-color:#cba6f7;"> WHERE clause filter
-                </label>
+            const filterDiv=document.createElement('div'); filterDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
+            filterDiv.innerHTML=`<label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:4px;"><input type="checkbox" id="enableFilter_${lid}" style="accent-color:#cba6f7;"> WHERE clause filter</label>
                 <div id="filterInputs_${lid}" style="display:none;">
-                    <textarea id="filterWhere_${lid}" class="input-ctrl"
-                        placeholder="e.g. status = 'ASSG' AND count > 5"
-                        style="min-height:44px;font-family:monospace;font-size:10px;resize:vertical;"></textarea>
+                    <textarea id="filterWhere_${lid}" class="input-ctrl" placeholder="e.g. status = 'ASSG' AND count > 5" style="min-height:44px;font-family:monospace;font-size:10px;resize:vertical;"></textarea>
                     <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
                         <button class="testFilterBtn btn btn-info" style="font-size:10px;padding:3px 8px;">Test</button>
                         <span class="filterTestResult" style="font-size:10px;"></span>
                     </div>
                 </div>`;
-
-            filterDiv.querySelector(`#enableFilter_${lid}`).onchange = (e) => {
-                filterDiv.querySelector(`#filterInputs_${lid}`).style.display = e.target.checked ? 'block' : 'none';
-            };
-            filterDiv.querySelector('.testFilterBtn').onclick = async () => {
-                const tr  = filterDiv.querySelector('.filterTestResult');
-                const wh  = filterDiv.querySelector(`#filterWhere_${lid}`).value.trim().replace(/\\"/g,'"').replace(/\\'/g,"'");
-                if (!wh) { tr.textContent = 'Enter a WHERE clause first'; tr.style.color = '#f38ba8'; return; }
-                tr.textContent = 'Testing…'; tr.style.color = '#a6adc8';
-                try {
-                    // Look up by uid-based key (lid)
-                    const d = selectedFeaturesByLayer.get(lid);
-                    const q = { where:wh, returnCountOnly:true, returnGeometry:false };
-                    if (selectionGraphic?.geometry) { q.geometry = selectionGraphic.geometry; q.spatialRelationship = 'intersects'; }
-                    const res = await layer.queryFeatures(q);
-                    tr.textContent = `✓ ${res.count} / ${d?.features.length || '?'} match`;
-                    tr.style.color = '#a6e3a1';
-                } catch(err) { tr.textContent = '✗ ' + err.message; tr.style.color = '#f38ba8'; }
+            filterDiv.querySelector(`#enableFilter_${lid}`).onchange=e=>{ filterDiv.querySelector(`#filterInputs_${lid}`).style.display=e.target.checked?'block':'none'; };
+            filterDiv.querySelector('.testFilterBtn').onclick=async()=>{
+                const tr=filterDiv.querySelector('.filterTestResult'), wh=filterDiv.querySelector(`#filterWhere_${lid}`).value.trim().replace(/\\"/g,'"').replace(/\\'/g,"'");
+                if(!wh){tr.textContent='Enter a WHERE clause first';tr.style.color='#f38ba8';return;}
+                tr.textContent='Testing…';tr.style.color='#a6adc8';
+                try{const d=selectedFeaturesByLayer.get(lid),q={where:wh,returnCountOnly:true,returnGeometry:false};if(selectionGraphic?.geometry){q.geometry=selectionGraphic.geometry;q.spatialRelationship='intersects';}const res=await layer.queryFeatures(q);tr.textContent=`✓ ${res.count}/${d?.features.length||'?'} match`;tr.style.color='#a6e3a1';}
+                catch(err){tr.textContent='✗ '+err.message;tr.style.color='#f38ba8';}
             };
 
-            // Order control
-            const orderDiv = document.createElement('div');
-            orderDiv.style.cssText = 'border-top:1px solid #313244;padding-top:8px;margin-top:8px;display:flex;align-items:center;gap:8px;';
-            orderDiv.innerHTML = `<span style="font-size:11px;color:#a6adc8;">Order:</span>
-                <input type="number" min="1" value="${order}" class="orderInput input-ctrl" style="width:50px;">
-                <button class="moveUp   btn btn-secondary" style="padding:3px 8px;">↑</button>
-                <button class="moveDown btn btn-secondary" style="padding:3px 8px;">↓</button>`;
+            const orderDiv=document.createElement('div'); orderDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:8px;display:flex;align-items:center;gap:8px;';
+            orderDiv.innerHTML=`<span style="font-size:11px;color:#a6adc8;">Order:</span><input type="number" min="1" value="${order}" class="orderInput input-ctrl" style="width:50px;"><button class="moveUp btn btn-secondary" style="padding:3px 8px;">↑</button><button class="moveDown btn btn-secondary" style="padding:3px 8px;">↓</button>`;
 
-            body.appendChild(modeRow);
-            body.appendChild(fieldsSection);
-            body.appendChild(optDiv);
-            body.appendChild(filterDiv);
-            body.appendChild(orderDiv);
-
-            // Mode toggle hides fields
-            modeRow.querySelectorAll('input[type=radio]').forEach(r => {
-                r.onchange = () => { fieldsSection.style.display = r.value === 'edit' ? 'block' : 'none'; };
-            });
-
-            // Collapse toggle
-            header.addEventListener('click', (e) => {
-                if (e.target.closest('label.toggle-wrap')) return;
-                const open = body.style.display === 'block';
-                body.style.display = open ? 'none' : 'block';
-                chevron.textContent = open ? '▼' : '▲';
-            });
-            toggleInput.onchange = () => {
-                card.classList.toggle('enabled', toggleInput.checked);
-                if (toggleInput.checked) { body.style.display = 'block'; chevron.textContent = '▲'; }
-            };
-
-            card.appendChild(header);
-            card.appendChild(body);
+            body.appendChild(modeRow); body.appendChild(fieldsSection); body.appendChild(optDiv); body.appendChild(filterDiv); body.appendChild(orderDiv);
+            modeRow.querySelectorAll('input[type=radio]').forEach(r=>{ r.onchange=()=>{ fieldsSection.style.display=r.value==='edit'?'block':'none'; }; });
+            header.addEventListener('click',e=>{ if(e.target.closest('label.toggle-wrap'))return; const open=body.style.display==='block'; body.style.display=open?'none':'block'; chevron.textContent=open?'▼':'▲'; });
+            toggleInput.onchange=()=>{ card.classList.toggle('enabled',toggleInput.checked); if(toggleInput.checked){body.style.display='block';chevron.textContent='▲';} };
+            card.appendChild(header); card.appendChild(body);
             return card;
         }
-
         function getFieldTypeLabel(field) {
-            if (field.domain?.type === 'coded-value') return 'Dropdown';
-            const map = { integer:'Int', 'small-integer':'Int', double:'Decimal', single:'Decimal', date:'Date', string:'Text' };
-            return map[field.type] || field.type;
+            if (field.domain?.type==='coded-value') return 'Dropdown';
+            return { integer:'Int','small-integer':'Int',double:'Decimal',single:'Decimal',date:'Date',string:'Text' }[field.type]||field.type;
         }
 
-        // ── Summary / Build ───────────────────────────────────────────────────
+        // ── Summary ───────────────────────────────────────────────────────────
         function buildSummary() {
-            layerConfigs = [];
-            const sections = $('#layerConfigContainer').querySelectorAll('[data-layer-id]');
-            sections.forEach(section => {
-                const lid = section.dataset.layerId;  // uid-based key (string)
-                const checkbox = section.querySelector(`#layer_${lid}_enabled`);
-                if (!checkbox?.checked) return;
-
-                const data = selectedFeaturesByLayer.get(lid);
-                if (!data) return;
-
-                const mode = section.querySelector(`input[name="mode_${lid}"]:checked`)?.value || 'edit';
-                const config = {
-                    lid,                              // uid-based key for runtime lookups
-                    layerId: data.layer.layerId,      // numeric service ID for saved-config matching
-                    layer: data.layer,
-                    features: data.features,
-                    mode,
-                    order: parseInt(section.dataset.order || 1),
-                    showPopup: section.querySelector(`#popup_${lid}`)?.checked ?? true,
-                    allowSkip: section.querySelector(`#allowskip_${lid}`)?.checked ?? true,
-                    fields: [],
-                    filterEnabled: false, filterWhere: ''
-                };
-
-                const filterEn = section.querySelector(`#enableFilter_${lid}`);
-                if (filterEn?.checked) {
-                    const fw = section.querySelector(`#filterWhere_${lid}`)?.value.trim();
-                    if (fw) { config.filterEnabled = true; config.filterWhere = fw; }
-                }
-
-                if (mode === 'edit') {
-                    const fieldsDiv = section.querySelector(`#fields_${lid}`);
-                    const names = fieldsDiv?.getCheckedFields
-                        ? fieldsDiv.getCheckedFields()
-                        : Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c => c.dataset.fieldName);
-                    names.forEach(name => {
-                        const field = data.layer.fields.find(f => f.name === name);
-                        if (field) config.fields.push(field);
-                    });
-                    config.fields.sort((a,b) => (a.alias||a.name).localeCompare(b.alias||b.name));
-                }
+            layerConfigs=[];
+            $('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{
+                const lid=section.dataset.layerId, chk=section.querySelector(`#layer_${lid}_enabled`);
+                if(!chk?.checked)return;
+                const data=selectedFeaturesByLayer.get(lid); if(!data)return;
+                const mode=section.querySelector(`input[name="mode_${lid}"]:checked`)?.value||'edit';
+                const config={lid,layerId:data.layer.layerId,layer:data.layer,features:data.features,mode,order:parseInt(section.dataset.order||1),showPopup:section.querySelector(`#popup_${lid}`)?.checked??true,allowSkip:section.querySelector(`#allowskip_${lid}`)?.checked??true,fields:[],filterEnabled:false,filterWhere:''};
+                const filterEn=section.querySelector(`#enableFilter_${lid}`);
+                if(filterEn?.checked){const fw=section.querySelector(`#filterWhere_${lid}`)?.value.trim();if(fw){config.filterEnabled=true;config.filterWhere=fw;}}
+                if(mode==='edit'){const fd=section.querySelector(`#fields_${lid}`);const names=fd?.getCheckedFields?fd.getCheckedFields():Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);names.forEach(n=>{const f=data.layer.fields.find(f=>f.name===n);if(f)config.fields.push(f);});config.fields.sort((a,b)=>(a.alias||a.name).localeCompare(b.alias||b.name));}
                 layerConfigs.push(config);
             });
-            layerConfigs.sort((a,b) => a.order - b.order);
-            applyFiltersToConfigs().then(() => {
-                if ($('#skipSummaryChk')?.checked) startEditing();
-                else displaySummary();
-            });
+            layerConfigs.sort((a,b)=>a.order-b.order);
+            applyFiltersToConfigs().then(()=>{ if($('#skipSummaryChk')?.checked) startEditing(); else displaySummary(); });
         }
-
         async function applyFiltersToConfigs() {
-            for (const config of layerConfigs) {
-                if (!config.filterEnabled || !config.filterWhere) { config.filterApplied = false; continue; }
-                try {
-                    const clean = config.filterWhere.replace(/\\"/g,'"').replace(/\\'/g,"'");
-                    const qp = { where:clean, returnGeometry:true, outFields:['*'] };
-                    if (selectionGraphic?.geometry) { qp.geometry = selectionGraphic.geometry; qp.spatialRelationship = 'intersects'; }
-                    const res = await config.layer.queryFeatures(qp);
-                    config.features = res.features; config.filterApplied = true;
-                } catch(err) { config.filterError = err.message; config.filterApplied = false; }
-            }
+            for(const c of layerConfigs){if(!c.filterEnabled||!c.filterWhere){c.filterApplied=false;continue;}try{const clean=c.filterWhere.replace(/\\"/g,'"').replace(/\\'/g,"'"),qp={where:clean,returnGeometry:true,outFields:['*']};if(selectionGraphic?.geometry){qp.geometry=selectionGraphic.geometry;qp.spatialRelationship='intersects';}const res=await c.layer.queryFeatures(qp);c.features=res.features;c.filterApplied=true;}catch(err){c.filterError=err.message;c.filterApplied=false;}}
         }
-
         function displaySummary() {
-            if (!layerConfigs.length) {
-                $('#summaryContent').innerHTML = '<span style="color:#f38ba8;">No layers selected.</span>';
-                $('#startEditingBtn').disabled = true;
-            } else {
-                $('#startEditingBtn').disabled = false;
-                let total = 0, html = '';
-                layerConfigs.forEach((c,i) => {
-                    total += c.features.length;
-                    html += `<div style="padding:6px 0;border-bottom:1px solid #313244;">
-                        <div style="font-weight:700;font-size:12px;">${i+1}. ${c.mode==='edit'?'✏️':'👁'} ${c.layer.title}</div>
-                        <div style="font-size:11px;color:#a6adc8;">${c.features.length} features
-                            ${c.filterApplied ? '<span style="color:#89b4fa;">· filtered</span>' : ''}
-                        </div>
-                        ${c.fields.length ? `<div style="font-size:10px;color:#6c7086;margin-top:2px;">Fields: ${c.fields.map(f=>f.alias||f.name).join(', ')}</div>` : ''}
-                    </div>`;
-                });
-                $('#summaryContent').innerHTML = `<div style="font-size:13px;font-weight:700;color:#a6e3a1;margin-bottom:8px;">${total} features total</div>` + html;
-            }
-            setPhase('summary');
-            updateStatus('Review your configuration before starting.');
+            if(!layerConfigs.length){$('#summaryContent').innerHTML='<span style="color:#f38ba8;">No layers selected.</span>';$('#startEditingBtn').disabled=true;}
+            else{$('#startEditingBtn').disabled=false;let total=0,html='';layerConfigs.forEach((c,i)=>{total+=c.features.length;html+=`<div style="padding:6px 0;border-bottom:1px solid #313244;"><div style="font-weight:700;font-size:12px;">${i+1}. ${c.mode==='edit'?'✏️':'👁'} ${c.layer.title}</div><div style="font-size:11px;color:#a6adc8;">${c.features.length} features${c.filterApplied?'<span style="color:#89b4fa;"> · filtered</span>':''}</div>${c.fields.length?`<div style="font-size:10px;color:#6c7086;margin-top:2px;">Fields: ${c.fields.map(f=>f.alias||f.name).join(', ')}</div>`:''}</div>`;});$('#summaryContent').innerHTML=`<div style="font-size:13px;font-weight:700;color:#a6e3a1;margin-bottom:8px;">${total} features total</div>`+html;}
+            setPhase('summary'); updateStatus('Review your configuration before starting.');
         }
 
         // ── Editing ───────────────────────────────────────────────────────────
         function startEditing() {
-            const bulkEditEnabled = $('#bulkEditMode')?.checked;
-            sessionStartTime = new Date();
-            editLog = [];
-            lastSubmittedValues = null;
-            try {
-                const sel = $('#savedConfigSelect');
-                if (sel?.value) localStorage.setItem('pathEditorLastConfig', sel.value);
-            } catch(e){}
-            if (bulkEditEnabled) { startBulkEdit(); return; }
-            currentEditingQueue = [];
-            layerConfigs.forEach(config => {
-                config.features.forEach(feature => {
-                    currentEditingQueue.push({ layer:config.layer, feature, fields:config.fields, mode:config.mode, showPopup:config.showPopup, allowSkip:config.allowSkip });
-                });
-            });
-            currentIndex = 0;
-            setPhase('editing');
-            showCurrentFeature();
+            sessionStartTime=new Date(); editLog=[]; lastSubmittedValues=null;
+            try{const sel=$('#savedConfigSelect');if(sel?.value)localStorage.setItem('pathEditorLastConfig',sel.value);}catch(e){}
+            if($('#bulkEditMode')?.checked){startBulkEdit();return;}
+            currentEditingQueue=[];
+            layerConfigs.forEach(cfg=>cfg.features.forEach(f=>currentEditingQueue.push({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip})));
+            currentIndex=0; setPhase('editing'); showCurrentFeature();
         }
-
         function showCurrentFeature() {
-            if (currentIndex >= currentEditingQueue.length) {
-                setPhase('complete'); clearHighlights(); displayEditSummary();
-                updateStatus('All features processed!');
-                return;
-            }
-            const item = currentEditingQueue[currentIndex];
-            const pct = Math.round((currentIndex / currentEditingQueue.length) * 100);
-            $('#editingProgress').innerHTML = `
-                <div style="display:flex;justify-content:space-between;font-size:12px;">
-                    <span><strong>${currentIndex+1}</strong> / ${currentEditingQueue.length}</span>
-                    <span style="color:#a6adc8;font-size:11px;">${item.layer.title}</span>
-                </div>
-                <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`;
-            const oidField = getObjectIdField(item.feature);
-            const oid = item.feature.attributes[oidField];
-            $('#featureInfo').innerHTML = `<strong>OID:</strong> ${oid} &nbsp;|&nbsp; <strong>Mode:</strong> ${item.mode==='edit'?'Editing':'View Only'}`;
-            const fc = $('#editFormContainer');
-            fc.innerHTML = '';
-            if (item.mode === 'edit' && item.fields.length > 0) {
-                item.fields.forEach(field => fc.appendChild(createFieldInput(field, item.feature.attributes[field.name])));
-            } else {
-                fc.innerHTML = '<div style="color:#6c7086;font-style:italic;font-size:12px;">View only — no fields to edit.</div>';
-            }
-            $('#prevBtn').disabled = currentIndex === 0;
-            $('#skipBtn').style.display = item.allowSkip ? 'block' : 'none';
-            const prevRow = $('#applyPrevRow');
-            prevRow.style.display = (lastSubmittedValues && item.mode==='edit' && item.fields.length>0) ? 'block' : 'none';
-            filesToUpload = []; updateFileList();
-            highlightFeature(item.feature, item.showPopup);
+            if(currentIndex>=currentEditingQueue.length){setPhase('complete');clearHighlights();displayEditSummary();updateStatus('All features processed!');return;}
+            const item=currentEditingQueue[currentIndex];
+            const pct=Math.round((currentIndex/currentEditingQueue.length)*100);
+            $('#editingProgress').innerHTML=`<div style="display:flex;justify-content:space-between;font-size:12px;"><span><strong>${currentIndex+1}</strong> / ${currentEditingQueue.length}</span><span style="color:#a6adc8;font-size:11px;">${item.layer.title}</span></div><div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`;
+            const oidField=getObjectIdField(item.feature),oid=item.feature.attributes[oidField];
+            $('#featureInfo').innerHTML=`<strong>OID:</strong> ${oid} &nbsp;|&nbsp; <strong>Mode:</strong> ${item.mode==='edit'?'Editing':'View Only'}`;
+            const fc=$('#editFormContainer'); fc.innerHTML='';
+            if(item.mode==='edit'&&item.fields.length>0) item.fields.forEach(f=>fc.appendChild(createFieldInput(f,item.feature.attributes[f.name])));
+            else fc.innerHTML='<div style="color:#6c7086;font-style:italic;font-size:12px;">View only — no fields to edit.</div>';
+            $('#prevBtn').disabled=currentIndex===0;
+            $('#skipBtn').style.display=item.allowSkip?'block':'none';
+            $('#applyPrevRow').style.display=(lastSubmittedValues&&item.mode==='edit'&&item.fields.length>0)?'block':'none';
+            filesToUpload=[]; updateFileList();
+            highlightFeature(item.feature,item.showPopup);
             updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
         }
 
@@ -982,6 +675,9 @@
                         el.querySelector('.domain-display-text').textContent = opt ? opt.name : val;
                         el.dataset.selectedCode = val;
                     }
+                } else if (el.dataset.fieldType === 'date' && val) {
+                    // val is stored as a ms timestamp; date input needs YYYY-MM-DD
+                    el.value = new Date(val).toISOString().split('T')[0];
                 } else {
                     el.value = val;
                 }
@@ -990,584 +686,269 @@
         }
 
         function collectFormValues(fc) {
-            const vals = {};
-            fc.querySelectorAll('[data-field-name]').forEach(el => {
-                const name = el.dataset.fieldName;
-                const type = el.dataset.fieldType;
-                const raw  = el.dataset.selectedCode !== undefined ? el.dataset.selectedCode : el.value;
-                if (raw === '') return;
-                if (type==='integer'||type==='small-integer') vals[name] = parseInt(raw);
-                else if (type==='double'||type==='single')    vals[name] = parseFloat(raw);
-                else if (type==='date')                        vals[name] = new Date(raw).getTime();
-                else                                           vals[name] = raw;
+            const vals={};
+            fc.querySelectorAll('[data-field-name]').forEach(el=>{
+                const name=el.dataset.fieldName,type=el.dataset.fieldType,raw=el.dataset.selectedCode!==undefined?el.dataset.selectedCode:el.value;
+                if(raw==='')return;
+                if(type==='integer'||type==='small-integer')vals[name]=parseInt(raw);
+                else if(type==='double'||type==='single')vals[name]=parseFloat(raw);
+                else if(type==='date')vals[name]=new Date(raw).getTime();
+                else vals[name]=raw;
             });
             return vals;
         }
 
         async function submitFeature() {
-            const item = currentEditingQueue[currentIndex];
-            if (item.mode === 'view') { currentIndex++; showCurrentFeature(); return; }
-            try {
+            const item=currentEditingQueue[currentIndex];
+            if(item.mode==='view'){currentIndex++;showCurrentFeature();return;}
+            try{
                 updateStatus('Updating feature…');
-                const oidField = getObjectIdField(item.feature);
-                const oid = item.feature.attributes[oidField];
-                const vals = collectFormValues($('#editFormContainer'));
-                const result = await item.layer.applyEdits({ updateFeatures:[{ attributes:{ [oidField]:oid, ...vals } }] });
-                const ur = result.updateFeatureResults?.[0];
-                const ok = ur?.success===true || (ur?.success===undefined && ur?.error===null && (ur?.objectId||ur?.globalId));
-                if (!ok) throw new Error(ur?.error?.message || 'Update failed');
-                lastSubmittedValues = { ...vals };
-                const log = { timestamp:new Date(), action:'update', layerName:item.layer.title, featureOID:oid, changes:{}, success:true };
-                Object.keys(vals).forEach(k => {
-                    const field = item.fields.find(f => f.name === k);
-                    log.changes[k] = { fieldAlias: field ? (field.alias||field.name) : k, oldValue:item.feature.attributes[k], newValue:vals[k] };
-                });
+                const oidField=getObjectIdField(item.feature),oid=item.feature.attributes[oidField];
+                const vals=collectFormValues($('#editFormContainer'));
+                const result=await item.layer.applyEdits({updateFeatures:[{attributes:{[oidField]:oid,...vals}}]});
+                const ur=result.updateFeatureResults?.[0];
+                const ok=ur?.success===true||(ur?.success===undefined&&ur?.error===null&&(ur?.objectId||ur?.globalId));
+                if(!ok)throw new Error(ur?.error?.message||'Update failed');
+                lastSubmittedValues={...vals};
+                const log={timestamp:new Date(),action:'update',layerName:item.layer.title,featureOID:oid,changes:{},success:true};
+                Object.keys(vals).forEach(k=>{const field=item.fields.find(f=>f.name===k);log.changes[k]={fieldAlias:field?(field.alias||field.name):k,oldValue:item.feature.attributes[k],newValue:vals[k]};});
                 editLog.push(log);
+                // Upload any queued attachments silently, then advance
+                if (filesToUpload.length > 0) {
+                    await uploadAttachments(item.layer, item.feature);
+                }
                 updateStatus('Feature updated!');
                 currentIndex++;
-                setTimeout(() => showCurrentFeature(), 400);
-            } catch(err) { updateStatus('Error: ' + err.message); alert('Error updating feature: ' + err.message); }
+                setTimeout(()=>showCurrentFeature(), 400);
+            }catch(err){updateStatus('Error: '+err.message);alert('Error updating feature: '+err.message);}
         }
 
-        function skipFeature() {
-            const item = currentEditingQueue[currentIndex];
-            const oidField = getObjectIdField(item.feature);
-            editLog.push({ timestamp:new Date(), action:'skip', layerName:item.layer.title, featureOID:item.feature.attributes[oidField], success:true });
-            currentIndex++;
-            showCurrentFeature();
-        }
-        function prevFeature() { if (currentIndex > 0) { currentIndex--; showCurrentFeature(); } }
+        function skipFeature(){const item=currentEditingQueue[currentIndex],oidField=getObjectIdField(item.feature);editLog.push({timestamp:new Date(),action:'skip',layerName:item.layer.title,featureOID:item.feature.attributes[oidField],success:true});currentIndex++;showCurrentFeature();}
+        function prevFeature(){if(currentIndex>0){currentIndex--;showCurrentFeature();}}
 
-        // ── Field Input Builders ──────────────────────────────────────────────
-        function getObjectIdField(feature) {
-            if (feature.attributes.objectid !== undefined) return 'objectid';
-            if (feature.attributes.OBJECTID !== undefined) return 'OBJECTID';
-            if (feature.layer?.objectIdField) return feature.layer.objectIdField;
-            return Object.keys(feature.attributes).find(k => k.toUpperCase() === 'OBJECTID') || 'objectid';
-        }
+        // ── Field Input ───────────────────────────────────────────────────────
+        function getObjectIdField(feature){if(feature.attributes.objectid!==undefined)return 'objectid';if(feature.attributes.OBJECTID!==undefined)return 'OBJECTID';if(feature.layer?.objectIdField)return feature.layer.objectIdField;return Object.keys(feature.attributes).find(k=>k.toUpperCase()==='OBJECTID')||'objectid';}
 
         function createFieldInput(field, currentValue) {
-            const container = document.createElement('div');
-            container.style.marginBottom = '10px';
-            const labelRow = document.createElement('div');
-            labelRow.className = 'field-label';
-            labelRow.innerHTML = `<span>${field.alias||field.name}</span><span class="fieldBadge">${getFieldTypeLabel(field)}</span>`;
+            const container=document.createElement('div'); container.style.marginBottom='10px';
+            const labelRow=document.createElement('div'); labelRow.className='field-label';
+            labelRow.innerHTML=`<span>${field.alias||field.name}</span><span class="fieldBadge">${getFieldTypeLabel(field)}</span>`;
             container.appendChild(labelRow);
-            if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
-                const hint = document.createElement('div');
-                hint.className = 'current-hint';
-                hint.textContent = 'Current: ' + currentValue;
-                container.appendChild(hint);
-            }
+            if(currentValue!==null&&currentValue!==undefined&&currentValue!==''){const hint=document.createElement('div');hint.className='current-hint';hint.textContent='Current: '+currentValue;container.appendChild(hint);}
             let input;
-            if (field.domain?.type === 'coded-value') {
-                const wrap = document.createElement('div');
-                const options = field.domain.codedValues.map(cv => ({ code:cv.code, name:cv.name }));
-                let selectedCode = (currentValue !== null && currentValue !== undefined) ? currentValue : '';
-                const currentOpt = options.find(o => o.code == selectedCode);
+            if(field.domain?.type==='coded-value'){
+                const wrap=document.createElement('div');
+                const options=field.domain.codedValues.map(cv=>({code:cv.code,name:cv.name}));
+                let selectedCode=(currentValue!==null&&currentValue!==undefined)?currentValue:'';
+                const currentOpt=options.find(o=>o.code==selectedCode);
+                const btn=document.createElement('button'); btn.type='button'; btn.className='domain-btn';
+                btn.dataset.fieldName=field.name; btn.dataset.fieldType=field.type; btn.dataset.selectedCode=selectedCode;
+                const dispText=document.createElement('span'); dispText.className='domain-display-text'; dispText.textContent=currentOpt?currentOpt.name:'— Select —';
+                const arrow=document.createElement('span'); arrow.textContent='▼'; arrow.style.fontSize='10px';
+                btn.appendChild(dispText); btn.appendChild(arrow);
 
-                // Trigger button
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'domain-btn';
-                btn.dataset.fieldName = field.name;
-                btn.dataset.fieldType = field.type;
-                btn.dataset.selectedCode = selectedCode;
-                const dispText = document.createElement('span');
-                dispText.className = 'domain-display-text';
-                dispText.textContent = currentOpt ? currentOpt.name : '— Select —';
-                const arrow = document.createElement('span');
-                arrow.textContent = '▼'; arrow.style.fontSize = '10px';
-                btn.appendChild(dispText);
-                btn.appendChild(arrow);
+                // Inline panel — sits in normal document flow so peBody scrolls naturally
+                const panel=document.createElement('div');
+                panel.className='domain-panel-inline';
+                panel.style.cssText='display:none;margin-top:2px;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+                const srch=document.createElement('input'); srch.type='text'; srch.placeholder='Type to search…';
+                srch.style.cssText='width:100%;padding:7px 10px;background:#313244;border:none;border-bottom:1px solid #45475a;color:#cdd6f4;font-size:12px;outline:none;box-sizing:border-box;';
+                const list=document.createElement('div'); list.style.cssText='max-height:200px;overflow-y:auto;';
 
-                // Inline panel — sits in normal flow so peBody scrolls to fit it,
-                // nothing gets covered, no positioning math needed.
-                const panel = document.createElement('div');
-                panel.style.cssText = `
-                    display:none; margin-top:2px;
-                    background:#1e1e2e; border:1px solid #45475a; border-radius:6px;
-                    overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,.5);
-                `;
-
-                const srch = document.createElement('input');
-                srch.type = 'text'; srch.placeholder = 'Type to search…';
-                srch.style.cssText = `
-                    width:100%; padding:7px 10px; background:#313244; border:none;
-                    border-bottom:1px solid #45475a; color:#cdd6f4; font-size:12px;
-                    outline:none; box-sizing:border-box;
-                `;
-
-                const list = document.createElement('div');
-                list.style.cssText = 'max-height:200px; overflow-y:auto;';
-
-                function renderList(filter='') {
-                    list.innerHTML = '';
-                    const f = filter.toLowerCase();
-                    const filtered = [{ code:'', name:'— Select —' }, ...options]
-                        .filter(o => !f || o.name.toLowerCase().includes(f) || String(o.code).toLowerCase().includes(f));
-                    filtered.forEach(opt => {
-                        const it = document.createElement('div');
-                        const isSelected = opt.code == selectedCode;
-                        it.style.cssText = `
-                            padding:8px 10px; cursor:pointer; font-size:12px;
-                            color:${isSelected ? '#cba6f7' : '#cdd6f4'};
-                            background:${isSelected ? '#2a1f3d' : 'transparent'};
-                            font-weight:${isSelected ? '600' : 'normal'};
-                            border-bottom:1px solid #313244;
-                        `;
-                        it.textContent = opt.name;
-                        it.addEventListener('mouseenter', () => {
-                            if (opt.code != selectedCode) it.style.background = '#313244';
-                        });
-                        it.addEventListener('mouseleave', () => {
-                            it.style.background = opt.code == selectedCode ? '#2a1f3d' : 'transparent';
-                        });
-                        it.addEventListener('mousedown', e => {
+                function renderList(filter=''){
+                    list.innerHTML='';
+                    const f=filter.toLowerCase();
+                    const filtered=[{code:'',name:'— Select —'},...options].filter(o=>!f||o.name.toLowerCase().includes(f)||String(o.code).toLowerCase().includes(f));
+                    filtered.forEach(opt=>{
+                        const it=document.createElement('div');
+                        const isSel=opt.code==selectedCode;
+                        it.style.cssText=`padding:8px 10px;cursor:pointer;font-size:12px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #313244;`;
+                        it.textContent=opt.name;
+                        it.addEventListener('mouseenter',()=>{ if(opt.code!=selectedCode) it.style.background='#313244'; });
+                        it.addEventListener('mouseleave',()=>{ it.style.background=opt.code==selectedCode?'#2a1f3d':'transparent'; });
+                        it.addEventListener('mousedown',e=>{
                             e.preventDefault();
-                            selectedCode = opt.code;
-                            btn.dataset.selectedCode = opt.code;
-                            dispText.textContent = opt.name;
-                            panel.style.display = 'none';
-                            btn.classList.remove('open');
-                            arrow.textContent = '▼';
+                            selectedCode=opt.code; btn.dataset.selectedCode=opt.code; dispText.textContent=opt.name;
+                            panel.style.display='none'; btn.classList.remove('open'); arrow.textContent='▼';
                         });
                         list.appendChild(it);
                     });
-                    if (!filtered.length) {
-                        const empty = document.createElement('div');
-                        empty.style.cssText = 'padding:10px;font-size:11px;color:#6c7086;text-align:center;';
-                        empty.textContent = 'No matches found';
-                        list.appendChild(empty);
-                    }
+                    if(!filtered.length){const em=document.createElement('div');em.style.cssText='padding:10px;font-size:11px;color:#6c7086;text-align:center;';em.textContent='No matches found';list.appendChild(em);}
                 }
+                renderList(); panel.appendChild(srch); panel.appendChild(list);
 
-                renderList();
-                panel.appendChild(srch);
-                panel.appendChild(list);
-
-                btn.addEventListener('click', () => {
-                    const isOpen = panel.style.display === 'block';
-                    // Close any other open domain panels in this form
-                    $('#editFormContainer').querySelectorAll('.domain-panel-inline').forEach(p => {
-                        p.style.display = 'none';
-                    });
-                    toolBox.querySelectorAll('.domain-btn').forEach(b => {
-                        b.classList.remove('open');
-                        b.querySelector('span:last-child').textContent = '▼';
-                    });
-                    if (!isOpen) {
-                        panel.style.display = 'block';
-                        btn.classList.add('open');
-                        arrow.textContent = '▲';
-                        srch.value = '';
-                        renderList('');
-                        setTimeout(() => srch.focus(), 50);
-                        // Scroll peBody so the panel is visible
-                        setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'nearest' }), 60);
+                btn.addEventListener('click',()=>{
+                    const isOpen=panel.style.display==='block';
+                    // Close other open panels in this form
+                    $('#editFormContainer').querySelectorAll('.domain-panel-inline').forEach(p=>{ p.style.display='none'; });
+                    toolBox.querySelectorAll('.domain-btn').forEach(b=>{ b.classList.remove('open'); b.querySelector('span:last-child').textContent='▼'; });
+                    if(!isOpen){
+                        panel.style.display='block'; btn.classList.add('open'); arrow.textContent='▲';
+                        srch.value=''; renderList('');
+                        setTimeout(()=>{ srch.focus(); panel.scrollIntoView({behavior:'smooth',block:'nearest'}); },50);
                     }
                 });
+                srch.addEventListener('input',()=>renderList(srch.value));
 
-                srch.addEventListener('input', () => renderList(srch.value));
-
-                panel.className = 'domain-panel-inline';
-                wrap.appendChild(btn);
-                wrap.appendChild(panel);
-                input = wrap;
-            } else if (field.type === 'date') {
-                input = document.createElement('input');
-                input.type = 'date';
-                if (currentValue) input.value = new Date(currentValue).toISOString().split('T')[0];
-                input.className = 'input-ctrl';
-                input.dataset.fieldName = field.name; input.dataset.fieldType = field.type;
-            } else if (field.type === 'integer' || field.type === 'small-integer') {
-                input = document.createElement('input');
-                input.type = 'number'; input.step = '1'; input.value = currentValue ?? '';
-                input.className = 'input-ctrl';
-                input.dataset.fieldName = field.name; input.dataset.fieldType = field.type;
-            } else if (field.type === 'double' || field.type === 'single') {
-                input = document.createElement('input');
-                input.type = 'number'; input.step = 'any'; input.value = currentValue ?? '';
-                input.className = 'input-ctrl';
-                input.dataset.fieldName = field.name; input.dataset.fieldType = field.type;
+                wrap.appendChild(btn); wrap.appendChild(panel); input=wrap;
+            } else if(field.type==='date'){
+                input=document.createElement('input'); input.type='date';
+                if(currentValue) input.value=new Date(currentValue).toISOString().split('T')[0];
+                input.className='input-ctrl'; input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
+            } else if(field.type==='integer'||field.type==='small-integer'){
+                input=document.createElement('input'); input.type='number'; input.step='1'; input.value=currentValue??'';
+                input.className='input-ctrl'; input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
+            } else if(field.type==='double'||field.type==='single'){
+                input=document.createElement('input'); input.type='number'; input.step='any'; input.value=currentValue??'';
+                input.className='input-ctrl'; input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
             } else {
-                input = document.createElement('input');
-                input.type = 'text'; input.value = currentValue ?? '';
-                if (field.length) input.maxLength = field.length;
-                input.className = 'input-ctrl';
-                input.dataset.fieldName = field.name; input.dataset.fieldType = field.type;
+                input=document.createElement('input'); input.type='text'; input.value=currentValue??'';
+                if(field.length) input.maxLength=field.length;
+                input.className='input-ctrl'; input.dataset.fieldName=field.name; input.dataset.fieldType=field.type;
             }
             container.appendChild(input);
             return container;
         }
 
-        // ── Highlight / Popup ─────────────────────────────────────────────────
-        function clearHighlights() {
-            highlightGraphics.forEach(g => { try { mapView.graphics.remove(g); } catch(e){} });
-            highlightGraphics = [];
-            const toRemove = [];
-            mapView.graphics.forEach(g => {
-                if (!g.symbol) return;
-                const s = g.symbol;
-                if ((s.type==='simple-marker'&&s.size>=20)||(s.type==='simple-line'&&s.width>=8)||
-                    (s.type==='simple-fill'&&(s.color?.[3]>=0.3||(s.outline?.width>=4)))) toRemove.push(g);
-            });
-            toRemove.forEach(g => { try { mapView.graphics.remove(g); } catch(e){} });
-            mapView.popup?.close();
-        }
-
-        function highlightFeature(feature, showPopup) {
+        // ── Highlights / Popup ────────────────────────────────────────────────
+        function clearHighlights(){highlightGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});highlightGraphics=[];const tr=[];mapView.graphics.forEach(g=>{if(!g.symbol)return;const s=g.symbol;if((s.type==='simple-marker'&&s.size>=20)||(s.type==='simple-line'&&s.width>=8)||(s.type==='simple-fill'&&(s.color?.[3]>=0.3||(s.outline?.width>=4))))tr.push(g);});tr.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});mapView.popup?.close();}
+        function highlightFeature(feature,showPopup){
             clearHighlights();
             let symbol;
-            if (feature.geometry.type === 'point')    symbol = { type:'simple-marker', color:[203,166,247,.85], size:22, outline:{color:[255,255,255,1],width:3} };
-            else if (feature.geometry.type === 'polyline') symbol = { type:'simple-line', color:[203,166,247,.85], width:8 };
-            else symbol = { type:'simple-fill', color:[203,166,247,.35], outline:{color:[203,166,247,1],width:4} };
-            const g = { geometry:feature.geometry, symbol };
-            mapView.graphics.add(g); highlightGraphics.push(g);
-            mapView.goTo({ target:feature.geometry, scale:Math.min(mapView.scale, 2000) }, { duration:700 })
-                .then(() => { if (showPopup && mapView.popup) showFeaturePopup(feature); })
-                .catch(() => { if (showPopup && mapView.popup) showFeaturePopup(feature); });
+            if(feature.geometry.type==='point') symbol={type:'simple-marker',color:[203,166,247,.85],size:22,outline:{color:[255,255,255,1],width:3}};
+            else if(feature.geometry.type==='polyline') symbol={type:'simple-line',color:[203,166,247,.85],width:8};
+            else symbol={type:'simple-fill',color:[203,166,247,.35],outline:{color:[203,166,247,1],width:4}};
+            const g={geometry:feature.geometry,symbol}; mapView.graphics.add(g); highlightGraphics.push(g);
+            mapView.goTo({target:feature.geometry,scale:Math.min(mapView.scale,2000)},{duration:700}).then(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);}).catch(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);});
         }
-
-        async function showFeaturePopup(feature) {
-            try {
-                const oF = getObjectIdField(feature), oid = feature.attributes[oF];
-                const res = await feature.layer.queryFeatures({ where:`${oF}=${oid}`, outFields:['*'], returnGeometry:true });
-                const feats = res.features.length > 0 ? res.features : [feature];
-                mapView.popup.open({ features:feats, location:getPopupLocation(feature.geometry) });
-            } catch(e) { mapView.popup.open({ features:[feature], location:getPopupLocation(feature.geometry) }); }
-        }
-
-        function getPopupLocation(geom) {
-            try {
-                if (geom.type === 'point') return geom;
-                if (geom.type === 'polyline' && geom.paths?.[0]?.length > 0) {
-                    const p = geom.paths[0], mid = Math.floor(p.length/2);
-                    return { type:'point', x:p[mid][0], y:p[mid][1], spatialReference:geom.spatialReference };
-                }
-                if (geom.type === 'polygon') return geom.centroid || geom.extent?.center || geom;
-                return geom.extent?.center || geom;
-            } catch(e) { return geom; }
-        }
+        async function showFeaturePopup(feature){try{const oF=getObjectIdField(feature),oid=feature.attributes[oF];const res=await feature.layer.queryFeatures({where:`${oF}=${oid}`,outFields:['*'],returnGeometry:true});mapView.popup.open({features:res.features.length?res.features:[feature],location:getPopupLocation(feature.geometry)});}catch(e){mapView.popup.open({features:[feature],location:getPopupLocation(feature.geometry)});}}
+        function getPopupLocation(geom){try{if(geom.type==='point')return geom;if(geom.type==='polyline'&&geom.paths?.[0]?.length>0){const p=geom.paths[0],mid=Math.floor(p.length/2);return{type:'point',x:p[mid][0],y:p[mid][1],spatialReference:geom.spatialReference};}if(geom.type==='polygon')return geom.centroid||geom.extent?.center||geom;return geom.extent?.center||geom;}catch(e){return geom;}}
 
         // ── Bulk Edit ─────────────────────────────────────────────────────────
-        let currentBulkLayerIndex = 0;
-        function startBulkEdit() { currentBulkLayerIndex = 0; setPhase('bulkEdit'); showBulkEditForm(); }
-
-        function showBulkEditForm() {
-            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
-            if (!editLayers.length) { alert('No layers configured for editing.'); setPhase('summary'); return; }
-            if (currentBulkLayerIndex >= editLayers.length) { setPhase('complete'); return; }
-            const config = editLayers[currentBulkLayerIndex];
-            $('#bulkEditLayerSelector').innerHTML = `
-                <div class="card"><strong>${currentBulkLayerIndex+1}/${editLayers.length}:</strong> ${config.layer.title}
-                <div style="font-size:11px;color:#a6adc8;">${config.features.length} features to update</div></div>`;
-            const fc = $('#bulkEditFormContainer');
-            fc.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:8px;">Set values for all features:</div>';
-            config.fields.forEach(field => fc.appendChild(createFieldInput(field, null)));
-            $('#applyBulkEditBtn').textContent = `Apply to ${config.features.length} Features`;
-            $('#bulkEditResults').innerHTML = '';
+        let currentBulkLayerIndex=0;
+        function startBulkEdit(){currentBulkLayerIndex=0;setPhase('bulkEdit');showBulkEditForm();}
+        function showBulkEditForm(){
+            const el=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0);
+            if(!el.length){alert('No layers configured for editing.');setPhase('summary');return;}
+            if(currentBulkLayerIndex>=el.length){setPhase('complete');return;}
+            const cfg=el[currentBulkLayerIndex];
+            $('#bulkEditLayerSelector').innerHTML=`<div class="card"><strong>${currentBulkLayerIndex+1}/${el.length}:</strong> ${cfg.layer.title}<div style="font-size:11px;color:#a6adc8;">${cfg.features.length} features to update</div></div>`;
+            const fc=$('#bulkEditFormContainer');fc.innerHTML='<div style="font-weight:700;font-size:12px;margin-bottom:8px;">Set values for all features:</div>';
+            cfg.fields.forEach(f=>fc.appendChild(createFieldInput(f,null)));
+            $('#applyBulkEditBtn').textContent=`Apply to ${cfg.features.length} Features`;
+            $('#bulkEditResults').innerHTML='';
         }
-
-        async function applyBulkEdit() {
-            const editLayers = layerConfigs.filter(c => c.mode === 'edit' && c.fields.length > 0);
-            const config = editLayers[currentBulkLayerIndex];
-            const vals = collectFormValues($('#bulkEditFormContainer'));
-            if (!Object.keys(vals).length) { alert('Enter at least one value.'); return; }
-            if (!confirm(`Apply to ${config.features.length} features?`)) return;
-            updateStatus('Applying bulk edit…');
-            $('#applyBulkEditBtn').disabled = true;
-            try {
-                let ok = 0, fail = 0;
-                const oidF = getObjectIdField(config.features[0]);
-                const batches = config.features.map(f => ({ attributes:{ [oidF]:f.attributes[oidF], ...vals } }));
-                for (let i = 0; i < batches.length; i += 100) {
-                    const res = await config.layer.applyEdits({ updateFeatures:batches.slice(i, i+100) });
-                    res.updateFeatureResults?.forEach((r, idx) => {
-                        const success = r.success===true || (r.success===undefined && r.error===null && (r.objectId||r.globalId));
-                        const oid = batches[i+idx].attributes[oidF];
-                        if (success) { ok++; editLog.push({ timestamp:new Date(), action:'bulk_update', layerName:config.layer.title, featureOID:oid, changes:vals, success:true }); }
-                        else { fail++; editLog.push({ timestamp:new Date(), action:'bulk_update', layerName:config.layer.title, featureOID:oid, success:false, error:r.error?.message }); }
-                    });
-                    updateStatus(`Processed ${Math.min(i+100, batches.length)} / ${batches.length}`);
-                }
-                $('#bulkEditResults').innerHTML = `<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail ? ` | ✗ ${fail} failed` : ''}</div>`;
-                if (currentBulkLayerIndex < editLayers.length - 1) {
-                    updateStatus('Moving to next layer…');
-                    setTimeout(() => { currentBulkLayerIndex++; showBulkEditForm(); }, 2000);
-                } else { setTimeout(() => setPhase('complete'), 2000); }
-            } catch(err) {
-                $('#bulkEditResults').innerHTML = `<div class="card" style="border-color:#f38ba8;color:#f38ba8;">Error: ${err.message}</div>`;
-            } finally { $('#applyBulkEditBtn').disabled = false; }
+        async function applyBulkEdit(){
+            const el=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0),cfg=el[currentBulkLayerIndex];
+            const vals=collectFormValues($('#bulkEditFormContainer'));
+            if(!Object.keys(vals).length){alert('Enter at least one value.');return;}
+            if(!confirm(`Apply to ${cfg.features.length} features?`))return;
+            updateStatus('Applying bulk edit…');$('#applyBulkEditBtn').disabled=true;
+            try{let ok=0,fail=0;const oidF=getObjectIdField(cfg.features[0]);const batches=cfg.features.map(f=>({attributes:{[oidF]:f.attributes[oidF],...vals}}));
+            for(let i=0;i<batches.length;i+=100){const res=await cfg.layer.applyEdits({updateFeatures:batches.slice(i,i+100)});res.updateFeatureResults?.forEach((r,idx)=>{const s=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId)),oid=batches[i+idx].attributes[oidF];if(s){ok++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,changes:vals,success:true});}else{fail++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,success:false,error:r.error?.message});}});updateStatus(`Processed ${Math.min(i+100,batches.length)}/${batches.length}`);}
+            $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail?` | ✗ ${fail} failed`:''}</div>`;
+            if(currentBulkLayerIndex<el.length-1){updateStatus('Moving to next layer…');setTimeout(()=>{currentBulkLayerIndex++;showBulkEditForm();},2000);}else{setTimeout(()=>setPhase('complete'),2000);}
+            }catch(err){$('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#f38ba8;color:#f38ba8;">Error: ${err.message}</div>`;}
+            finally{$('#applyBulkEditBtn').disabled=false;}
         }
 
         // ── Saved Configurations ──────────────────────────────────────────────
-        function getSavedConfigurations() {
-            try { return JSON.parse(localStorage.getItem('sequentialEditorConfigs') || '{}'); } catch(e) { return {}; }
-        }
-        function loadSavedConfigurationsList() {
-            const sel = $('#savedConfigSelect');
-            sel.innerHTML = '<option value="">-- Select saved config --</option>';
-            Object.entries(getSavedConfigurations()).forEach(([id, c]) => {
-                const d = new Date(c.savedAt);
-                const opt = document.createElement('option');
-                opt.value = id;
-                opt.textContent = `${c.name} (${d.toLocaleDateString()} ${d.toLocaleTimeString()})`;
-                sel.appendChild(opt);
-            });
-        }
-        function autoLoadLastConfiguration() {
-            try {
-                const id  = localStorage.getItem('pathEditorLastConfig');
-                if (!id) return;
-                const cfg = getSavedConfigurations()[id];
-                if (!cfg) return;
-                const sections = $('#layerConfigContainer').querySelectorAll('[data-layer-id]');
-                if (!sections?.length) return;
-                $('#savedConfigSelect').value = id;
-                applyConfigurationToUI(cfg);
-                updateStatus(`Auto-loaded: "${cfg.name}"`);
-            } catch(e) { console.warn('Auto-load failed:', e); }
-        }
-        function saveConfiguration() {
-            const layers = [];
-            $('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section => {
-                const lid  = section.dataset.layerId;
-                const chk  = section.querySelector(`#layer_${lid}_enabled`);
-                if (!chk?.checked) return;
-                const data = selectedFeaturesByLayer.get(lid);
-                if (!data) return;
-                const mode = section.querySelector(`input[name="mode_${lid}"]:checked`)?.value || 'edit';
-                const lc = {
-                    layerId:   data.layer.layerId,  // numeric — used to re-match on load
-                    layerTitle: data.layer.title,
-                    mode,
-                    order:     parseInt(section.dataset.order || 1),
-                    showPopup: section.querySelector(`#popup_${lid}`)?.checked ?? true,
-                    allowSkip: section.querySelector(`#allowskip_${lid}`)?.checked ?? true,
-                    fields: [], filterEnabled:false, filterWhere:''
-                };
-                const filterEn = section.querySelector(`#enableFilter_${lid}`);
-                if (filterEn?.checked) { lc.filterEnabled = true; lc.filterWhere = section.querySelector(`#filterWhere_${lid}`)?.value.trim() || ''; }
-                if (mode === 'edit') {
-                    const fd = section.querySelector(`#fields_${lid}`);
-                    lc.fields = fd?.getCheckedFields
-                        ? fd.getCheckedFields()
-                        : Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c => c.dataset.fieldName);
-                }
-                layers.push(lc);
-            });
-            if (!layers.length) { alert('No layers configured to save.'); return; }
-            const name = prompt('Configuration name:', 'My Configuration');
-            if (!name) return;
-            const all = getSavedConfigurations(), id = 'config_' + Date.now();
-            all[id] = { name, savedAt: new Date().toISOString(), layers };
-            try { localStorage.setItem('sequentialEditorConfigs', JSON.stringify(all)); updateStatus(`Saved "${name}"`); loadSavedConfigurationsList(); }
-            catch(e) { alert('Save error: ' + e.message); }
-        }
-        function loadConfiguration() {
-            const id = $('#savedConfigSelect').value;
-            if (!id) { alert('Select a configuration first.'); return; }
-            const cfg = getSavedConfigurations()[id];
-            if (!cfg) { alert('Configuration not found.'); return; }
-            try { localStorage.setItem('pathEditorLastConfig', id); } catch(e){}
-            applyConfigurationToUI(cfg);
-        }
-        function deleteConfiguration() {
-            const sel = $('#savedConfigSelect'), id = sel.value;
-            if (!id) { alert('Select a configuration to delete.'); return; }
-            const all = getSavedConfigurations(), cfg = all[id];
-            if (!cfg || !confirm(`Delete "${cfg.name}"?`)) return;
-            delete all[id];
-            try { localStorage.setItem('sequentialEditorConfigs', JSON.stringify(all)); updateStatus(`Deleted "${cfg.name}"`); loadSavedConfigurationsList(); }
-            catch(e) { alert('Delete error: ' + e.message); }
-        }
-
-        function applyConfigurationToUI(config) {
-            const sections = $('#layerConfigContainer').querySelectorAll('[data-layer-id]');
-            let applied = 0, skipped = [];
-            sections.forEach(section => {
-                const lid  = section.dataset.layerId;           // uid-based key
-                const data = selectedFeaturesByLayer.get(lid);
-                if (!data) return;
-
-                // Match saved config entries by numeric layerId (service ID)
-                const lc = config.layers.find(l => l.layerId === data.layer.layerId);
-                if (!lc) return;
-
-                const chk = section.querySelector(`#layer_${lid}_enabled`);
-                if (!chk) { skipped.push(lc.layerTitle); return; }
-                chk.checked = true;
-                section.classList.add('enabled');
-
-                const body = section.querySelector('.layerCardBody');
-                if (body) { body.style.display = 'block'; const ch = section.querySelector('.layerCardHeader span:last-child'); if(ch) ch.textContent = '▲'; }
-
-                const modeR = section.querySelector(`input[name="mode_${lid}"][value="${lc.mode}"]`);
-                if (modeR) { modeR.checked = true; const fd = section.querySelector(`#fields_${lid}`); if(fd) fd.style.display = lc.mode==='edit' ? 'block':'none'; }
-
-                section.dataset.order = lc.order;
-                const oi = section.querySelector('.orderInput'); if(oi) oi.value = lc.order;
-                const pc = section.querySelector(`#popup_${lid}`); if(pc) pc.checked = lc.showPopup;
-                const sc = section.querySelector(`#allowskip_${lid}`); if(sc) sc.checked = lc.allowSkip;
-
-                if (lc.filterEnabled) {
-                    const fe = section.querySelector(`#enableFilter_${lid}`); if(fe) fe.checked = true;
-                    const fi = section.querySelector(`#filterInputs_${lid}`); if(fi) fi.style.display = 'block';
-                    const fw = section.querySelector(`#filterWhere_${lid}`); if(fw && lc.filterWhere) fw.value = lc.filterWhere;
-                }
-
-                if (lc.mode === 'edit' && lc.fields?.length) {
-                    const fd = section.querySelector(`#fields_${lid}`);
-                    if (fd?.setCheckedFields) fd.setCheckedFields(lc.fields);
-                    else section.querySelectorAll(`#fields_${lid} input[type=checkbox]`).forEach(c => { c.checked = lc.fields.includes(c.dataset.fieldName); });
-                }
-                applied++;
-            });
-            if (applied === 0) alert(`Configuration "${config.name}" could not be applied — no matching layers.`);
-            else updateStatus(`Loaded "${config.name}" (${applied} layer${applied>1?'s':''}${skipped.length?`, skipped: ${skipped.join(', ')}`:''}).`);
-        }
+        function getSavedConfigurations(){try{return JSON.parse(localStorage.getItem('sequentialEditorConfigs')||'{}');}catch(e){return {};}}
+        function loadSavedConfigurationsList(){const sel=$('#savedConfigSelect');sel.innerHTML='<option value="">-- Select saved config --</option>';Object.entries(getSavedConfigurations()).forEach(([id,c])=>{const d=new Date(c.savedAt),opt=document.createElement('option');opt.value=id;opt.textContent=`${c.name} (${d.toLocaleDateString()} ${d.toLocaleTimeString()})`;sel.appendChild(opt);});}
+        function autoLoadLastConfiguration(){try{const id=localStorage.getItem('pathEditorLastConfig');if(!id)return;const cfg=getSavedConfigurations()[id];if(!cfg)return;const s=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');if(!s?.length)return;$('#savedConfigSelect').value=id;applyConfigurationToUI(cfg);updateStatus(`Auto-loaded: "${cfg.name}"`);}catch(e){console.warn('Auto-load failed:',e);}}
+        function saveConfiguration(){const layers=[];$('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{const lid=section.dataset.layerId,chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk?.checked)return;const data=selectedFeaturesByLayer.get(lid);if(!data)return;const mode=section.querySelector(`input[name="mode_${lid}"]:checked`)?.value||'edit';const lc={layerId:data.layer.layerId,layerTitle:data.layer.title,mode,order:parseInt(section.dataset.order||1),showPopup:section.querySelector(`#popup_${lid}`)?.checked??true,allowSkip:section.querySelector(`#allowskip_${lid}`)?.checked??true,fields:[],filterEnabled:false,filterWhere:''};const fEn=section.querySelector(`#enableFilter_${lid}`);if(fEn?.checked){lc.filterEnabled=true;lc.filterWhere=section.querySelector(`#filterWhere_${lid}`)?.value.trim()||'';}if(mode==='edit'){const fd=section.querySelector(`#fields_${lid}`);lc.fields=fd?.getCheckedFields?fd.getCheckedFields():Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);}layers.push(lc);});if(!layers.length){alert('No layers configured to save.');return;}const name=prompt('Configuration name:','My Configuration');if(!name)return;const all=getSavedConfigurations(),id='config_'+Date.now();all[id]={name,savedAt:new Date().toISOString(),layers};try{localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all));updateStatus(`Saved "${name}"`);loadSavedConfigurationsList();}catch(e){alert('Save error: '+e.message);}}
+        function loadConfiguration(){const id=$('#savedConfigSelect').value;if(!id){alert('Select a configuration first.');return;}const cfg=getSavedConfigurations()[id];if(!cfg){alert('Configuration not found.');return;}try{localStorage.setItem('pathEditorLastConfig',id);}catch(e){}applyConfigurationToUI(cfg);}
+        function deleteConfiguration(){const sel=$('#savedConfigSelect'),id=sel.value;if(!id){alert('Select a configuration to delete.');return;}const all=getSavedConfigurations(),cfg=all[id];if(!cfg||!confirm(`Delete "${cfg.name}"?`))return;delete all[id];try{localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all));updateStatus(`Deleted "${cfg.name}"`);loadSavedConfigurationsList();}catch(e){alert('Delete error: '+e.message);}}
+        function applyConfigurationToUI(config){const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');let applied=0,skipped=[];sections.forEach(section=>{const lid=section.dataset.layerId,data=selectedFeaturesByLayer.get(lid);if(!data)return;const lc=config.layers.find(l=>l.layerId===data.layer.layerId);if(!lc)return;const chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk){skipped.push(lc.layerTitle);return;}chk.checked=true;section.classList.add('enabled');const body=section.querySelector('.layerCardBody');if(body){body.style.display='block';const ch=section.querySelector('.layerCardHeader span:last-child');if(ch)ch.textContent='▲';}const modeR=section.querySelector(`input[name="mode_${lid}"][value="${lc.mode}"]`);if(modeR){modeR.checked=true;const fd=section.querySelector(`#fields_${lid}`);if(fd)fd.style.display=lc.mode==='edit'?'block':'none';}section.dataset.order=lc.order;const oi=section.querySelector('.orderInput');if(oi)oi.value=lc.order;const pc=section.querySelector(`#popup_${lid}`);if(pc)pc.checked=lc.showPopup;const sc=section.querySelector(`#allowskip_${lid}`);if(sc)sc.checked=lc.allowSkip;if(lc.filterEnabled){const fe=section.querySelector(`#enableFilter_${lid}`);if(fe)fe.checked=true;const fi=section.querySelector(`#filterInputs_${lid}`);if(fi)fi.style.display='block';const fw=section.querySelector(`#filterWhere_${lid}`);if(fw&&lc.filterWhere)fw.value=lc.filterWhere;}if(lc.mode==='edit'&&lc.fields?.length){const fd=section.querySelector(`#fields_${lid}`);if(fd?.setCheckedFields)fd.setCheckedFields(lc.fields);else section.querySelectorAll(`#fields_${lid} input[type=checkbox]`).forEach(c=>{c.checked=lc.fields.includes(c.dataset.fieldName);});}applied++;});if(applied===0)alert(`Configuration "${config.name}" could not be applied — no matching layers.`);else updateStatus(`Loaded "${config.name}" (${applied} layer${applied>1?'s':''}${skipped.length?`, skipped: ${skipped.join(', ')}`:''}).`);}
 
         // ── Complete / Report ─────────────────────────────────────────────────
-        function displayEditSummary() {
-            const edits = editLog.filter(e => e.action==='update'||e.action==='bulk_update');
-            const ok    = edits.filter(e => e.success).length;
-            const skip  = editLog.filter(e => e.action==='skip').length;
-            const fail  = edits.filter(e => !e.success).length;
-            const dur   = sessionStartTime ? Math.round((new Date() - sessionStartTime) / 1000) : 0;
-            $('#editSummary').innerHTML = `
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#a6e3a1;">${ok}</div><div style="font-size:10px;color:#a6adc8;">Updated</div></div>
-                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f9e2af;">${skip}</div><div style="font-size:10px;color:#a6adc8;">Skipped</div></div>
-                    ${fail ? `<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f38ba8;">${fail}</div><div style="font-size:10px;color:#a6adc8;">Failed</div></div>` : ''}
-                    <div class="stat-box"><div style="font-size:20px;font-weight:700;color:#89b4fa;">${Math.floor(dur/60)}m ${dur%60}s</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div>
-                </div>`;
-        }
-
-        function exportSummaryReport() {
-            if (!editLog.length) { alert('No edits to export.'); return; }
-            const end = new Date(), dur = sessionStartTime ? Math.round((end - sessionStartTime) / 1000) : 0;
-            const edits = editLog.filter(e => e.action==='update'||e.action==='bulk_update');
-            let r = '='.repeat(70)+'\nPATH EDITOR — EDIT SUMMARY REPORT\n'+'='.repeat(70)+'\n\n';
-            r += `Session: ${sessionStartTime?.toLocaleString()||'Unknown'} → ${end.toLocaleString()}\n`;
-            r += `Duration: ${Math.floor(dur/60)}m ${dur%60}s\n\n`;
-            r += `Updated: ${edits.filter(e=>e.success).length}  Skipped: ${editLog.filter(e=>e.action==='skip').length}  Failed: ${edits.filter(e=>!e.success).length}\n\n`;
-            r += 'DETAILED LOG\n'+'-'.repeat(70)+'\n';
-            editLog.forEach((e, i) => {
-                r += `[${i+1}] ${e.timestamp.toLocaleTimeString()} | ${e.layerName} | OID:${e.featureOID} | ${e.action.toUpperCase()} | ${e.success?'OK':'FAIL'}\n`;
-                if (e.changes) Object.entries(e.changes).forEach(([k,v]) => { r += `    ${k}: ${v.oldValue??''}→${v.newValue??v}\n`; });
-                if (e.error) r += `    Error: ${e.error}\n`;
-            });
-            const blob = new Blob([r], { type:'text/plain' });
-            const url  = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = `path-editor-report-${end.toISOString().split('T')[0]}.txt`;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-            updateStatus('Report exported.');
-        }
-
-        function startOver() {
-            currentIndex = 0; currentBulkLayerIndex = 0; layerConfigs = []; currentEditingQueue = [];
-            editLog = []; sessionStartTime = null; lastSubmittedValues = null;
-            clearHighlights(); clearSelection();
-            setPhase('selection'); updateStatus('Ready — choose a selection mode.');
-        }
+        function displayEditSummary(){const edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update'),ok=edits.filter(e=>e.success).length,skip=editLog.filter(e=>e.action==='skip').length,fail=edits.filter(e=>!e.success).length,dur=sessionStartTime?Math.round((new Date()-sessionStartTime)/1000):0;$('#editSummary').innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#a6e3a1;">${ok}</div><div style="font-size:10px;color:#a6adc8;">Updated</div></div><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f9e2af;">${skip}</div><div style="font-size:10px;color:#a6adc8;">Skipped</div></div>${fail?`<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f38ba8;">${fail}</div><div style="font-size:10px;color:#a6adc8;">Failed</div></div>`:''}<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#89b4fa;">${Math.floor(dur/60)}m ${dur%60}s</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div></div>`;}
+        function exportSummaryReport(){if(!editLog.length){alert('No edits to export.');return;}const end=new Date(),dur=sessionStartTime?Math.round((end-sessionStartTime)/1000):0,edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update');let r='='.repeat(70)+'\nPATH EDITOR — EDIT SUMMARY REPORT\n'+'='.repeat(70)+'\n\n';r+=`Session: ${sessionStartTime?.toLocaleString()||'Unknown'} → ${end.toLocaleString()}\nDuration: ${Math.floor(dur/60)}m ${dur%60}s\n\nUpdated: ${edits.filter(e=>e.success).length}  Skipped: ${editLog.filter(e=>e.action==='skip').length}  Failed: ${edits.filter(e=>!e.success).length}\n\nDETAILED LOG\n${'-'.repeat(70)}\n`;editLog.forEach((e,i)=>{r+=`[${i+1}] ${e.timestamp.toLocaleTimeString()} | ${e.layerName} | OID:${e.featureOID} | ${e.action.toUpperCase()} | ${e.success?'OK':'FAIL'}\n`;if(e.changes)Object.entries(e.changes).forEach(([k,v])=>{r+=`    ${k}: ${v.oldValue??''}→${v.newValue??v}\n`;});if(e.error)r+=`    Error: ${e.error}\n`;});const blob=new Blob([r],{type:'text/plain'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`path-editor-report-${end.toISOString().split('T')[0]}.txt`;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);updateStatus('Report exported.');}
+        function startOver(){currentIndex=0;currentBulkLayerIndex=0;layerConfigs=[];currentEditingQueue=[];editLog=[];sessionStartTime=null;lastSubmittedValues=null;clearHighlights();clearSelection();setPhase('selection');updateStatus('Ready — choose a selection mode.');}
 
         // ── File Upload ───────────────────────────────────────────────────────
-        function setupFileUpload() {
-            const dz = $('#dropZone'), fi = $('#fileInput');
-            if (!dz || !fi) return;
-            dz.addEventListener('click', () => fi.click());
-            dz.addEventListener('dragover',  e => { e.preventDefault(); dz.style.borderColor='#89b4fa'; dz.style.background='#1e3a5f'; });
-            dz.addEventListener('dragleave', e => { e.preventDefault(); dz.style.borderColor='#45475a'; dz.style.background='#181825'; });
-            dz.addEventListener('drop', e => { e.preventDefault(); dz.style.borderColor='#45475a'; dz.style.background='#181825'; addFilesToUpload(Array.from(e.dataTransfer.files)); });
-            fi.addEventListener('change', e => { addFilesToUpload(Array.from(e.target.files)); e.target.value=''; });
+        function setupFileUpload(){
+            const dz=$('#dropZone'),fi=$('#fileInput');
+            if(!dz||!fi)return;
+            dz.addEventListener('click',()=>fi.click());
+            dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='#89b4fa';dz.style.background='#1e3a5f';});
+            dz.addEventListener('dragleave',e=>{e.preventDefault();dz.style.borderColor='#45475a';dz.style.background='#181825';});
+            dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='#45475a';dz.style.background='#181825';addFilesToUpload(Array.from(e.dataTransfer.files));});
+            fi.addEventListener('change',e=>{addFilesToUpload(Array.from(e.target.files));e.target.value='';});
         }
-        function addFilesToUpload(files) {
-            const rej = [], added = [];
-            files.forEach(f => {
-                if (!isAllowedFile(f)) { rej.push(f.name); return; }
-                if (!filesToUpload.find(x => x.name===f.name && x.size===f.size)) { filesToUpload.push(f); added.push(f.name); }
-            });
+        function addFilesToUpload(files){
+            const rej=[],added=[];
+            files.forEach(f=>{if(!isAllowedFile(f)){rej.push(f.name);return;}if(!filesToUpload.find(x=>x.name===f.name&&x.size===f.size)){filesToUpload.push(f);added.push(f.name);}});
             updateFileList();
-            if (rej.length) updateStatus('Skipped: '+rej.join(', '));
-            else if (added.length) updateStatus(added.length+' file(s) ready');
+            if(rej.length)updateStatus('Skipped: '+rej.join(', '));
+            else if(added.length)updateStatus(added.length+' file(s) queued — will upload on Submit');
         }
-        function updateFileList() {
-            const fl = $('#fileList'), ub = $('#uploadPhotosBtn');
-            if (!fl) return;
-            if (!filesToUpload.length) { fl.innerHTML=''; if(ub) ub.style.display='none'; return; }
-            fl.innerHTML = filesToUpload.map((f,i) => `
+        function updateFileList(){
+            const fl=$('#fileList');
+            if(!fl)return;
+            if(!filesToUpload.length){fl.innerHTML='';return;}
+            fl.innerHTML=filesToUpload.map((f,i)=>`
                 <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 6px;background:#313244;border-radius:4px;margin:3px 0;font-size:11px;">
                     <span>${fileTypeLabel(f)} ${f.name} <span style="color:#6c7086;">(${(f.size/1024).toFixed(1)}KB)</span></span>
                     <button class="removeFileBtn" data-index="${i}" style="background:#f38ba8;color:#1e1e2e;border:none;border-radius:3px;padding:1px 6px;cursor:pointer;font-size:11px;">×</button>
                 </div>`).join('');
-            if (ub) ub.style.display = 'block';
-            fl.querySelectorAll('.removeFileBtn').forEach(btn => btn.addEventListener('click', e => { filesToUpload.splice(parseInt(e.target.dataset.index), 1); updateFileList(); }));
+            fl.querySelectorAll('.removeFileBtn').forEach(btn=>btn.addEventListener('click',e=>{filesToUpload.splice(parseInt(e.target.dataset.index),1);updateFileList();}));
         }
-        async function uploadPhotos() {
-            if (currentIndex >= currentEditingQueue.length) { alert('No feature selected.'); return; }
-            if (!filesToUpload.length) { alert('No files to upload.'); return; }
-            const item = currentEditingQueue[currentIndex];
-            await item.layer.load();
-            if (!item.layer.capabilities?.operations?.supportsAdd) { alert('Layer does not support attachments.'); return; }
-            updateStatus('Uploading…'); $('#uploadPhotosBtn').disabled = true;
-            let ok = 0, fail = 0;
-            for (let i = 0; i < filesToUpload.length; i++) {
-                const f = filesToUpload[i];
-                try {
-                    updateStatus(`Uploading ${f.name} (${i+1}/${filesToUpload.length})…`);
-                    const fd = new FormData(); fd.append('attachment', f);
-                    const res = await item.layer.addAttachment(item.feature, fd);
-                    if (res?.addAttachmentResult || res?.objectId) ok++;
-                    else throw new Error('Unexpected result');
-                } catch(e) { fail++; }
-                await new Promise(r => setTimeout(r, 300));
-            }
-            alert(`Upload complete!\n✓ ${ok} succeeded${fail ? ' | ✗ '+fail+' failed' : ''}`);
-            updateStatus(`Uploaded ${ok}${fail ? ' | Failed '+fail : ''}`);
-            filesToUpload = []; updateFileList(); $('#uploadPhotosBtn').disabled = false;
+
+        // Silent attachment uploader — called automatically from submitFeature
+        async function uploadAttachments(layer, feature) {
+            if (!filesToUpload.length) return;
+            try {
+                await layer.load();
+                if (!layer.capabilities?.operations?.supportsAdd) {
+                    updateStatus('Layer does not support attachments — files skipped.');
+                    filesToUpload = []; updateFileList(); return;
+                }
+                let ok = 0, fail = 0;
+                for (let i = 0; i < filesToUpload.length; i++) {
+                    const f = filesToUpload[i];
+                    try {
+                        updateStatus(`Uploading attachment ${i+1}/${filesToUpload.length}: ${f.name}…`);
+                        const fd = new FormData(); fd.append('attachment', f);
+                        const res = await layer.addAttachment(feature, fd);
+                        if (res?.addAttachmentResult || res?.objectId) ok++;
+                        else throw new Error('Unexpected result');
+                    } catch(e) { fail++; console.warn('Attachment upload failed:', f.name, e); }
+                    await new Promise(r => setTimeout(r, 300));
+                }
+                updateStatus(`Attachments: ${ok} uploaded${fail ? ', ' + fail + ' failed' : ''}`);
+            } catch(e) { updateStatus('Attachment upload error: ' + e.message); }
+            filesToUpload = []; updateFileList();
         }
 
         // ── Cleanup ───────────────────────────────────────────────────────────
-        function cleanup() {
-            if (sketchViewModel) { sketchViewModel.destroy(); sketchViewModel = null; }
-            if (mapClickHandler) { mapClickHandler.remove(); mapClickHandler = null; }
-            clearHighlights();
-            if (selectionGraphic) mapView.graphics.remove(selectionGraphic);
-            toolBox.remove();
-            const ps = document.getElementById('peStyles'); if(ps) ps.remove();
-        }
+        function cleanup(){if(sketchViewModel){sketchViewModel.destroy();sketchViewModel=null;}if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}clearHighlights();if(selectionGraphic)mapView.graphics.remove(selectionGraphic);toolBox.remove();const ps=document.getElementById('peStyles');if(ps)ps.remove();}
 
         // ── Event Wiring ──────────────────────────────────────────────────────
         $('#clearSelectionBtn').onclick  = clearSelection;
         $('#configureLayersBtn').onclick  = showLayerConfiguration;
-        $('#backToSelectionBtn').onclick  = () => setPhase('selection');
+        $('#backToSelectionBtn').onclick  = ()=>setPhase('selection');
         $('#saveConfigBtn').onclick       = saveConfiguration;
         $('#loadConfigBtn').onclick       = loadConfiguration;
         $('#deleteConfigBtn').onclick     = deleteConfiguration;
         $('#showSummaryBtn').onclick      = buildSummary;
-        $('#backToConfigBtn').onclick     = () => setPhase('configuration');
+        $('#backToConfigBtn').onclick     = ()=>setPhase('configuration');
         $('#startEditingBtn').onclick     = startEditing;
         $('#submitBtn').onclick           = submitFeature;
         $('#skipBtn').onclick             = skipFeature;
         $('#prevBtn').onclick             = prevFeature;
         $('#applyPrevBtn').onclick        = applyPreviousValues;
         $('#clearHighlightsBtn').onclick  = clearHighlights;
-        $('#uploadPhotosBtn').onclick     = uploadPhotos;
         $('#applyBulkEditBtn').onclick    = applyBulkEdit;
-        $('#backToSummaryBtn').onclick    = () => setPhase('summary');
+        $('#backToSummaryBtn').onclick    = ()=>setPhase('summary');
         $('#exportReportBtn').onclick     = exportSummaryReport;
         $('#startOverBtn').onclick        = startOver;
-        $('#closeTool').onclick           = () => window.gisToolHost.closeTool('path-editor');
+        $('#closeTool').onclick           = ()=>window.gisToolHost.closeTool('path-editor');
 
-        // ── Init ──────────────────────────────────────────────────────────────
-        setPhase('selection');
-        setupFileUpload();
-        startSelection();
-
+        setPhase('selection'); setupFileUpload(); startSelection();
         window.gisToolHost.activeTools.set('path-editor', { cleanup, toolBox });
 
     } catch(error) {
-        alert('Error creating Path Editor Tool: ' + (error.message || error));
+        alert('Error creating Path Editor Tool: '+(error.message||error));
     }
 })();
