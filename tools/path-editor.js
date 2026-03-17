@@ -789,16 +789,44 @@
                 }
 
                 function makeInput(placeholder, currentVal, isSecond) {
-                    let inp;
                     if (field.domain?.type === 'coded-value') {
-                        inp = document.createElement('select'); inp.className = 'input-ctrl';
-                        inp.innerHTML = '<option value="">— Select —</option>';
-                        field.domain.codedValues.forEach(cv => {
-                            const o = document.createElement('option'); o.value = cv.code; o.textContent = cv.name;
-                            if (cv.code == currentVal) o.selected = true;
-                            inp.appendChild(o);
-                        });
-                    } else if (field.type === 'date') {
+                        // Searchable inline list — used for all single-value domain operators
+                        const wrap = document.createElement('div');
+                        wrap.style.marginBottom = '4px';
+                        const srch = document.createElement('input');
+                        srch.type = 'text'; srch.placeholder = 'Search values…';
+                        srch.style.cssText = 'width:100%;padding:6px 8px;background:#313244;border:1px solid #45475a;border-bottom:none;border-radius:6px 6px 0 0;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
+                        const list = document.createElement('div');
+                        list.style.cssText = 'max-height:130px;overflow-y:auto;background:#0f0f17;border:1px solid #45475a;border-radius:0 0 6px 6px;';
+                        let selectedCode = (currentVal !== '' && currentVal !== undefined) ? currentVal : '';
+                        // Sync initial value into condition
+                        if (isSecond) cond.value2 = selectedCode; else cond.value = selectedCode;
+                        function renderOpts(filter='') {
+                            list.innerHTML = '';
+                            const f = filter.toLowerCase();
+                            [{ code:'', name:'— Select —' }, ...field.domain.codedValues]
+                                .filter(cv => !f || String(cv.name).toLowerCase().includes(f) || String(cv.code).toLowerCase().includes(f))
+                                .forEach(cv => {
+                                    const row = document.createElement('div');
+                                    const isSel = String(cv.code) === String(selectedCode);
+                                    row.style.cssText = `padding:6px 10px;cursor:pointer;font-size:11px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #1e1e2e;`;
+                                    row.textContent = cv.name;
+                                    row.addEventListener('mouseenter', () => { if (String(cv.code)!==String(selectedCode)) row.style.background='#313244'; });
+                                    row.addEventListener('mouseleave', () => { row.style.background=String(cv.code)===String(selectedCode)?'#2a1f3d':'transparent'; });
+                                    row.addEventListener('click', () => {
+                                        selectedCode = cv.code;
+                                        if (isSecond) cond.value2 = cv.code; else cond.value = cv.code;
+                                        renderOpts(srch.value);
+                                    });
+                                    list.appendChild(row);
+                                });
+                        }
+                        srch.addEventListener('input', () => renderOpts(srch.value));
+                        renderOpts();
+                        wrap.appendChild(srch); wrap.appendChild(list);
+                        return wrap;
+                    }
+                    let inp; if (field.type === 'date') {
                         inp = document.createElement('input'); inp.type = 'date'; inp.className = 'input-ctrl';
                         if (currentVal) inp.value = currentVal;
                     } else if (['integer','small-integer','double','single'].includes(field.type)) {
@@ -1412,6 +1440,10 @@
         $('#closeTool').onclick           = ()=>window.gisToolHost.closeTool('path-editor');
 
         setPhase('selection'); setupFileUpload(); startSelection();
+        // Pre-init the sketch VM immediately so the one-time legend refresh
+        // triggered by adding the GraphicsLayer happens at tool load, not when
+        // the user first tries to draw (which caused the 3-4s interaction delay).
+        initializeSketchViewModel(null);
         window.gisToolHost.activeTools.set('path-editor', { cleanup, toolBox });
 
     } catch(error) {
