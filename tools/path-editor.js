@@ -17,6 +17,7 @@
         const z = 99999;
 
         let sketchViewModel   = null;
+        let sketchLayer       = null;
         let selectionGraphic  = null;
         let selectedFeaturesByLayer = new Map();
         let layerConfigs      = [];
@@ -525,7 +526,13 @@
             const titleSpan = document.createElement('span'); titleSpan.style.cssText='flex:1;font-weight:700;font-size:12px;'; titleSpan.textContent=layer.title;
             const countBadge = document.createElement('span'); countBadge.className='fieldBadge'; countBadge.textContent=`${features.length} features`;
             const chevron = document.createElement('span'); chevron.textContent='▼'; chevron.style.cssText='font-size:10px;color:#6c7086;';
-            header.appendChild(toggleWrap); header.appendChild(titleSpan); header.appendChild(countBadge); header.appendChild(chevron);
+            const csvBtn = document.createElement('button');
+            csvBtn.type = 'button'; csvBtn.className = 'csv-download-btn btn btn-info';
+            csvBtn.style.cssText = 'font-size:10px;padding:2px 8px;white-space:nowrap;flex-shrink:0;';
+            csvBtn.title = 'Download selection as CSV (respects active filter)';
+            csvBtn.textContent = '⬇ CSV';
+            csvBtn.onclick = e => { e.stopPropagation(); downloadLayerCSV(lid, layer); };
+            header.appendChild(toggleWrap); header.appendChild(titleSpan); header.appendChild(countBadge); header.appendChild(csvBtn); header.appendChild(chevron);
 
             const body = document.createElement('div'); body.className='layerCardBody';
 
@@ -574,22 +581,423 @@
             optDiv.innerHTML=`<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="popup_${lid}" checked style="accent-color:#cba6f7;"> Show Popup</label>
                 <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="allowskip_${lid}" checked style="accent-color:#cba6f7;"> Allow Skip</label>`;
 
-            const filterDiv=document.createElement('div'); filterDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
-            filterDiv.innerHTML=`<label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:4px;"><input type="checkbox" id="enableFilter_${lid}" style="accent-color:#cba6f7;"> WHERE clause filter</label>
-                <div id="filterInputs_${lid}" style="display:none;">
-                    <textarea id="filterWhere_${lid}" class="input-ctrl" placeholder="e.g. status = 'ASSG' AND count > 5" style="min-height:44px;font-family:monospace;font-size:10px;resize:vertical;"></textarea>
-                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-                        <button class="testFilterBtn btn btn-info" style="font-size:10px;padding:3px 8px;">Test</button>
-                        <span class="filterTestResult" style="font-size:10px;"></span>
-                    </div>
-                </div>`;
-            filterDiv.querySelector(`#enableFilter_${lid}`).onchange=e=>{ filterDiv.querySelector(`#filterInputs_${lid}`).style.display=e.target.checked?'block':'none'; };
-            filterDiv.querySelector('.testFilterBtn').onclick=async()=>{
-                const tr=filterDiv.querySelector('.filterTestResult'), wh=filterDiv.querySelector(`#filterWhere_${lid}`).value.trim().replace(/\\"/g,'"').replace(/\\'/g,"'");
-                if(!wh){tr.textContent='Enter a WHERE clause first';tr.style.color='#f38ba8';return;}
-                tr.textContent='Testing…';tr.style.color='#a6adc8';
-                try{const d=selectedFeaturesByLayer.get(lid),q={where:wh,returnCountOnly:true,returnGeometry:false};if(selectionGraphic?.geometry){q.geometry=selectionGraphic.geometry;q.spatialRelationship='intersects';}const res=await layer.queryFeatures(q);tr.textContent=`✓ ${res.count}/${d?.features.length||'?'} match`;tr.style.color='#a6e3a1';}
-                catch(err){tr.textContent='✗ '+err.message;tr.style.color='#f38ba8';}
+            // ── Visual Filter Builder ─────────────────────────────────────────
+            const filterDiv = document.createElement('div');
+            filterDiv.style.cssText = 'border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
+
+            let filterConditions = [];
+            let filterConjunction = 'AND';
+
+            const enableLabel = document.createElement('label');
+            enableLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:6px;';
+            const enableChk = document.createElement('input');
+            enableChk.type = 'checkbox'; enableChk.id = `enableFilter_${lid}`; enableChk.style.accentColor = '#cba6f7';
+            enableLabel.appendChild(enableChk);
+            enableLabel.appendChild(document.createTextNode(' Filter Features'));
+            filterDiv.appendChild(enableLabel);
+
+            const filterBody = document.createElement('div');
+            filterBody.id = `filterInputs_${lid}`;
+            filterBody.style.display = 'none';
+            filterDiv.appendChild(filterBody);
+
+            enableChk.onchange = () => { filterBody.style.display = enableChk.checked ? 'block' : 'none'; };
+
+            // AND / OR conjunction toggle
+            const conjRow = document.createElement('div');
+            conjRow.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px;';
+            conjRow.innerHTML = '<span style="font-size:11px;color:#a6adc8;">Match:</span>';
+            ['AND','OR'].forEach(c => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = c === 'AND' ? 'All conditions (AND)' : 'Any condition (OR)';
+                btn.style.cssText = `padding:3px 10px;border:1px solid #45475a;border-radius:4px;cursor:pointer;font-size:11px;transition:all .15s;background:${c===filterConjunction?'#cba6f7':'#313244'};color:${c===filterConjunction?'#1e1e2e':'#cdd6f4'};`;
+                btn.onclick = () => {
+                    filterConjunction = c;
+                    conjRow.querySelectorAll('button').forEach((b,i) => {
+                        const active = ['AND','OR'][i] === c;
+                        b.style.background = active ? '#cba6f7' : '#313244';
+                        b.style.color = active ? '#1e1e2e' : '#cdd6f4';
+                    });
+                };
+                conjRow.appendChild(btn);
+            });
+            filterBody.appendChild(conjRow);
+
+            const conditionsContainer = document.createElement('div');
+            filterBody.appendChild(conditionsContainer);
+
+            function getOperatorsForField(field) {
+                if (field.domain?.type === 'coded-value') return [
+                    {value:'eq',label:'is'},{value:'neq',label:'is not'},
+                    {value:'includes',label:'includes any of'},{value:'excludes',label:'excludes all of'},
+                    {value:'blank',label:'is blank'},{value:'notblank',label:'is not blank'},
+                ];
+                if (field.type === 'date') return [
+                    {value:'eq',label:'on'},{value:'before',label:'before'},
+                    {value:'after',label:'after'},{value:'between',label:'between'},
+                    {value:'blank',label:'is blank'},{value:'notblank',label:'is not blank'},
+                ];
+                if (['integer','small-integer','double','single'].includes(field.type)) return [
+                    {value:'eq',label:'equals (=)'},{value:'neq',label:'not equals (≠)'},
+                    {value:'gt',label:'greater than (>)'},{value:'gte',label:'greater or equal (≥)'},
+                    {value:'lt',label:'less than (<)'},{value:'lte',label:'less or equal (≤)'},
+                    {value:'between',label:'between'},
+                    {value:'includes',label:'includes any of'},{value:'excludes',label:'excludes all of'},
+                    {value:'blank',label:'is blank'},{value:'notblank',label:'is not blank'},
+                ];
+                return [ // string / default
+                    {value:'eq',label:'equals'},{value:'neq',label:'not equals'},
+                    {value:'contains',label:'contains'},{value:'notcontains',label:'does not contain'},
+                    {value:'starts',label:'starts with'},{value:'ends',label:'ends with'},
+                    {value:'includes',label:'includes any of'},{value:'excludes',label:'excludes all of'},
+                    {value:'blank',label:'is blank'},{value:'notblank',label:'is not blank'},
+                ];
+            }
+
+            function conditionToSQL(cond) {
+                const field = editableFields.find(f => f.name === cond.field);
+                if (!field || !cond.operator) return null;
+                const fn = cond.field, op = cond.operator, v = cond.value, v2 = cond.value2;
+                const isStr = field.type === 'string', isDate = field.type === 'date';
+                const isDomain = field.domain?.type === 'coded-value';
+                if (op === 'blank')    return `(${fn} IS NULL${isStr ? ` OR ${fn} = ''` : ''})`;
+                if (op === 'notblank') return `(${fn} IS NOT NULL${isStr ? ` AND ${fn} <> ''` : ''})`;
+                if (op === 'includes' || op === 'excludes') {
+                    if (!Array.isArray(cond.values) || !cond.values.length) return null;
+                    const list = cond.values.map(v => isStr ? `'${String(v).replace(/'/g,"''")}'` : v).join(', ');
+                    return `${fn} ${op === 'includes' ? 'IN' : 'NOT IN'} (${list})`;
+                }
+                if (!v && !['blank','notblank'].includes(op)) return null;
+                if (isDate) {
+                    if (op === 'eq')      return `${fn} = DATE '${v}'`;
+                    if (op === 'before')  return `${fn} < DATE '${v}'`;
+                    if (op === 'after')   return `${fn} > DATE '${v}'`;
+                    if (op === 'between' && v2) return `${fn} >= DATE '${v}' AND ${fn} <= DATE '${v2}'`;
+                    return null;
+                }
+                if (isDomain) {
+                    const code = isStr ? `'${v.replace(/'/g,"''")}'` : v;
+                    return op === 'eq' ? `${fn} = ${code}` : `${fn} <> ${code}`;
+                }
+                if (isStr) {
+                    const e = v.replace(/'/g,"''");
+                    if (op === 'eq')         return `${fn} = '${e}'`;
+                    if (op === 'neq')        return `${fn} <> '${e}'`;
+                    if (op === 'contains')   return `${fn} LIKE '%${e}%'`;
+                    if (op === 'notcontains')return `${fn} NOT LIKE '%${e}%'`;
+                    if (op === 'starts')     return `${fn} LIKE '${e}%'`;
+                    if (op === 'ends')       return `${fn} LIKE '%${e}'`;
+                }
+                // numeric
+                if (op === 'eq')  return `${fn} = ${v}`;
+                if (op === 'neq') return `${fn} <> ${v}`;
+                if (op === 'gt')  return `${fn} > ${v}`;
+                if (op === 'gte') return `${fn} >= ${v}`;
+                if (op === 'lt')  return `${fn} < ${v}`;
+                if (op === 'lte') return `${fn} <= ${v}`;
+                if (op === 'between' && v2) return `${fn} >= ${v} AND ${fn} <= ${v2}`;
+                return null;
+            }
+
+            function buildWhereFromConditions() {
+                const clauses = filterConditions.map(conditionToSQL).filter(Boolean);
+                return clauses.length ? clauses.map(c => `(${c})`).join(` ${filterConjunction} `) : '';
+            }
+
+            function makeValueArea(cond, valueArea) {
+                valueArea.innerHTML = '';
+                const op = cond.operator;
+                if (op === 'blank' || op === 'notblank') { cond.value = ''; cond.value2 = ''; return; }
+                const field = editableFields.find(f => f.name === cond.field);
+                if (!field) return;
+
+                // ── Multi-value: includes / excludes ─────────────────────────
+                if (op === 'includes' || op === 'excludes') {
+                    if (!Array.isArray(cond.values)) cond.values = [];
+                    if (field.domain?.type === 'coded-value') {
+                        // Scrollable checkbox list for domain fields
+                        const listWrap = document.createElement('div');
+                        listWrap.style.cssText = 'max-height:160px;overflow-y:auto;background:#0f0f17;border:1px solid #313244;border-radius:0 0 6px 6px;padding:4px;';
+                        field.domain.codedValues.forEach(cv => {
+                            const lbl = document.createElement('label');
+                            lbl.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;cursor:pointer;font-size:11px;color:#cdd6f4;border-radius:4px;';
+                            lbl.addEventListener('mouseenter', () => lbl.style.background = '#1e1e2e');
+                            lbl.addEventListener('mouseleave', () => lbl.style.background = 'transparent');
+                            const chk = document.createElement('input');
+                            chk.type = 'checkbox'; chk.style.accentColor = '#cba6f7';
+                            chk.checked = cond.values.map(String).includes(String(cv.code));
+                            chk.addEventListener('change', () => {
+                                if (chk.checked) { if (!cond.values.map(String).includes(String(cv.code))) cond.values.push(cv.code); }
+                                else cond.values = cond.values.filter(v => String(v) !== String(cv.code));
+                            });
+                            lbl.appendChild(chk); lbl.appendChild(document.createTextNode(cv.name));
+                            listWrap.appendChild(lbl);
+                        });
+                        // Search box above the checkbox list
+                        const domainSearch = document.createElement('input');
+                        domainSearch.type = 'text'; domainSearch.placeholder = 'Search values…';
+                        domainSearch.style.cssText = 'width:100%;padding:6px 8px;background:#313244;border:1px solid #45475a;border-bottom:none;border-radius:6px 6px 0 0;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
+                        domainSearch.addEventListener('input', () => {
+                            const q = domainSearch.value.toLowerCase();
+                            listWrap.querySelectorAll('label').forEach(lbl => {
+                                lbl.style.display = (!q || lbl.textContent.toLowerCase().includes(q)) ? '' : 'none';
+                            });
+                        });
+                        valueArea.appendChild(domainSearch);
+                        valueArea.appendChild(listWrap);
+                    } else {
+                        // Tag/pill input for text and numeric fields
+                        const tagWrap = document.createElement('div');
+                        tagWrap.style.cssText = 'background:#313244;border:1px solid #45475a;border-radius:6px;padding:6px;min-height:38px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;cursor:text;';
+                        const tagInput = document.createElement('input');
+                        tagInput.type = ['integer','small-integer','double','single'].includes(field.type) ? 'number' : 'text';
+                        tagInput.placeholder = 'Type value, press Enter…';
+                        tagInput.style.cssText = 'background:transparent;border:none;color:#cdd6f4;font-size:12px;outline:none;min-width:130px;flex:1;padding:0;';
+                        function renderTags() {
+                            tagWrap.querySelectorAll('.pe-tag').forEach(t => t.remove());
+                            cond.values.forEach((val, i) => {
+                                const pill = document.createElement('span');
+                                pill.className = 'pe-tag';
+                                pill.style.cssText = 'background:#cba6f7;color:#1e1e2e;padding:2px 8px 2px 10px;border-radius:10px;font-size:11px;display:inline-flex;align-items:center;gap:4px;font-weight:600;';
+                                const txt = document.createTextNode(val);
+                                const rm = document.createElement('span');
+                                rm.textContent = '×'; rm.style.cssText = 'cursor:pointer;font-size:13px;line-height:1;opacity:.7;';
+                                rm.onclick = () => { cond.values.splice(i, 1); renderTags(); };
+                                pill.appendChild(txt); pill.appendChild(rm);
+                                tagWrap.insertBefore(pill, tagInput);
+                            });
+                        }
+                        tagInput.addEventListener('keydown', e => {
+                            if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const v = tagInput.value.trim();
+                                if (v && !cond.values.map(String).includes(v)) { cond.values.push(v); renderTags(); tagInput.value = ''; }
+                            } else if (e.key === 'Backspace' && tagInput.value === '' && cond.values.length) {
+                                cond.values.pop(); renderTags();
+                            }
+                        });
+                        tagWrap.addEventListener('click', () => tagInput.focus());
+                        tagWrap.appendChild(tagInput); renderTags();
+                        valueArea.appendChild(tagWrap);
+                        const hint = document.createElement('div');
+                        hint.style.cssText = 'font-size:10px;color:#6c7086;margin-top:3px;';
+                        hint.textContent = 'Press Enter to add each value. Backspace to remove the last.';
+                        valueArea.appendChild(hint);
+                    }
+                    return;
+                }
+
+                function makeInput(placeholder, currentVal, isSecond) {
+                    let inp;
+                    if (field.domain?.type === 'coded-value') {
+                        inp = document.createElement('select'); inp.className = 'input-ctrl';
+                        inp.innerHTML = '<option value="">— Select —</option>';
+                        field.domain.codedValues.forEach(cv => {
+                            const o = document.createElement('option'); o.value = cv.code; o.textContent = cv.name;
+                            if (cv.code == currentVal) o.selected = true;
+                            inp.appendChild(o);
+                        });
+                    } else if (field.type === 'date') {
+                        inp = document.createElement('input'); inp.type = 'date'; inp.className = 'input-ctrl';
+                        if (currentVal) inp.value = currentVal;
+                    } else if (['integer','small-integer','double','single'].includes(field.type)) {
+                        inp = document.createElement('input'); inp.type = 'number'; inp.className = 'input-ctrl';
+                        inp.placeholder = placeholder;
+                        if (currentVal !== '' && currentVal !== undefined) inp.value = currentVal;
+                    } else {
+                        inp = document.createElement('input'); inp.type = 'text'; inp.className = 'input-ctrl';
+                        inp.placeholder = placeholder;
+                        if (currentVal) inp.value = currentVal;
+                    }
+                    inp.style.marginBottom = '4px';
+                    inp.addEventListener('input',  () => { if (isSecond) cond.value2 = inp.value; else cond.value = inp.value; });
+                    inp.addEventListener('change', () => { if (isSecond) cond.value2 = inp.value; else cond.value = inp.value; });
+                    return inp;
+                }
+
+                if (op === 'between') {
+                    const fl = document.createElement('div'); fl.style.cssText = 'font-size:10px;color:#6c7086;margin-bottom:2px;'; fl.textContent = 'From:';
+                    const tl = document.createElement('div'); tl.style.cssText = 'font-size:10px;color:#6c7086;margin-bottom:2px;margin-top:2px;'; tl.textContent = 'To:';
+                    valueArea.appendChild(fl); valueArea.appendChild(makeInput('From', cond.value, false));
+                    valueArea.appendChild(tl); valueArea.appendChild(makeInput('To',   cond.value2, true));
+                } else {
+                    valueArea.appendChild(makeInput('Value', cond.value, false));
+                }
+            }
+
+            function createConditionRow(cond) {
+                const row = document.createElement('div');
+                row.style.cssText = 'background:#0f0f17;border:1px solid #313244;border-radius:6px;padding:8px;margin-bottom:6px;';
+
+                // ── Searchable field picker ───────────────────────────────────
+                const fieldLbl = document.createElement('div');
+                fieldLbl.style.cssText = 'font-size:10px;color:#6c7086;margin-bottom:3px;';
+                fieldLbl.textContent = 'Field';
+
+                const fieldPickerWrap = document.createElement('div');
+                fieldPickerWrap.style.cssText = 'position:relative;margin-bottom:6px;';
+
+                const fieldBtn = document.createElement('button');
+                fieldBtn.type = 'button'; fieldBtn.className = 'domain-btn';
+                const fieldBtnText = document.createElement('span');
+                const initFld = editableFields.find(f => f.name === cond.field);
+                fieldBtnText.textContent = initFld ? (initFld.alias||initFld.name) : '— Select a field —';
+                const fieldBtnArrow = document.createElement('span');
+                fieldBtnArrow.textContent = '▼'; fieldBtnArrow.style.fontSize = '10px';
+                fieldBtn.appendChild(fieldBtnText); fieldBtn.appendChild(fieldBtnArrow);
+
+                const fieldPanel = document.createElement('div');
+                fieldPanel.style.cssText = 'display:none;margin-top:2px;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+
+                const fieldSearch = document.createElement('input');
+                fieldSearch.type = 'text'; fieldSearch.placeholder = 'Search fields…';
+                fieldSearch.style.cssText = 'width:100%;padding:7px 10px;background:#313244;border:none;border-bottom:1px solid #45475a;color:#cdd6f4;font-size:12px;outline:none;box-sizing:border-box;';
+
+                const fieldListEl = document.createElement('div');
+                fieldListEl.style.cssText = 'max-height:160px;overflow-y:auto;';
+
+                function renderFieldOptions(filter='') {
+                    fieldListEl.innerHTML = '';
+                    const f = filter.toLowerCase();
+                    const filtered = editableFields.filter(fld => !f || (fld.alias||fld.name).toLowerCase().includes(f));
+                    if (!filtered.length) {
+                        const em = document.createElement('div');
+                        em.style.cssText = 'padding:10px;font-size:11px;color:#6c7086;text-align:center;';
+                        em.textContent = 'No matches'; fieldListEl.appendChild(em); return;
+                    }
+                    filtered.forEach(fld => {
+                        const it = document.createElement('div');
+                        const isSel = fld.name === cond.field;
+                        it.style.cssText = `padding:7px 10px;cursor:pointer;font-size:12px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #313244;display:flex;justify-content:space-between;align-items:center;gap:6px;`;
+                        const nm = document.createElement('span'); nm.textContent = fld.alias||fld.name; nm.style.flex='1';
+                        const tp = document.createElement('span'); tp.className='fieldBadge'; tp.textContent = getFieldTypeLabel(fld);
+                        it.appendChild(nm); it.appendChild(tp);
+                        it.addEventListener('mouseenter', ()=>{ if(fld.name!==cond.field) it.style.background='#313244'; });
+                        it.addEventListener('mouseleave', ()=>{ it.style.background=fld.name===cond.field?'#2a1f3d':'transparent'; });
+                        it.addEventListener('mousedown', e=>{
+                            e.preventDefault();
+                            cond.field=fld.name; cond.operator=''; cond.value=''; cond.value2=''; cond.values=[];
+                            fieldBtnText.textContent=fld.alias||fld.name;
+                            fieldPanel.style.display='none'; fieldBtn.classList.remove('open'); fieldBtnArrow.textContent='▼';
+                            refreshOperators();
+                        });
+                        fieldListEl.appendChild(it);
+                    });
+                }
+                renderFieldOptions();
+                fieldPanel.appendChild(fieldSearch); fieldPanel.appendChild(fieldListEl);
+                fieldBtn.addEventListener('click', ()=>{
+                    const isOpen=fieldPanel.style.display==='block';
+                    if(!isOpen){ fieldPanel.style.display='block'; fieldBtn.classList.add('open'); fieldBtnArrow.textContent='▲'; fieldSearch.value=''; renderFieldOptions(''); setTimeout(()=>{ fieldSearch.focus(); fieldPanel.scrollIntoView({behavior:'smooth',block:'nearest'}); },50); }
+                    else { fieldPanel.style.display='none'; fieldBtn.classList.remove('open'); fieldBtnArrow.textContent='▼'; }
+                });
+                fieldSearch.addEventListener('input', ()=>renderFieldOptions(fieldSearch.value));
+                fieldPickerWrap.appendChild(fieldBtn); fieldPickerWrap.appendChild(fieldPanel);
+
+                // Operator select
+                const opLbl = document.createElement('div'); opLbl.style.cssText = 'font-size:10px;color:#6c7086;margin-bottom:3px;'; opLbl.textContent = 'Condition';
+                const opSel = document.createElement('select'); opSel.className = 'input-ctrl'; opSel.style.marginBottom = '6px';
+
+                // Value area
+                const valLbl = document.createElement('div'); valLbl.style.cssText = 'font-size:10px;color:#6c7086;margin-bottom:3px;'; valLbl.textContent = 'Value';
+                const valueArea = document.createElement('div');
+
+                function refreshOperators() {
+                    const field = editableFields.find(f => f.name === cond.field);
+                    opSel.innerHTML = '';
+                    if (!field) return;
+                    getOperatorsForField(field).forEach(op => {
+                        const o = document.createElement('option'); o.value = op.value; o.textContent = op.label;
+                        if (op.value === cond.operator) o.selected = true;
+                        opSel.appendChild(o);
+                    });
+                    cond.operator = opSel.value;
+                    const noVal = ['blank','notblank'].includes(cond.operator);
+                    valLbl.style.display = noVal ? 'none' : 'block';
+                    makeValueArea(cond, valueArea);
+                }
+
+                opSel.addEventListener('change', () => {
+                    cond.operator = opSel.value; cond.value = ''; cond.value2 = ''; cond.values = [];
+                    const noVal = ['blank','notblank'].includes(cond.operator);
+                    valLbl.style.display = noVal ? 'none' : 'block';
+                    makeValueArea(cond, valueArea);
+                });
+
+                const removeBtn = document.createElement('button');
+                removeBtn.type = 'button'; removeBtn.className = 'btn btn-danger';
+                removeBtn.style.cssText = 'width:100%;margin-top:6px;font-size:11px;padding:4px;';
+                removeBtn.textContent = '× Remove';
+                removeBtn.onclick = () => {
+                    const idx = filterConditions.indexOf(cond);
+                    if (idx > -1) filterConditions.splice(idx, 1);
+                    row.remove();
+                };
+
+                row.appendChild(fieldLbl); row.appendChild(fieldPickerWrap);
+                row.appendChild(opLbl);   row.appendChild(opSel);
+                row.appendChild(valLbl);  row.appendChild(valueArea);
+                row.appendChild(removeBtn);
+                refreshOperators();
+                return row;
+            }
+
+            // Action row: Add + Test
+            const actionsRow = document.createElement('div');
+            actionsRow.style.cssText = 'display:flex;gap:6px;margin-top:4px;';
+            const addCondBtn = document.createElement('button');
+            addCondBtn.type = 'button'; addCondBtn.className = 'btn btn-info';
+            addCondBtn.style.cssText = 'flex:1;font-size:11px;';
+            addCondBtn.textContent = '+ Add Condition';
+            addCondBtn.onclick = () => {
+                const cond = { field:'', operator:'', value:'', value2:'' };
+                filterConditions.push(cond);
+                conditionsContainer.appendChild(createConditionRow(cond));
+            };
+            const testBtn = document.createElement('button');
+            testBtn.type = 'button'; testBtn.className = 'btn btn-secondary';
+            testBtn.style.cssText = 'flex:1;font-size:11px;';
+            testBtn.textContent = '🔍 Test Filter';
+            const testResult = document.createElement('div');
+            testResult.style.cssText = 'font-size:10px;margin-top:4px;min-height:14px;';
+            testBtn.onclick = async () => {
+                const where = buildWhereFromConditions();
+                if (!where) { testResult.textContent = 'Add at least one condition first.'; testResult.style.color = '#f38ba8'; return; }
+                testResult.textContent = 'Testing…'; testResult.style.color = '#a6adc8';
+                try {
+                    const d = selectedFeaturesByLayer.get(lid);
+                    if (!d?.features.length) { testResult.textContent = 'No features in current selection.'; testResult.style.color = '#f9e2af'; return; }
+                    // Constrain to the OIDs already in the selection so the count
+                    // reflects "of the features you selected" not the whole service.
+                    const oidField = layer.objectIdField || 'OBJECTID';
+                    const objectIds = d.features.map(f => f.attributes[oidField]).filter(id => id != null);
+                    const res = await layer.queryFeatures({ where, objectIds, returnCountOnly:true, returnGeometry:false });
+                    const pct = Math.round((res.count / d.features.length) * 100);
+                    testResult.textContent = `✓ ${res.count} of ${d.features.length} selected features match (${pct}%)`;
+                    testResult.style.color = res.count === 0 ? '#f9e2af' : '#a6e3a1';
+                } catch(err) { testResult.textContent = '✗ ' + err.message; testResult.style.color = '#f38ba8'; }
+            };
+            actionsRow.appendChild(addCondBtn); actionsRow.appendChild(testBtn);
+            filterBody.appendChild(actionsRow); filterBody.appendChild(testResult);
+
+            // Helpers attached to card so buildSummary / saveConfiguration can read them
+            card.getFilterClause = () => enableChk.checked ? buildWhereFromConditions() : '';
+            card.getFilterData   = () => ({ filterEnabled: enableChk.checked, filterConjunction, filterConditions: filterConditions.map(c => ({...c})) });
+            card.setFilterData   = (data) => {
+                if (!data?.filterEnabled) return;
+                enableChk.checked = true; filterBody.style.display = 'block';
+                filterConjunction = data.filterConjunction || 'AND';
+                conjRow.querySelectorAll('button').forEach((b,i) => {
+                    const active = ['AND','OR'][i] === filterConjunction;
+                    b.style.background = active ? '#cba6f7' : '#313244';
+                    b.style.color = active ? '#1e1e2e' : '#cdd6f4';
+                });
+                filterConditions = []; conditionsContainer.innerHTML = '';
+                (data.filterConditions || []).forEach(cd => {
+                    const cond = {...cd}; filterConditions.push(cond);
+                    conditionsContainer.appendChild(createConditionRow(cond));
+                });
             };
 
             const orderDiv=document.createElement('div'); orderDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:8px;display:flex;align-items:center;gap:8px;';
@@ -616,8 +1024,10 @@
                 const data=selectedFeaturesByLayer.get(lid); if(!data)return;
                 const mode=section.querySelector(`input[name="mode_${lid}"]:checked`)?.value||'edit';
                 const config={lid,layerId:data.layer.layerId,layer:data.layer,features:data.features,mode,order:parseInt(section.dataset.order||1),showPopup:section.querySelector(`#popup_${lid}`)?.checked??true,allowSkip:section.querySelector(`#allowskip_${lid}`)?.checked??true,fields:[],filterEnabled:false,filterWhere:''};
-                const filterEn=section.querySelector(`#enableFilter_${lid}`);
-                if(filterEn?.checked){const fw=section.querySelector(`#filterWhere_${lid}`)?.value.trim();if(fw){config.filterEnabled=true;config.filterWhere=fw;}}
+                if (section.getFilterClause) {
+                    config.filterWhere   = section.getFilterClause();
+                    config.filterEnabled = config.filterWhere !== '';
+                }
                 if(mode==='edit'){const fd=section.querySelector(`#fields_${lid}`);const names=fd?.getCheckedFields?fd.getCheckedFields():Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);names.forEach(n=>{const f=data.layer.fields.find(f=>f.name===n);if(f)config.fields.push(f);});config.fields.sort((a,b)=>(a.alias||a.name).localeCompare(b.alias||b.name));}
                 layerConfigs.push(config);
             });
@@ -856,10 +1266,12 @@
         function getSavedConfigurations(){try{return JSON.parse(localStorage.getItem('sequentialEditorConfigs')||'{}');}catch(e){return {};}}
         function loadSavedConfigurationsList(){const sel=$('#savedConfigSelect');sel.innerHTML='<option value="">-- Select saved config --</option>';Object.entries(getSavedConfigurations()).forEach(([id,c])=>{const d=new Date(c.savedAt),opt=document.createElement('option');opt.value=id;opt.textContent=`${c.name} (${d.toLocaleDateString()} ${d.toLocaleTimeString()})`;sel.appendChild(opt);});}
         function autoLoadLastConfiguration(){try{const id=localStorage.getItem('pathEditorLastConfig');if(!id)return;const cfg=getSavedConfigurations()[id];if(!cfg)return;const s=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');if(!s?.length)return;$('#savedConfigSelect').value=id;applyConfigurationToUI(cfg);updateStatus(`Auto-loaded: "${cfg.name}"`);}catch(e){console.warn('Auto-load failed:',e);}}
-        function saveConfiguration(){const layers=[];$('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{const lid=section.dataset.layerId,chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk?.checked)return;const data=selectedFeaturesByLayer.get(lid);if(!data)return;const mode=section.querySelector(`input[name="mode_${lid}"]:checked`)?.value||'edit';const lc={layerId:data.layer.layerId,layerTitle:data.layer.title,mode,order:parseInt(section.dataset.order||1),showPopup:section.querySelector(`#popup_${lid}`)?.checked??true,allowSkip:section.querySelector(`#allowskip_${lid}`)?.checked??true,fields:[],filterEnabled:false,filterWhere:''};const fEn=section.querySelector(`#enableFilter_${lid}`);if(fEn?.checked){lc.filterEnabled=true;lc.filterWhere=section.querySelector(`#filterWhere_${lid}`)?.value.trim()||'';}if(mode==='edit'){const fd=section.querySelector(`#fields_${lid}`);lc.fields=fd?.getCheckedFields?fd.getCheckedFields():Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);}layers.push(lc);});if(!layers.length){alert('No layers configured to save.');return;}const name=prompt('Configuration name:','My Configuration');if(!name)return;const all=getSavedConfigurations(),id='config_'+Date.now();all[id]={name,savedAt:new Date().toISOString(),layers};try{localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all));updateStatus(`Saved "${name}"`);loadSavedConfigurationsList();}catch(e){alert('Save error: '+e.message);}}
+        function saveConfiguration(){const layers=[];$('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{const lid=section.dataset.layerId,chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk?.checked)return;const data=selectedFeaturesByLayer.get(lid);if(!data)return;const mode=section.querySelector(`input[name="mode_${lid}"]:checked`)?.value||'edit';const lc={layerId:data.layer.layerId,layerTitle:data.layer.title,mode,order:parseInt(section.dataset.order||1),showPopup:section.querySelector(`#popup_${lid}`)?.checked??true,allowSkip:section.querySelector(`#allowskip_${lid}`)?.checked??true,fields:[],filterEnabled:false,filterWhere:''};if (section.getFilterData) { const fd=section.getFilterData(); lc.filterEnabled=fd.filterEnabled; lc.filterConjunction=fd.filterConjunction; lc.filterConditions=fd.filterConditions; }if(mode==='edit'){const fd=section.querySelector(`#fields_${lid}`);lc.fields=fd?.getCheckedFields?fd.getCheckedFields():Array.from(section.querySelectorAll(`#fields_${lid} input[type=checkbox]:checked`)).map(c=>c.dataset.fieldName);}layers.push(lc);});if(!layers.length){alert('No layers configured to save.');return;}const name=prompt('Configuration name:','My Configuration');if(!name)return;const all=getSavedConfigurations(),id='config_'+Date.now();all[id]={name,savedAt:new Date().toISOString(),layers};try{localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all));updateStatus(`Saved "${name}"`);loadSavedConfigurationsList();}catch(e){alert('Save error: '+e.message);}}
         function loadConfiguration(){const id=$('#savedConfigSelect').value;if(!id){alert('Select a configuration first.');return;}const cfg=getSavedConfigurations()[id];if(!cfg){alert('Configuration not found.');return;}try{localStorage.setItem('pathEditorLastConfig',id);}catch(e){}applyConfigurationToUI(cfg);}
         function deleteConfiguration(){const sel=$('#savedConfigSelect'),id=sel.value;if(!id){alert('Select a configuration to delete.');return;}const all=getSavedConfigurations(),cfg=all[id];if(!cfg||!confirm(`Delete "${cfg.name}"?`))return;delete all[id];try{localStorage.setItem('sequentialEditorConfigs',JSON.stringify(all));updateStatus(`Deleted "${cfg.name}"`);loadSavedConfigurationsList();}catch(e){alert('Delete error: '+e.message);}}
-        function applyConfigurationToUI(config){const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');let applied=0,skipped=[];sections.forEach(section=>{const lid=section.dataset.layerId,data=selectedFeaturesByLayer.get(lid);if(!data)return;const lc=config.layers.find(l=>l.layerId===data.layer.layerId);if(!lc)return;const chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk){skipped.push(lc.layerTitle);return;}chk.checked=true;section.classList.add('enabled');const body=section.querySelector('.layerCardBody');if(body){body.style.display='block';const ch=section.querySelector('.layerCardHeader span:last-child');if(ch)ch.textContent='▲';}const modeR=section.querySelector(`input[name="mode_${lid}"][value="${lc.mode}"]`);if(modeR){modeR.checked=true;const fd=section.querySelector(`#fields_${lid}`);if(fd)fd.style.display=lc.mode==='edit'?'block':'none';}section.dataset.order=lc.order;const oi=section.querySelector('.orderInput');if(oi)oi.value=lc.order;const pc=section.querySelector(`#popup_${lid}`);if(pc)pc.checked=lc.showPopup;const sc=section.querySelector(`#allowskip_${lid}`);if(sc)sc.checked=lc.allowSkip;if(lc.filterEnabled){const fe=section.querySelector(`#enableFilter_${lid}`);if(fe)fe.checked=true;const fi=section.querySelector(`#filterInputs_${lid}`);if(fi)fi.style.display='block';const fw=section.querySelector(`#filterWhere_${lid}`);if(fw&&lc.filterWhere)fw.value=lc.filterWhere;}if(lc.mode==='edit'&&lc.fields?.length){const fd=section.querySelector(`#fields_${lid}`);if(fd?.setCheckedFields)fd.setCheckedFields(lc.fields);else section.querySelectorAll(`#fields_${lid} input[type=checkbox]`).forEach(c=>{c.checked=lc.fields.includes(c.dataset.fieldName);});}applied++;});if(applied===0)alert(`Configuration "${config.name}" could not be applied — no matching layers.`);else updateStatus(`Loaded "${config.name}" (${applied} layer${applied>1?'s':''}${skipped.length?`, skipped: ${skipped.join(', ')}`:''}).`);}
+        function applyConfigurationToUI(config){const sections=$('#layerConfigContainer').querySelectorAll('[data-layer-id]');let applied=0,skipped=[];sections.forEach(section=>{const lid=section.dataset.layerId,data=selectedFeaturesByLayer.get(lid);if(!data)return;const lc=config.layers.find(l=>l.layerId===data.layer.layerId);if(!lc)return;const chk=section.querySelector(`#layer_${lid}_enabled`);if(!chk){skipped.push(lc.layerTitle);return;}chk.checked=true;section.classList.add('enabled');const body=section.querySelector('.layerCardBody');if(body){body.style.display='block';const ch=section.querySelector('.layerCardHeader span:last-child');if(ch)ch.textContent='▲';}const modeR=section.querySelector(`input[name="mode_${lid}"][value="${lc.mode}"]`);if(modeR){modeR.checked=true;const fd=section.querySelector(`#fields_${lid}`);if(fd)fd.style.display=lc.mode==='edit'?'block':'none';}section.dataset.order=lc.order;const oi=section.querySelector('.orderInput');if(oi)oi.value=lc.order;const pc=section.querySelector(`#popup_${lid}`);if(pc)pc.checked=lc.showPopup;const sc=section.querySelector(`#allowskip_${lid}`);if(sc)sc.checked=lc.allowSkip;if (lc.filterEnabled && section.setFilterData) { section.setFilterData({ filterEnabled:lc.filterEnabled, filterConjunction:lc.filterConjunction||'AND', filterConditions:lc.filterConditions||[] }); }if(lc.mode==='edit'&&lc.fields?.length){const fd=section.querySelector(`#fields_${lid}`);if(fd?.setCheckedFields)fd.setCheckedFields(lc.fields);else section.querySelectorAll(`#fields_${lid} input[type=checkbox]`).forEach(c=>{c.checked=lc.fields.includes(c.dataset.fieldName);});}applied++;});        updateStatus(applied === 0
+            ? `Config "${config.name}": no matching layers in current selection.`
+            : `Loaded "${config.name}" (${applied} layer${applied>1?'s':''}${skipped.length?`, skipped: ${skipped.join(', ')}`:''}).`);}
 
         // ── Complete / Report ─────────────────────────────────────────────────
         function displayEditSummary(){const edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update'),ok=edits.filter(e=>e.success).length,skip=editLog.filter(e=>e.action==='skip').length,fail=edits.filter(e=>!e.success).length,dur=sessionStartTime?Math.round((new Date()-sessionStartTime)/1000):0;$('#editSummary').innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#a6e3a1;">${ok}</div><div style="font-size:10px;color:#a6adc8;">Updated</div></div><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f9e2af;">${skip}</div><div style="font-size:10px;color:#a6adc8;">Skipped</div></div>${fail?`<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f38ba8;">${fail}</div><div style="font-size:10px;color:#a6adc8;">Failed</div></div>`:''}<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#89b4fa;">${Math.floor(dur/60)}m ${dur%60}s</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div></div>`;}
@@ -919,6 +1331,60 @@
                 updateStatus(`Attachments: ${ok} uploaded${fail ? ', ' + fail + ' failed' : ''}`);
             } catch(e) { updateStatus('Attachment upload error: ' + e.message); }
             filesToUpload = []; updateFileList();
+        }
+
+        // ── CSV Download ──────────────────────────────────────────────────────
+        async function downloadLayerCSV(lid, layer) {
+            try {
+                updateStatus(`Preparing ${layer.title} CSV…`);
+                const data = selectedFeaturesByLayer.get(lid);
+                if (!data) { updateStatus('No selection data found for this layer.'); return; }
+
+                // Get WHERE clause from the visual filter builder (if enabled)
+                const card = $('#layerConfigContainer')?.querySelector(`[data-layer-id="${lid}"]`);
+                const where = card?.getFilterClause?.() || '';
+
+                let features;
+                if (where || selectionGraphic?.geometry) {
+                    // Query the service so the filter is applied server-side
+                    const qp = { returnGeometry:false, outFields:['*'] };
+                    if (where) qp.where = where;
+                    if (selectionGraphic?.geometry) { qp.geometry = selectionGraphic.geometry; qp.spatialRelationship = 'intersects'; }
+                    const res = await layer.queryFeatures(qp);
+                    features = res.features;
+                } else {
+                    // No filter or geometry — use the already-fetched selection
+                    features = data.features;
+                }
+
+                if (!features.length) { updateStatus('No features to download after applying filter.'); return; }
+
+                await layer.load();
+                // Exclude geometry/blob fields; resolve domain codes to labels; format dates
+                const fields = layer.fields.filter(f => f.type !== 'geometry' && f.type !== 'blob');
+                const escape = v => { const s=String(v); return (s.includes(',')||s.includes('"')||s.includes('\n')) ? `"${s.replace(/"/g,'""')}"` : s; };
+                const headers = fields.map(f => escape(f.alias||f.name));
+                const rows = features.map(feat =>
+                    fields.map(f => {
+                        let val = feat.attributes[f.name];
+                        if (val === null || val === undefined) return '';
+                        if (f.type === 'date' && val) val = new Date(val).toLocaleString();
+                        if (f.domain?.type === 'coded-value') { const cv = f.domain.codedValues.find(c=>c.code==val); if(cv) val=cv.name; }
+                        return escape(val);
+                    }).join(',')
+                );
+
+                // \uFEFF BOM ensures Excel opens UTF-8 correctly
+                const csv  = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+                const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+                const url  = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${layer.title.replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'_')}_${new Date().toISOString().split('T')[0]}.csv`;
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                updateStatus(`Downloaded ${features.length} features from "${layer.title}"${where?' (filtered)':''}.`);
+            } catch(e) { updateStatus('CSV download error: '+e.message); console.error(e); }
         }
 
         // ── Cleanup ───────────────────────────────────────────────────────────
