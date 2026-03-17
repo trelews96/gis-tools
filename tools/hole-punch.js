@@ -10,23 +10,9 @@
     }
 
     /* ─── Configuration ───────────────────────────────────── */
-    const LAYER_CFG = {
-        points: [
-            { id: 42100, name: 'Vault' },
-            { id: 41150, name: 'Splice Closure' },
-            { id: 41100, name: 'Fiber Equipment' }
-        ],
-        lines: [
-            { id: 41050, name: 'Fiber Cable' },
-            { id: 42050, name: 'Underground Span' },
-            { id: 43050, name: 'Aerial Span' }
-        ]
-    };
-
-    // Tolerances
-    const CUT_TOLERANCE_M     = 15 / 3.28084;  // 15 ft → ~4.57 m (map units)
-    const SNAP_TOLERANCE_PX   = 20;             // pixels for point hit-test
-    const MIN_SEGMENT_LEN_FT  = 1;              // discard cuts producing < 1 ft segment
+    const CUT_TOLERANCE_M    = 15 / 3.28084;   // 15 ft → ~4.57 m
+    const SNAP_TOLERANCE_PX  = 20;             // pixels for point hit-test
+    const MIN_SEGMENT_LEN_FT = 1;
     const Z = 99999;
 
     /* ─── Locate MapView ──────────────────────────────────── */
@@ -45,25 +31,25 @@
     catch (e) { alert('Cut & Snap Tool – ' + e.message); return; }
 
     /* ─── State ───────────────────────────────────────────── */
-    let toolActive       = false;
-    let processing       = false;   // guard against concurrent async ops
-    let selectedPoint    = null;
+    let toolActive        = false;
+    let processing        = false;
+    let selectedPoint     = null;
     let selectedPointLayer = null;
-    let linesToCut       = [];
-    let previewMode      = false;
-    let undoStack        = [];
-    let clickHandler     = null;
-    let highlightHandles = [];
-    let graphicsLayer    = null;
-    let ArcGIS           = {};      // populated via require below
+    let linesToCut        = [];
+    let previewMode       = false;
+    let undoStack         = [];
+    let clickHandler      = null;
+    let highlightHandles  = [];
+    let graphicsLayer     = null;
+    let ArcGIS            = {};
 
-    /* ─── Load ArcGIS modules (Graphic + GraphicsLayer) ───── */
+    /* ─── Load ArcGIS modules ─────────────────────────────── */
     if (window.require) {
         window.require(
             ['esri/Graphic', 'esri/layers/GraphicsLayer'],
             (Graphic, GraphicsLayer) => {
                 ArcGIS.Graphic = Graphic;
-                graphicsLayer = new GraphicsLayer({ id: 'cut-snap-highlights', listMode: 'hide' });
+                graphicsLayer  = new GraphicsLayer({ id: 'cut-snap-highlights', listMode: 'hide' });
                 mapView.map.add(graphicsLayer);
             }
         );
@@ -87,7 +73,7 @@
         }));
     }
 
-    /* ─── UI ──────────────────────────────────────────────── */
+    /* ─── Main toolbox UI ─────────────────────────────────── */
     const toolBox = document.createElement('div');
     toolBox.id = 'cutSnapToolbox';
     toolBox.style.cssText = `
@@ -101,21 +87,12 @@
         <div style="color:#555;font-size:11px;margin-bottom:10px;padding:6px;background:#f8f8f8;border-radius:3px;line-height:1.6;">
             <b>How to use:</b><br>
             1. Enable the tool<br>
-            2. Click a point feature (Vault / Splice / Equipment)<br>
-            3. Review highlighted lines<br>
-            4. Click <i>Execute Cut</i> to split them at the point
+            2. Click a point feature<br>
+            3. Use the pop-up menu on the map to execute or cancel
         </div>
         <div style="display:flex;gap:6px;margin-bottom:8px;">
             <button id="cst-enable"  style="flex:1;padding:5px;background:#28a745;color:#fff;border:none;border-radius:3px;cursor:pointer;">Enable</button>
             <button id="cst-disable" style="flex:1;padding:5px;background:#888;color:#fff;border:none;border-radius:3px;cursor:pointer;" disabled>Disable</button>
-        </div>
-        <div id="cst-preview" style="display:none;margin-bottom:8px;padding:8px;background:#eef4ff;border:1px solid #4a80d4;border-radius:3px;">
-            <div style="font-weight:bold;margin-bottom:4px;font-size:11px;">Lines queued for cutting:</div>
-            <div id="cst-lines-list" style="font-size:11px;margin-bottom:8px;line-height:1.7;"></div>
-            <div style="display:flex;gap:6px;">
-                <button id="cst-execute" style="flex:1;padding:5px;background:#dc3545;color:#fff;border:none;border-radius:3px;cursor:pointer;">✂ Execute Cut</button>
-                <button id="cst-cancel"  style="flex:1;padding:5px;background:#6c757d;color:#fff;border:none;border-radius:3px;cursor:pointer;">Cancel</button>
-            </div>
         </div>
         <div style="display:flex;gap:6px;margin-bottom:8px;">
             <button id="cst-undo"  style="flex:1;padding:5px;background:#e67e00;color:#fff;border:none;border-radius:3px;cursor:pointer;" disabled>↩ Undo</button>
@@ -125,16 +102,73 @@
     `;
     document.body.appendChild(toolBox);
 
-    const el          = id => toolBox.querySelector(id);
-    const enableBtn   = el('#cst-enable');
-    const disableBtn  = el('#cst-disable');
-    const executeBtn  = el('#cst-execute');
-    const cancelBtn   = el('#cst-cancel');
-    const undoBtn     = el('#cst-undo');
-    const closeBtn    = el('#cst-close');
-    const statusEl    = el('#cst-status');
-    const previewEl   = el('#cst-preview');
-    const linesListEl = el('#cst-lines-list');
+    /* ─── Context menu (floats on the map near the point) ─── */
+    const ctxMenu = document.createElement('div');
+    ctxMenu.id = 'cutSnapContextMenu';
+    ctxMenu.style.cssText = `
+        display:none;
+        position:fixed;
+        z-index:${Z + 1};
+        background:#fff;
+        border:1px solid #444;
+        border-radius:6px;
+        box-shadow:0 4px 16px rgba(0,0,0,.3);
+        font:12px/1.4 Arial,sans-serif;
+        min-width:170px;
+        overflow:hidden;
+    `;
+    ctxMenu.innerHTML = `
+        <div id="ctx-header" style="
+            padding:6px 10px;
+            background:#3367d6;
+            color:#fff;
+            font-weight:bold;
+            font-size:11px;
+        ">Lines found: <span id="ctx-count">0</span></div>
+        <div id="ctx-list" style="
+            padding:6px 10px;
+            font-size:11px;
+            color:#444;
+            border-bottom:1px solid #eee;
+            max-height:90px;
+            overflow-y:auto;
+        "></div>
+        <div style="display:flex;flex-direction:column;gap:0;">
+            <button id="ctx-execute" style="
+                padding:7px 10px;
+                background:#dc3545;
+                color:#fff;
+                border:none;
+                border-bottom:1px solid rgba(255,255,255,.2);
+                cursor:pointer;
+                text-align:left;
+                font:bold 12px Arial,sans-serif;
+            ">✂ Execute Cut</button>
+            <button id="ctx-cancel" style="
+                padding:7px 10px;
+                background:#6c757d;
+                color:#fff;
+                border:none;
+                cursor:pointer;
+                text-align:left;
+                font:12px Arial,sans-serif;
+            ">✕ Cancel</button>
+        </div>
+    `;
+    document.body.appendChild(ctxMenu);
+
+    /* ─── UI element references ───────────────────────────── */
+    const el         = id => toolBox.querySelector(id);
+    const enableBtn  = el('#cst-enable');
+    const disableBtn = el('#cst-disable');
+    const undoBtn    = el('#cst-undo');
+    const closeBtn   = el('#cst-close');
+    const statusEl   = el('#cst-status');
+
+    const ctxCountEl   = ctxMenu.querySelector('#ctx-count');
+    const ctxListEl    = ctxMenu.querySelector('#ctx-list');
+    const ctxExecuteBtn = ctxMenu.querySelector('#ctx-execute');
+    const ctxCancelBtn  = ctxMenu.querySelector('#ctx-cancel');
 
     function setStatus(msg, color) {
         statusEl.textContent = msg;
@@ -142,11 +176,31 @@
     }
 
     function setProcessing(val) {
-        processing          = val;
-        executeBtn.disabled = val;
-        cancelBtn.disabled  = val;
-        enableBtn.disabled  = val || !toolActive ? true : false;
-        disableBtn.disabled = val || toolActive  ? false : true;
+        processing             = val;
+        ctxExecuteBtn.disabled = val;
+        ctxCancelBtn.disabled  = val;
+    }
+
+    /* ─── Context menu positioning ────────────────────────── */
+    function showContextMenu(mapPoint) {
+        // Convert map coords → screen coords
+        const screen = mapView.toScreen(mapPoint);
+
+        // Offset so the menu pops up and to the right of the point
+        const OFFSET_X = 14, OFFSET_Y = -10;
+
+        // Get map container position so we can translate to fixed coords
+        const containerRect = mapView.container.getBoundingClientRect();
+        const left = containerRect.left + screen.x + OFFSET_X;
+        const top  = containerRect.top  + screen.y + OFFSET_Y;
+
+        ctxMenu.style.left    = `${left}px`;
+        ctxMenu.style.top     = `${top}px`;
+        ctxMenu.style.display = 'block';
+    }
+
+    function hideContextMenu() {
+        ctxMenu.style.display = 'none';
     }
 
     /* ─── Geometry math ───────────────────────────────────── */
@@ -154,7 +208,6 @@
         return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
     }
 
-    /** Closest point on segment a→b to pt, returns { pt, t, dist } */
     function closestOnSegment(pt, a, b) {
         const cx = b.x - a.x, cy = b.y - a.y;
         const lenSq = cx * cx + cy * cy;
@@ -165,7 +218,6 @@
         return { pt: p, t, dist: dist2D(pt, p) };
     }
 
-    /** Walk all paths/segments and find the closest cut location to snapPt */
     function findCutInfo(lineGeom, snapPt) {
         if (!lineGeom?.paths?.length) return null;
         let best = null;
@@ -183,11 +235,6 @@
         return best;
     }
 
-    /**
-     * Split polyline at cutInfo using snapPt (the point feature location)
-     * as the shared new vertex for both resulting segments.
-     * Returns { seg1, seg2 } or null if the resulting segments would be degenerate.
-     */
     function splitLine(lineGeom, cutInfo, snapPt) {
         try {
             const allPaths = lineGeom.paths;
@@ -195,34 +242,28 @@
             const path = allPaths[pi];
             const snap = [snapPt.x, snapPt.y];
 
-            // Deep-copy helper
             const copyPaths = paths => paths.map(p => p.map(v => [...v]));
 
-            // Segment 1: all paths before pi unchanged; target path → [start … vertex si, snap]
             const paths1 = [
                 ...copyPaths(allPaths.slice(0, pi)),
                 [...path.slice(0, si + 1).map(v => [...v]), snap]
             ];
-
-            // Segment 2: target path → [snap, vertex si+1 … end]; all paths after pi unchanged
             const paths2 = [
                 [snap, ...path.slice(si + 1).map(v => [...v])],
                 ...copyPaths(allPaths.slice(pi + 1))
             ];
 
-            // Reject degenerate paths
             if (paths1.some(p => p.length < 2) || paths2.some(p => p.length < 2)) {
-                console.warn('splitLine: degenerate segment detected, skipping cut.');
+                console.warn('splitLine: degenerate segment, skipping.');
                 return null;
             }
 
             const seg1 = lineGeom.clone(); seg1.paths = paths1;
             const seg2 = lineGeom.clone(); seg2.paths = paths2;
 
-            // Reject nearly zero-length results
             if (geodeticLengthFt(seg1) < MIN_SEGMENT_LEN_FT ||
                 geodeticLengthFt(seg2) < MIN_SEGMENT_LEN_FT) {
-                console.warn('splitLine: resulting segment too short, skipping cut.');
+                console.warn('splitLine: segment too short, skipping.');
                 return null;
             }
 
@@ -233,10 +274,9 @@
         }
     }
 
-    /** Haversine length in feet (assumes Web Mercator input) */
     function geodeticLengthFt(geom) {
         if (!geom?.paths) return 0;
-        const R = 20902231.0; // Earth radius in feet
+        const R = 20902231.0;
         let total = 0;
         const toLL = (x, y) => {
             const lng = (x / 20037508.34) * 180;
@@ -261,12 +301,6 @@
     }
 
     /* ─── Layer queries ───────────────────────────────────── */
-
-    /**
-     * Dynamically collect all visible point-geometry feature layers from the map.
-     * This replaces the hardcoded LAYER_CFG.points lookup so no layer IDs need
-     * to be configured — any visible point layer is eligible.
-     */
     async function getVisiblePointLayers() {
         const layers = mapView.map.allLayers.filter(l =>
             l.type === 'feature' &&
@@ -278,19 +312,13 @@
         for (const layer of layers) {
             try {
                 await layer.load();
-                // geometryType is only reliable after load()
                 if (layer.geometryType === 'point' || layer.geometryType === 'multipoint') {
-                    pointLayers.push({
-                        layer,
-                        name: layer.title || `Layer ${layer.layerId}`
-                    });
+                    pointLayers.push({ layer, name: layer.title || `Layer ${layer.layerId}` });
                 }
             } catch (e) {
                 console.warn(`Could not load layer ${layer.layerId}:`, e);
             }
         }
-        console.log(`Found ${pointLayers.length} visible point layer(s):`,
-            pointLayers.map(l => l.name));
         return pointLayers;
     }
 
@@ -348,11 +376,17 @@
         };
 
         const found = [];
-        for (const cfg of LAYER_CFG.lines) {
-            const layer = mapView.map.allLayers.find(l => l.layerId === cfg.id);
-            if (!layer?.visible) continue;
+
+        // Query only visible polyline layers dynamically
+        const lineLayers = mapView.map.allLayers.filter(l =>
+            l.type === 'feature' && l.visible !== false && l.layerId !== undefined
+        ).toArray();
+
+        for (const layer of lineLayers) {
             try {
                 await layer.load();
+                if (layer.geometryType !== 'polyline') continue;
+
                 const result = await layer.queryFeatures({
                     geometry: bufGeom,
                     spatialRelationship: 'intersects',
@@ -363,11 +397,15 @@
                 for (const feature of result.features) {
                     const cutInfo = findCutInfo(feature.geometry, { x, y });
                     if (cutInfo && cutInfo.dist <= buf) {
-                        found.push({ feature, layer, cfg, cutInfo });
+                        found.push({
+                            feature, layer,
+                            cfg: { name: layer.title || `Layer ${layer.layerId}` },
+                            cutInfo
+                        });
                     }
                 }
             } catch (e) {
-                console.warn(`Line query failed (${cfg.name}):`, e);
+                console.warn(`Line query failed (${layer.layerId}):`, e);
             }
         }
         return found;
@@ -375,35 +413,39 @@
 
     /* ─── Reset ───────────────────────────────────────────── */
     function resetSelection() {
-        selectedPoint      = null;
-        selectedPointLayer = null;
-        linesToCut         = [];
-        previewMode        = false;
-        previewEl.style.display = 'none';
+        selectedPoint       = null;
+        selectedPointLayer  = null;
+        linesToCut          = [];
+        previewMode         = false;
         clearHighlights();
+        hideContextMenu();
         if (toolActive) setStatus('Tool ready. Click a point feature.');
     }
 
-    /* ─── Preview ─────────────────────────────────────────── */
+    /* ─── Preview — populate & show context menu ──────────── */
     function showPreview() {
         if (!linesToCut.length) {
             setStatus(`No lines found within ${Math.round(CUT_TOLERANCE_M * 3.28084)} ft tolerance.`, '#c0392b');
             resetSelection();
             return;
         }
-        previewMode = true;
-        previewEl.style.display = 'block';
 
+        previewMode = true;
+
+        // Build the layer summary for the context menu list
         const byLayer = {};
         for (const li of linesToCut) {
             byLayer[li.cfg.name] = (byLayer[li.cfg.name] || 0) + 1;
             highlightGeometry(li.feature.geometry, false);
         }
-        linesListEl.innerHTML = Object.entries(byLayer)
+
+        ctxCountEl.textContent  = linesToCut.length;
+        ctxListEl.innerHTML     = Object.entries(byLayer)
             .map(([n, c]) => `• ${n}: <b>${c}</b>`)
             .join('<br>');
 
-        setStatus(`${linesToCut.length} line(s) ready. Review and execute.`);
+        showContextMenu(selectedPoint.geometry);
+        setStatus(`${linesToCut.length} line(s) ready. Use the map menu to execute.`);
     }
 
     /* ─── Execute cut ─────────────────────────────────────── */
@@ -423,12 +465,10 @@
 
                 const { seg1, seg2 } = split;
 
-                // Update original feature → seg1
                 const updFeature = li.feature.clone();
                 updFeature.geometry = seg1;
                 updFeature.attributes.calculated_length = geodeticLengthFt(seg1);
 
-                // New feature for seg2 — strip server-managed fields so the server assigns them
                 const newAttrs = { ...li.feature.attributes };
                 ['objectid', 'OBJECTID', 'gis_id', 'GIS_ID',
                  'globalid', 'GLOBALID', 'created_date', 'last_edited_date'].forEach(f => delete newAttrs[f]);
@@ -444,15 +484,14 @@
 
                 if (!updErr && !addErr) {
                     undoBatch.ops.push({
-                        layer:         li.layer,
-                        layerName:     li.cfg.name,
-                        originalFeat:  li.feature.clone(),            // full original for restore
-                        addedOID:      res.addFeatureResults[0].objectId
+                        layer:        li.layer,
+                        layerName:    li.cfg.name,
+                        originalFeat: li.feature.clone(),
+                        addedOID:     res.addFeatureResults[0].objectId
                     });
                     ok++;
-                    console.log(`✔ Cut ${li.cfg.name} OID ${li.feature.attributes.objectid ?? li.feature.attributes.OBJECTID}`);
                 } else {
-                    console.error('applyEdits error – update:', updErr, '  add:', addErr);
+                    console.error('applyEdits error – update:', updErr, ' add:', addErr);
                     fail++;
                 }
             } catch (e) {
@@ -468,10 +507,11 @@
 
         const msg = ok
             ? `✅ ${ok} line(s) cut${fail ? ` · ${fail} failed` : ''}.`
-            : `❌ All ${fail} cut(s) failed. See console for details.`;
+            : `❌ All ${fail} cut(s) failed. See console.`;
         setStatus(msg, ok ? '#28a745' : '#c0392b');
 
         setProcessing(false);
+        hideContextMenu();
         setTimeout(resetSelection, 3000);
     }
 
@@ -486,22 +526,14 @@
 
         for (const op of batch.ops) {
             try {
-                // Restore original geometry & attributes, then hard-delete the added segment
                 const res = await op.layer.applyEdits({
                     updateFeatures: [op.originalFeat],
-                    deleteFeatures: [{ objectId: op.addedOID }]   // ← real delete, not soft-delete
+                    deleteFeatures: [{ objectId: op.addedOID }]
                 });
-
                 const updErr = res.updateFeatureResults?.[0]?.error;
                 const delErr = res.deleteFeatureResults?.[0]?.error;
-
-                if (!updErr && !delErr) {
-                    ok++;
-                    console.log(`↩ Restored OID ${op.originalFeat.attributes.objectid ?? op.originalFeat.attributes.OBJECTID}, deleted OID ${op.addedOID}`);
-                } else {
-                    console.error('Undo applyEdits error – update:', updErr, '  delete:', delErr);
-                    fail++;
-                }
+                if (!updErr && !delErr) { ok++; }
+                else { console.error('Undo error – update:', updErr, ' delete:', delErr); fail++; }
             } catch (e) {
                 console.error(`Undo error (${op.layerName}):`, e);
                 fail++;
@@ -522,6 +554,7 @@
         event.stopPropagation();
         setProcessing(true);
         clearHighlights();
+        hideContextMenu();
         setStatus('Searching for point feature…');
 
         const ptResult = await findPointFeature({ x: event.x, y: event.y });
@@ -544,8 +577,8 @@
 
     /* ─── Enable / Disable ────────────────────────────────── */
     function enableTool() {
-        toolActive      = true;
-        clickHandler    = mapView.on('click', handleClick);
+        toolActive = true;
+        clickHandler = mapView.on('click', handleClick);
         enableBtn.disabled  = true;
         disableBtn.disabled = false;
         if (mapView.container) mapView.container.style.cursor = 'crosshair';
@@ -563,24 +596,25 @@
         setStatus('Tool disabled.');
     }
 
-    /* ─── Button wiring ───────────────────────────────────── */
+    /* ─── Context menu button wiring ──────────────────────── */
+    ctxExecuteBtn.onclick = executeCut;
+    ctxCancelBtn.onclick  = resetSelection;
+
+    /* ─── Toolbox button wiring ───────────────────────────── */
     enableBtn.onclick  = enableTool;
     disableBtn.onclick = disableTool;
-    executeBtn.onclick = executeCut;
-    cancelBtn.onclick  = resetSelection;
     undoBtn.onclick    = undoLastCut;
     closeBtn.onclick   = () => {
         disableTool();
         clearHighlights();
-        if (graphicsLayer) {
-            mapView.map.remove(graphicsLayer);
-            graphicsLayer = null;
-        }
+        hideContextMenu();
+        ctxMenu.remove();
+        if (graphicsLayer) { mapView.map.remove(graphicsLayer); graphicsLayer = null; }
         toolBox.remove();
         window.gisToolHost?.activeTools?.delete('cut-snap-tool');
     };
 
-    /* ─── Register & initialise ───────────────────────────── */
+    /* ─── Register ────────────────────────────────────────── */
     window.gisToolHost.activeTools.add('cut-snap-tool');
     setStatus("Cut & Snap Tool loaded. Click 'Enable' to begin.");
 
