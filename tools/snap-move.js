@@ -1,5 +1,5 @@
 // tools/snap-move-tool.js
-// Click-to-Move Tool — dynamic layer detection, no hardcoded IDs
+// Click-to-Move + Cut & Split Tool — dynamic layer detection, no hardcoded IDs
 
 (function() {
     try {
@@ -28,9 +28,10 @@
         const mapView = getMapView();
         const z = 99999;
         const SNAP_TOLERANCE = 25, POINT_SNAP_TOLERANCE = 45;
+        const CUT_TOLERANCE_M = 15 / 3.28084; // 15 ft → ~4.57 m
+        const MIN_SEGMENT_LEN_FT = 1;
 
-        // ── FIX 1: makeExt — always includes type:'extent' so ArcGIS API ──────
-        // accepts the plain object without logging accessor errors.
+        // ── FIX: makeExt always includes type:'extent' ────────────────────────
         function makeExt(cx, cy, half, sr) {
             return { type:'extent', xmin:cx-half, ymin:cy-half, xmax:cx+half, ymax:cy+half, spatialReference:sr };
         }
@@ -45,7 +46,6 @@
             const all = mapView.map.allLayers.filter(l => l.type === "feature" && l.visible !== false);
             const loads = all.map(l => l.load().catch(() => null));
             await Promise.all(loads);
-
             for (const l of all) {
                 if (!l.loaded) continue;
                 const entry = { layer: l, name: l.title || `Layer ${l.layerId}`, id: l.layerId };
@@ -53,7 +53,6 @@
                 if (gt === "point" || gt === "multipoint") pointLayers.push(entry);
                 else if (gt === "polyline")                lineLayers.push(entry);
             }
-
             console.log(`Snap-Move: detected ${pointLayers.length} point layer(s), ${lineLayers.length} line layer(s)`);
             return { pointLayers, lineLayers };
         }
@@ -76,9 +75,7 @@
 
         toolBox.innerHTML = `
             <style>
-                #snapMoveToolbox .smt-section {
-                    border-radius:3px; margin-bottom:8px; overflow:hidden;
-                }
+                #snapMoveToolbox .smt-section { border-radius:3px; margin-bottom:8px; overflow:hidden; }
                 #snapMoveToolbox .smt-section-header {
                     display:flex; align-items:center; justify-content:space-between;
                     padding:5px 8px; font-size:11px; font-weight:bold;
@@ -95,9 +92,8 @@
                 }
                 #snapMoveToolbox .smt-info-btn:hover { background:#bbb; }
                 #snapMoveToolbox .smt-hint {
-                    font-size:10px; color:#666; line-height:1.5;
-                    margin-bottom:5px; padding:5px 7px;
-                    background:rgba(0,0,0,0.04); border-radius:3px;
+                    font-size:10px; color:#666; line-height:1.5; margin-bottom:5px;
+                    padding:5px 7px; background:rgba(0,0,0,0.04); border-radius:3px;
                     border-left:2px solid rgba(0,0,0,0.12);
                 }
                 #snapMoveToolbox .smt-row { display:flex; gap:4px; margin-bottom:4px; }
@@ -120,22 +116,17 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                 <div style="font-weight:bold;font-size:13px;">🔧 Click-to-Move Tool</div>
                 <div style="display:flex;gap:4px;align-items:center;">
-                    <button id="toggleAllTips" title="Show or hide all hint text"
-                        style="padding:2px 7px;background:#aaa;color:white;border:none;border-radius:2px;font-size:10px;cursor:pointer;">
-                        ℹ Hide Tips</button>
-                    <button id="closeTool" title="Close and deactivate the tool"
-                        style="padding:2px 8px;background:#d32f2f;color:white;border:none;border-radius:2px;font-size:11px;cursor:pointer;">✕ Close</button>
+                    <button id="toggleAllTips" style="padding:2px 7px;background:#aaa;color:white;border:none;border-radius:2px;font-size:10px;cursor:pointer;">ℹ Hide Tips</button>
+                    <button id="closeTool" style="padding:2px 8px;background:#d32f2f;color:white;border:none;border-radius:2px;font-size:11px;cursor:pointer;">✕ Close</button>
                 </div>
             </div>
 
             <!-- ── Layer status ──────────────────────────────────────── -->
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:4px 8px;
-                        background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#555;"
-                 title="Auto-detected layers. Click Refresh if you change visibility or add new layers.">
+                        background:#f5f5f5;border:1px solid #ddd;border-radius:3px;font-size:10px;color:#555;">
                 <span>🗂</span>
                 <span id="layerBadge" style="flex:1;">Detecting layers…</span>
-                <button id="refreshLayers" style="padding:2px 7px;font-size:10px;background:#3367d6;border-radius:2px;"
-                    title="Re-scan all visible layers">↺ Refresh</button>
+                <button id="refreshLayers" style="padding:2px 7px;font-size:10px;background:#3367d6;border-radius:2px;">↺ Refresh</button>
             </div>
 
             <!-- ── Section 1: Tool Activation ───────────────────────── -->
@@ -151,21 +142,18 @@
                         Disable at any time to restore normal map navigation.
                     </div>
                     <div class="smt-row">
-                        <button id="enableTool" style="background:#28a745;"
-                            title="Activate the tool and begin editing">▶ Enable Tool</button>
-                        <button id="disableTool" style="background:#666;" disabled
-                            title="Deactivate and restore normal navigation">⏹ Disable Tool</button>
+                        <button id="enableTool" style="background:#28a745;">▶ Enable Tool</button>
+                        <button id="disableTool" style="background:#666;" disabled>⏹ Disable Tool</button>
                     </div>
                     <div class="smt-sublabel">
                         <span>Cancel</span>
                         <button class="smt-info-btn" data-hint="h-cancel">▾ more</button>
                     </div>
                     <div id="h-cancel" class="smt-hint">
-                        Cancel a pending selection before you've clicked the destination.
+                        Cancel a pending selection before clicking the destination.
                         Use this if you clicked the wrong feature.
                     </div>
-                    <button id="cancelMove" style="width:100%;background:#ff9800;" disabled
-                        title="Cancel a pending move without saving any changes">⊘ Cancel Current Move</button>
+                    <button id="cancelMove" style="width:100%;background:#ff9800;" disabled>⊘ Cancel Current Move</button>
                 </div>
             </div>
 
@@ -184,10 +172,8 @@
                         <strong>Line lock:</strong> restricts vertex moves, add/delete, and vertex highlights to that line only.
                     </div>
                     <div class="smt-row">
-                        <button id="lockFeatureBtn" style="background:#666;"
-                            title="Click then click any point or line on the map to lock edits to it">🎯 Pick Feature</button>
-                        <button id="releaseFeatureBtn" style="background:#666;" disabled
-                            title="Release the lock and return to editing any feature">🔓 Release Lock</button>
+                        <button id="lockFeatureBtn" style="background:#666;">🎯 Pick Feature</button>
+                        <button id="releaseFeatureBtn" style="background:#666;" disabled>🔓 Release Lock</button>
                     </div>
                     <div id="lockedFeatureInfo" style="font-size:10px;color:#6f42c1;min-height:14px;font-style:italic;margin-top:2px;"></div>
                 </div>
@@ -197,7 +183,6 @@
             <div class="smt-section" style="border:1px solid #b8e8c8;">
                 <div class="smt-section-header" style="background:#d0f0dc;color:#1a6e3a;">🖱 Feature Editing Modes</div>
                 <div class="smt-body" style="background:#f0fff4;">
-
                     <div class="smt-sublabel">
                         <span>Move Features</span>
                         <button class="smt-info-btn" data-hint="h-move">▾ more</button>
@@ -208,12 +193,9 @@
                         Destinations snap to the nearest point feature or line vertex within tolerance.
                     </div>
                     <div class="smt-row">
-                        <button id="pointMode" style="background:#3367d6;"
-                            title="Move point features. Connected line endpoints follow.">📍 Point Mode</button>
-                        <button id="lineMode"  style="background:#666;"
-                            title="Move line vertices. Coincident shared vertices move together.">〰️ Line Mode</button>
+                        <button id="pointMode" style="background:#3367d6;">📍 Point Mode</button>
+                        <button id="lineMode"  style="background:#666;">〰️ Line Mode</button>
                     </div>
-
                     <div class="smt-sublabel">
                         <span>Vertex Tools <span style="font-weight:normal;color:#888;">(Line Mode only)</span></span>
                         <button class="smt-info-btn" data-hint="h-vertex">▾ more</button>
@@ -223,12 +205,9 @@
                         <strong>Delete:</strong> Click an existing vertex to remove it. Lines with only 2 vertices cannot be reduced further.
                     </div>
                     <div class="smt-row">
-                        <button id="addVertexMode"    style="background:#666;"
-                            title="Toggle: click along a line segment to insert a new vertex">➕ Add Vertex</button>
-                        <button id="deleteVertexMode" style="background:#666;"
-                            title="Toggle: click an existing vertex to remove it">✖ Delete Vertex</button>
+                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex</button>
+                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex</button>
                     </div>
-
                     <div class="smt-sublabel">
                         <span>Vertex Visualisation</span>
                         <button class="smt-info-btn" data-hint="h-viz">▾ more</button>
@@ -239,11 +218,35 @@
                         🟠 = endpoints &nbsp; 🔵 = midpoints
                     </div>
                     <div class="smt-row">
-                        <button id="showVerticesToggle" style="background:#666;"
-                            title="Toggle vertex markers on the map">👁 Show Vertices</button>
-                        <button id="refreshVertices"    style="background:#666;" disabled
-                            title="Manually refresh markers for the current extent">🔄 Refresh</button>
+                        <button id="showVerticesToggle" style="background:#666;">👁 Show Vertices</button>
+                        <button id="refreshVertices"    style="background:#666;" disabled>🔄 Refresh</button>
                     </div>
+                </div>
+            </div>
+
+            <!-- ── Section 4: Cut & Split ────────────────────────────── -->
+            <div class="smt-section" style="border:1px solid #f0c0a0;">
+                <div class="smt-section-header" style="background:#fde8d0;color:#7a2e00;">✂️ Cut &amp; Split Lines</div>
+                <div class="smt-body" style="background:#fff8f4;">
+                    <div class="smt-sublabel">
+                        <span>How it works</span>
+                        <button class="smt-info-btn" data-hint="h-cut">▾ more</button>
+                    </div>
+                    <div id="h-cut" class="smt-hint">
+                        Click a point feature that sits on or near one or more lines. The tool
+                        searches within a <strong>15 ft</strong> buffer and shows a confirmation
+                        menu near the point. Confirming splits each found line at the point
+                        location into two new segments, updating <code>calculated_length</code>
+                        on both.<br><br>
+                        <strong>Undo</strong> restores the original line and removes the new
+                        segment for the most recent cut batch. Only available while the tool
+                        is open.
+                    </div>
+                    <div class="smt-row">
+                        <button id="cutModeBtn"  style="background:#e67e00;">✂️ Enable Cut Mode</button>
+                        <button id="cutUndoBtn"  style="background:#666;" disabled>↩ Undo Cut</button>
+                    </div>
+                    <div id="cutModeInfo" style="font-size:10px;color:#7a2e00;min-height:14px;font-style:italic;margin-top:2px;"></div>
                 </div>
             </div>
 
@@ -253,36 +256,48 @@
 
         document.body.appendChild(toolBox);
 
+        // ── Cut context menu ──────────────────────────────────────────────────
+
+        const cutCtxMenu = document.createElement('div');
+        cutCtxMenu.id = 'smtCutContextMenu';
+        cutCtxMenu.style.cssText = `
+            display:none;position:fixed;z-index:${z+1};background:#fff;
+            border:1px solid #444;border-radius:6px;
+            box-shadow:0 4px 16px rgba(0,0,0,.3);
+            font:12px/1.4 Arial,sans-serif;min-width:175px;overflow:hidden;`;
+        cutCtxMenu.innerHTML = `
+            <div style="padding:6px 10px;background:#e67e00;color:#fff;font-weight:bold;font-size:11px;">
+                ✂️ Lines found: <span id="cutCtxCount">0</span>
+            </div>
+            <div id="cutCtxList" style="padding:6px 10px;font-size:11px;color:#444;
+                border-bottom:1px solid #eee;max-height:90px;overflow-y:auto;"></div>
+            <div style="display:flex;flex-direction:column;">
+                <button id="cutCtxExecute" style="padding:7px 10px;background:#dc3545;color:#fff;
+                    border:none;border-bottom:1px solid rgba(255,255,255,.2);
+                    cursor:pointer;text-align:left;font:bold 12px Arial,sans-serif;">✂ Execute Cut</button>
+                <button id="cutCtxCancel" style="padding:7px 10px;background:#6c757d;color:#fff;
+                    border:none;cursor:pointer;text-align:left;font:12px Arial,sans-serif;">✕ Cancel</button>
+            </div>`;
+        document.body.appendChild(cutCtxMenu);
+
         // ── Drag to move ──────────────────────────────────────────────────────
 
         (function() {
             const handle = toolBox.querySelector('#smtDragHandle');
             let dragging = false, ox = 0, oy = 0;
-
             handle.addEventListener('mousedown', e => {
                 dragging = true;
                 ox = e.clientX - toolBox.getBoundingClientRect().left;
                 oy = e.clientY - toolBox.getBoundingClientRect().top;
-                handle.style.cursor = 'grabbing';
-                e.preventDefault();
+                handle.style.cursor = 'grabbing'; e.preventDefault();
             });
-
             document.addEventListener('mousemove', e => {
                 if (!dragging) return;
-                let left = e.clientX - ox;
-                let top  = e.clientY - oy;
-                left = Math.max(0, Math.min(left, window.innerWidth  - toolBox.offsetWidth));
-                top  = Math.max(0, Math.min(top,  window.innerHeight - toolBox.offsetHeight));
-                toolBox.style.left   = left + 'px';
-                toolBox.style.top    = top  + 'px';
-                toolBox.style.right  = 'auto';
+                let left = Math.max(0, Math.min(e.clientX - ox, window.innerWidth  - toolBox.offsetWidth));
+                let top  = Math.max(0, Math.min(e.clientY - oy, window.innerHeight - toolBox.offsetHeight));
+                toolBox.style.left = left + 'px'; toolBox.style.top = top + 'px'; toolBox.style.right = 'auto';
             });
-
-            document.addEventListener('mouseup', () => {
-                if (!dragging) return;
-                dragging = false;
-                handle.style.cursor = 'grab';
-            });
+            document.addEventListener('mouseup', () => { if (!dragging) return; dragging = false; handle.style.cursor = 'grab'; });
         })();
 
         // ── Collapsible hints ─────────────────────────────────────────────────
@@ -292,17 +307,17 @@
                 const hint = toolBox.querySelector('#' + btn.dataset.hint);
                 const open = hint.style.display !== 'none';
                 hint.style.display = open ? 'none' : '';
-                btn.textContent    = open ? '▾ more' : '▴ less';
+                btn.textContent = open ? '▾ more' : '▴ less';
             });
         });
 
         toolBox.querySelector('#toggleAllTips').addEventListener('click', () => {
-            const btn   = toolBox.querySelector('#toggleAllTips');
+            const btn = toolBox.querySelector('#toggleAllTips');
             const hints = toolBox.querySelectorAll('.smt-hint');
             const infos = toolBox.querySelectorAll('.smt-info-btn');
             const anyOpen = [...hints].some(h => h.style.display !== 'none');
             hints.forEach(h => h.style.display = anyOpen ? 'none' : '');
-            infos.forEach(b => b.textContent   = anyOpen ? '▾ more' : '▴ less');
+            infos.forEach(b => b.textContent = anyOpen ? '▾ more' : '▴ less');
             btn.textContent = anyOpen ? 'ℹ Show Tips' : 'ℹ Hide Tips';
         });
 
@@ -312,9 +327,6 @@
         let selectedFeature = null, selectedLayer = null, selectedLayerConfig = null;
         let selectedVertex = null, selectedCoincidentLines = [], waitingForDestination = false;
         let connectedFeatures = [], originalGeometries = new Map(), clickHandler = null;
-
-        // FIX 2: processing lock — prevents a second click firing handleMoveToDestination
-        // while the first async operation is still running (double-click / fast clicks).
         let isProcessingClick = false;
 
         // Single-feature lock
@@ -327,9 +339,15 @@
         // Feature picker popup
         let pickerPopup = null;
 
+        // Cut & Split state
+        let cutMode = false, cutPreviewMode = false, cutProcessing = false;
+        let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
+        let undoStack = [];
+        let cutGraphicsLayer = null;
+
         // ── DOM refs ──────────────────────────────────────────────────────────
 
-        const $  = id => toolBox.querySelector(id);
+        const $ = id => toolBox.querySelector(id);
         const pointModeBtn          = $("#pointMode");
         const lineModeBtn           = $("#lineMode");
         const addVertexBtn          = $("#addVertexMode");
@@ -344,6 +362,9 @@
         const cancelBtn             = $("#cancelMove");
         const closeBtn              = $("#closeTool");
         const status                = $("#toolStatus");
+        const cutModeBtn            = $("#cutModeBtn");
+        const cutUndoBtn            = $("#cutUndoBtn");
+        const cutModeInfo           = $("#cutModeInfo");
 
         const updateStatus = msg => { if (status) status.textContent = msg; };
 
@@ -425,6 +446,339 @@
             return {type:"polyline",paths:newPaths,spatialReference:srcGeom.spatialReference};
         }
         function clonePaths(geom) { return geom.paths.map(p=>p.map(c=>c.slice())); }
+
+        // ── Cut geometry helpers ──────────────────────────────────────────────
+
+        function findCutInfo(lineGeom, snapPt) {
+            if (!lineGeom?.paths?.length) return null;
+            let best = null;
+            for (let pi = 0; pi < lineGeom.paths.length; pi++) {
+                const path = lineGeom.paths[pi];
+                for (let si = 0; si < path.length - 1; si++) {
+                    const a = { x: path[si][0],     y: path[si][1] };
+                    const b = { x: path[si+1][0],   y: path[si+1][1] };
+                    const res = closestPtOnSeg(snapPt, a, b);
+                    if (!best || res.distance < best.dist)
+                        best = { pathIdx: pi, segIdx: si, dist: res.distance, t: res.t };
+                }
+            }
+            return best;
+        }
+
+        function splitLine(lineGeom, cutInfo, snapPt) {
+            try {
+                const allPaths = lineGeom.paths;
+                const { pathIdx: pi, segIdx: si } = cutInfo;
+                const path = allPaths[pi];
+                const snap = [snapPt.x, snapPt.y];
+                const cp = p => p.map(v => [...v]);
+
+                const paths1 = [...allPaths.slice(0, pi).map(cp),
+                                [...path.slice(0, si + 1).map(v => [...v]), snap]];
+                const paths2 = [[snap, ...path.slice(si + 1).map(v => [...v])],
+                                ...allPaths.slice(pi + 1).map(cp)];
+
+                if (paths1.some(p => p.length < 2) || paths2.some(p => p.length < 2)) {
+                    console.warn('splitLine: degenerate path, skipping.'); return null;
+                }
+                const seg1 = lineGeom.clone(); seg1.paths = paths1;
+                const seg2 = lineGeom.clone(); seg2.paths = paths2;
+
+                if (geodeticLength(seg1) < MIN_SEGMENT_LEN_FT ||
+                    geodeticLength(seg2) < MIN_SEGMENT_LEN_FT) {
+                    console.warn('splitLine: segment too short, skipping.'); return null;
+                }
+                return { seg1, seg2 };
+            } catch(e) { console.error('splitLine error:', e); return null; }
+        }
+
+        // ── Cut graphics layer ────────────────────────────────────────────────
+
+        async function ensureCutGraphicsLayer() {
+            if (cutGraphicsLayer) return;
+            try {
+                const {GraphicsLayer} = await new Promise((res, rej) => {
+                    if (typeof require !== 'undefined')
+                        require(['esri/layers/GraphicsLayer'], GL => res({GraphicsLayer: GL}), rej);
+                    else rej(new Error('require not found'));
+                });
+                cutGraphicsLayer = new GraphicsLayer({ listMode: 'hide' });
+                mapView.map.add(cutGraphicsLayer);
+            } catch(e) { console.error('ensureCutGraphicsLayer error:', e); }
+        }
+
+        function clearCutHighlights() {
+            if (cutGraphicsLayer) cutGraphicsLayer.removeAll();
+        }
+
+        async function highlightCutGeometry(geometry, isPoint) {
+            await ensureCutGraphicsLayer();
+            if (!cutGraphicsLayer) return;
+            try {
+                const {Graphic} = await new Promise((res, rej) => {
+                    if (typeof require !== 'undefined')
+                        require(['esri/Graphic'], G => res({Graphic: G}), rej);
+                    else rej(new Error('require not found'));
+                });
+                cutGraphicsLayer.add(new Graphic({
+                    geometry,
+                    symbol: isPoint
+                        ? { type:'simple-marker', style:'circle', color:[255,200,0,0.85],
+                            size:16, outline:{ color:[180,80,0], width:2.5 } }
+                        : { type:'simple-line', color:[255,80,0,0.9], width:3, style:'dash' }
+                }));
+            } catch(e) { console.error('highlightCutGeometry error:', e); }
+        }
+
+        // ── Cut context menu ──────────────────────────────────────────────────
+
+        function showCutContextMenu(mapPoint) {
+            const screen = mapView.toScreen(mapPoint);
+            const rect   = mapView.container.getBoundingClientRect();
+            let left = rect.left + screen.x + 14;
+            let top  = rect.top  + screen.y - 10;
+            if (left + 200 > window.innerWidth)  left = rect.left + screen.x - 200;
+            if (top  + 200 > window.innerHeight) top  = window.innerHeight - 210;
+            cutCtxMenu.style.left    = left + 'px';
+            cutCtxMenu.style.top     = top  + 'px';
+            cutCtxMenu.style.display = 'block';
+        }
+
+        function hideCutContextMenu() {
+            cutCtxMenu.style.display = 'none';
+        }
+
+        // ── Find nearby lines for cut ─────────────────────────────────────────
+
+        async function findNearbyLinesForCut(pointGeom) {
+            const buf = CUT_TOLERANCE_M;
+            const { x, y } = pointGeom;
+            const bufGeom = {
+                type: 'polygon', spatialReference: pointGeom.spatialReference,
+                rings: [[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]]
+            };
+            const found = [];
+            for (const cfg of lineLayers) {
+                if (!cfg.layer.visible) continue;
+                try {
+                    const res = await cfg.layer.queryFeatures({
+                        geometry: bufGeom, spatialRelationship: 'intersects',
+                        returnGeometry: true, outFields: ['*'], maxRecordCount: 100
+                    });
+                    for (const f of res.features) {
+                        const cutInfo = findCutInfo(f.geometry, { x, y });
+                        if (cutInfo && cutInfo.dist <= buf)
+                            found.push({ feature: f, layer: cfg.layer, layerConfig: cfg, cutInfo });
+                    }
+                } catch(e) { console.error(`findNearbyLinesForCut error on ${cfg.name}:`, e); }
+            }
+            return found;
+        }
+
+        // ── Show cut preview ──────────────────────────────────────────────────
+
+        async function showCutPreview() {
+            if (!cutLinesToCut.length) {
+                updateStatus(`❌ No lines found within ${Math.round(CUT_TOLERANCE_M * 3.28084)} ft of the point.`);
+                resetCutSelection(); return;
+            }
+            cutPreviewMode = true;
+            const byLayer = {};
+            for (const li of cutLinesToCut) {
+                byLayer[li.layerConfig.name] = (byLayer[li.layerConfig.name] || 0) + 1;
+                await highlightCutGeometry(li.feature.geometry, false);
+            }
+            cutCtxMenu.querySelector('#cutCtxCount').textContent = cutLinesToCut.length;
+            cutCtxMenu.querySelector('#cutCtxList').innerHTML =
+                Object.entries(byLayer).map(([n,c]) => `• ${n}: <b>${c}</b>`).join('<br>');
+            showCutContextMenu(cutSelectedPoint.geometry);
+            updateStatus(`✂️ ${cutLinesToCut.length} line(s) found. Confirm or cancel in the map menu.`);
+        }
+
+        // ── Execute cut ───────────────────────────────────────────────────────
+
+        async function executeCut() {
+            if (!cutLinesToCut.length || cutProcessing) return;
+            cutProcessing = true;
+            cutCtxMenu.querySelector('#cutCtxExecute').disabled = true;
+            cutCtxMenu.querySelector('#cutCtxCancel').disabled  = true;
+            updateStatus('Cutting lines…');
+
+            const snapPt    = { x: cutSelectedPoint.geometry.x, y: cutSelectedPoint.geometry.y };
+            const undoBatch = { ts: new Date(), ops: [] };
+            let ok = 0, fail = 0;
+
+            for (const li of cutLinesToCut) {
+                try {
+                    const split = splitLine(li.feature.geometry, li.cutInfo, snapPt);
+                    if (!split) { fail++; continue; }
+
+                    const { seg1, seg2 } = split;
+                    const updFeature = li.feature.clone();
+                    updFeature.geometry = seg1;
+                    updFeature.attributes.calculated_length = geodeticLength(seg1);
+
+                    const newAttrs = { ...li.feature.attributes };
+                    ['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID',
+                     'created_date','last_edited_date'].forEach(f => delete newAttrs[f]);
+                    newAttrs.calculated_length = geodeticLength(seg2);
+
+                    const res = await li.layer.applyEdits({
+                        updateFeatures: [updFeature],
+                        addFeatures:    [{ geometry: seg2, attributes: newAttrs }]
+                    });
+
+                    const updErr = res.updateFeatureResults?.[0]?.error;
+                    const addErr = res.addFeatureResults?.[0]?.error;
+                    if (!updErr && !addErr) {
+                        undoBatch.ops.push({
+                            layer:        li.layer,
+                            layerName:    li.layerConfig.name,
+                            originalFeat: li.feature.clone(),
+                            addedOID:     res.addFeatureResults[0].objectId
+                        });
+                        ok++;
+                    } else {
+                        console.error('executeCut applyEdits error – update:', updErr, 'add:', addErr);
+                        fail++;
+                    }
+                } catch(e) { console.error(`executeCut error (${li.layerConfig.name}):`, e); fail++; }
+            }
+
+            if (undoBatch.ops.length) {
+                undoStack.push(undoBatch);
+                cutUndoBtn.disabled = false;
+            }
+
+            const msg = ok
+                ? `✅ ${ok} line(s) cut${fail ? ` · ${fail} failed` : ''}.`
+                : `❌ All ${fail} cut(s) failed. See console.`;
+            updateStatus(msg);
+
+            cutProcessing = false;
+            cutCtxMenu.querySelector('#cutCtxExecute').disabled = false;
+            cutCtxMenu.querySelector('#cutCtxCancel').disabled  = false;
+            hideCutContextMenu();
+            setTimeout(resetCutSelection, 3000);
+        }
+
+        // ── Undo cut ──────────────────────────────────────────────────────────
+
+        async function undoLastCut() {
+            if (!undoStack.length || cutProcessing) return;
+            cutProcessing = true;
+            updateStatus('Undoing last cut…');
+            const batch = undoStack.pop();
+            let ok = 0, fail = 0;
+            for (const op of batch.ops) {
+                try {
+                    const res = await op.layer.applyEdits({
+                        updateFeatures: [op.originalFeat],
+                        deleteFeatures: [{ objectId: op.addedOID }]
+                    });
+                    const updErr = res.updateFeatureResults?.[0]?.error;
+                    const delErr = res.deleteFeatureResults?.[0]?.error;
+                    if (!updErr && !delErr) ok++;
+                    else { console.error('undoLastCut error – update:', updErr, 'delete:', delErr); fail++; }
+                } catch(e) { console.error(`undoLastCut error (${op.layerName}):`, e); fail++; }
+            }
+            if (!undoStack.length) cutUndoBtn.disabled = true;
+            updateStatus(`↩ Undo: ${ok} line(s) restored${fail ? `, ${fail} failed` : ''}.`);
+            cutProcessing = false;
+            setTimeout(() => { if (cutMode) updateStatus('✂️ Cut mode active. Click a point feature.'); }, 3000);
+        }
+
+        // ── Cut click handler ─────────────────────────────────────────────────
+
+        async function handleCutClick(event) {
+            if (cutPreviewMode || cutProcessing) return;
+            clearCutHighlights();
+            hideCutContextMenu();
+            updateStatus('Searching for point feature…');
+
+            const sp  = { x: event.x, y: event.y };
+            const mp  = mapView.toMap(sp);
+            const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+            const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
+
+            // hitTest first
+            let ptResult = null;
+            if (mapView.hitTest) {
+                const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === 'feature') });
+                for (const r of hit.results) {
+                    if (r.graphic?.geometry?.type === 'point') {
+                        const cfg = pointLayers.find(p => p.id === r.layer.layerId);
+                        if (cfg) { ptResult = { feature: r.graphic, layer: r.layer, layerConfig: cfg }; break; }
+                    }
+                }
+            }
+            // Fallback spatial query
+            if (!ptResult) {
+                for (const cfg of pointLayers) {
+                    if (!cfg.layer.visible) continue;
+                    try {
+                        const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['*'] });
+                        let best = null, bestD = Infinity;
+                        for (const f of res.features) {
+                            if (!f.geometry) continue;
+                            const d = calcDist(mp, f.geometry);
+                            if (d < bestD) { bestD = d; best = f; }
+                        }
+                        if (best) { ptResult = { feature: best, layer: cfg.layer, layerConfig: cfg }; break; }
+                    } catch(e) { console.error(`handleCutClick point query error on ${cfg.name}:`, e); }
+                }
+            }
+
+            if (!ptResult) {
+                updateStatus('❌ No point feature found near click. Try clicking closer to a point.');
+                return;
+            }
+
+            cutSelectedPoint      = ptResult.feature;
+            cutSelectedPointLayer = ptResult.layer;
+            await highlightCutGeometry(cutSelectedPoint.geometry, true);
+            updateStatus(`📍 ${ptResult.layerConfig.name} selected. Searching for nearby lines…`);
+
+            cutLinesToCut = await findNearbyLinesForCut(cutSelectedPoint.geometry);
+            showCutPreview();
+        }
+
+        // ── Reset cut selection ───────────────────────────────────────────────
+
+        function resetCutSelection() {
+            cutSelectedPoint = null; cutSelectedPointLayer = null;
+            cutLinesToCut = []; cutPreviewMode = false;
+            clearCutHighlights(); hideCutContextMenu();
+            if (cutMode) updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');
+        }
+
+        // ── Toggle cut mode ───────────────────────────────────────────────────
+
+        function enableCutMode() {
+            cutMode = true;
+            cutModeBtn.style.background = '#c0392b';
+            cutModeBtn.textContent = '✂️ Disable Cut Mode';
+            if (cutModeInfo) cutModeInfo.textContent = 'Cut mode active — move/vertex tools suspended.';
+            // Visually dim move sections while cut mode is on
+            toolBox.querySelector('#pointMode').style.opacity = '0.45';
+            toolBox.querySelector('#lineMode').style.opacity  = '0.45';
+            toolBox.querySelector('#addVertexMode').style.opacity    = '0.45';
+            toolBox.querySelector('#deleteVertexMode').style.opacity = '0.45';
+            updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');
+        }
+
+        function disableCutMode() {
+            cutMode = false; cutPreviewMode = false; cutProcessing = false;
+            resetCutSelection();
+            cutModeBtn.style.background = '#e67e00';
+            cutModeBtn.textContent = '✂️ Enable Cut Mode';
+            if (cutModeInfo) cutModeInfo.textContent = '';
+            toolBox.querySelector('#pointMode').style.opacity = '1';
+            toolBox.querySelector('#lineMode').style.opacity  = '1';
+            toolBox.querySelector('#addVertexMode').style.opacity    = '1';
+            toolBox.querySelector('#deleteVertexMode').style.opacity = '1';
+            updateStatus(toolActive ? `Ready. Click a ${currentMode === 'point' ? 'point feature' : 'line vertex'}.` : 'Tool disabled.');
+        }
 
         // ── Feature picker popup ──────────────────────────────────────────────
 
@@ -512,18 +866,14 @@
                 lockedFeatureInfo.textContent=`Locked: ${cfg.name} (OID: ${getOid(feature)??"?"}) [${typeLabel}]`;
             }
             if (vertexHighlightActive) scheduleHighlightRefresh();
-
             if (featureType === 'line') {
                 setLineMode();
                 updateStatus(`🔒 Locked to ${cfg.name}. Click any vertex to select it, then click the destination.`);
             } else {
                 setPointMode();
                 if (toolActive) {
-                    selectedFeature   = feature;
-                    selectedLayer     = layer;
-                    selectedLayerConfig = cfg;
-                    selectedVertex    = null;
-                    waitingForDestination = true;
+                    selectedFeature = feature; selectedLayer = layer; selectedLayerConfig = cfg;
+                    selectedVertex = null; waitingForDestination = true;
                     if (feature.geometry?.clone) originalGeometries.set(getOid(feature) ?? 'locked', feature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
                     connectedFeatures = await findConnectedLines(feature.geometry);
@@ -549,56 +899,43 @@
             updateStatus("Looking for feature...");
             try {
                 const candidates=[], seenOids=new Set();
-
                 if (mapView.hitTest) {
                     const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});
                     for (const r of hit.results) {
                         const gtype = r.graphic?.geometry?.type;
                         if (gtype === "polyline") {
-                            const cfg=lineLayers.find(l=>l.id===r.layer.layerId);
-                            if (!cfg) continue;
+                            const cfg=lineLayers.find(l=>l.id===r.layer.layerId); if (!cfg) continue;
                             const oid=getOid(r.graphic);
-                            if (oid!=null&&seenOids.has(oid)) continue;
-                            if (oid!=null) seenOids.add(oid);
+                            if (oid!=null&&seenOids.has(oid)) continue; if (oid!=null) seenOids.add(oid);
                             candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'line'});
                         } else if (gtype === "point" || gtype === "multipoint") {
-                            const cfg=pointLayers.find(p=>p.id===r.layer.layerId);
-                            if (!cfg) continue;
+                            const cfg=pointLayers.find(p=>p.id===r.layer.layerId); if (!cfg) continue;
                             const oid=getOid(r.graphic);
-                            if (oid!=null&&seenOids.has(oid)) continue;
-                            if (oid!=null) seenOids.add(oid);
+                            if (oid!=null&&seenOids.has(oid)) continue; if (oid!=null) seenOids.add(oid);
                             candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'point'});
                         }
                     }
                 }
-
                 if (candidates.length===0) {
-                    const mp=mapView.toMap(sp), tol=30;
-                    const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
-
+                    const mp=mapView.toMap(sp);
+                    const ext = makeExt(mp.x, mp.y, 30, mapView.spatialReference);
                     for (const cfg of lineLayers) {
                         if (!cfg.layer.visible) continue;
                         const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});
                         for (const f of res.features) {
-                            const oid=getOid(f);
-                            if (oid!=null&&seenOids.has(oid)) continue;
-                            if (oid!=null) seenOids.add(oid);
+                            const oid=getOid(f); if (oid!=null&&seenOids.has(oid)) continue; if (oid!=null) seenOids.add(oid);
                             candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'line'});
                         }
                     }
-
                     for (const cfg of pointLayers) {
                         if (!cfg.layer.visible) continue;
                         const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});
                         for (const f of res.features) {
-                            const oid=getOid(f);
-                            if (oid!=null&&seenOids.has(oid)) continue;
-                            if (oid!=null) seenOids.add(oid);
+                            const oid=getOid(f); if (oid!=null&&seenOids.has(oid)) continue; if (oid!=null) seenOids.add(oid);
                             candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'point'});
                         }
                     }
                 }
-
                 if (candidates.length===0){updateStatus("❌ No feature found. Click directly on a point or line feature.");return;}
                 if (candidates.length===1){applyLock(candidates[0].feature,candidates[0].layer,candidates[0].layerConfig,candidates[0].featureType);}
                 else {
@@ -674,9 +1011,7 @@
             if (!pointSnap && !vertexSnap) return null;
             if (pointSnap && !vertexSnap) return { ...pointSnap, snapType: 'pointFeature' };
             if (!pointSnap && vertexSnap) return vertexSnap;
-            const dPoint  = calcDist(dst, pointSnap.geometry);
-            const dVertex = calcDist(dst, vertexSnap.geometry);
-            return dPoint <= dVertex
+            return calcDist(dst, pointSnap.geometry) <= calcDist(dst, vertexSnap.geometry)
                 ? { ...pointSnap, snapType: 'pointFeature' }
                 : vertexSnap;
         }
@@ -701,7 +1036,7 @@
                             let best=null,bestD=Infinity;
                             for(const f of res.features){
                                 if (!f.geometry) continue;
-                                const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best=f;}
+                                const d=calcDist(mp,f.geometry); if(d<bestD){bestD=d;best=f;}
                             }
                             if (best) return {feature:best,layer:cfg.layer,layerConfig:cfg};
                         }
@@ -819,14 +1154,8 @@
         // ── Vertex operations ─────────────────────────────────────────────────
 
         function lockedReadyStatus() {
-            if (!lockedFeature) {
-                return currentMode === 'point'
-                    ? "Click on a point feature to select it."
-                    : "Line mode active. Click on a line vertex to select it.";
-            }
-            if (lockedFeature.featureType === 'point') {
-                return `🔒 Locked: ${lockedFeature.layerConfig.name} (point). Click the locked point to move it.`;
-            }
+            if (!lockedFeature) return currentMode === 'point' ? "Click on a point feature to select it." : "Line mode active. Click on a line vertex to select it.";
+            if (lockedFeature.featureType === 'point') return `🔒 Locked: ${lockedFeature.layerConfig.name} (point). Click the locked point to move it.`;
             return `🔒 Locked: ${lockedFeature.layerConfig.name}. Click a vertex to move, or use Add/Delete mode.`;
         }
 
@@ -888,7 +1217,6 @@
         async function handleFeatureSelection(event) {
             const sp={x:event.x,y:event.y};
             updateStatus("Searching for feature...");
-
             if (currentMode==="point") {
                 if (lockedFeature?.featureType === 'point') {
                     await refreshLockedFeature();
@@ -899,10 +1227,8 @@
                         updateStatus(`🔒 Locked to ${lockedFeature.layerConfig.name}. Click directly on the locked point to move it.`);
                         return;
                     }
-                    selectedFeature = lockedFeature.feature;
-                    selectedLayer = lockedFeature.layer;
-                    selectedLayerConfig = lockedFeature.layerConfig;
-                    selectedVertex = null;
+                    selectedFeature = lockedFeature.feature; selectedLayer = lockedFeature.layer;
+                    selectedLayerConfig = lockedFeature.layerConfig; selectedVertex = null;
                     connectedFeatures = await findConnectedLines(lockedFeature.feature.geometry);
                     if (selectedFeature.geometry?.clone) originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
@@ -910,7 +1236,6 @@
                     updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected. Click destination to move.`);
                     return;
                 }
-
                 const r=await findPointFeatureAtLocation(sp);
                 if (r){
                     selectedFeature=r.feature;selectedLayer=r.layer;selectedLayerConfig=r.layerConfig;selectedVertex=null;
@@ -937,9 +1262,7 @@
         }
 
         async function handleMoveToDestination(event) {
-            // FIX 2: guard against selectedFeature being cleared by a concurrent call
             if (!selectedFeature) { updateStatus("❌ No feature selected. Click a feature first."); return; }
-
             let dst=mapView.toMap({x:event.x,y:event.y});
             updateStatus("Moving feature...");
             try {
@@ -947,7 +1270,6 @@
                     const excludeOids = new Set([getOid(selectedFeature)].filter(Boolean));
                     const snapInfo = await findSnapTarget(dst, excludeOids);
                     if (snapInfo) dst = snapInfo.geometry;
-
                     const isLockedPoint = lockedFeature?.featureType === 'point';
                     if (!isLockedPoint) await updateConnectedLines(dst);
                     const upd=selectedFeature.clone(); upd.geometry=dst;
@@ -964,12 +1286,9 @@
                     }
                     updateStatus(msg);
                 } else {
-                    const excludeOids = new Set(
-                        selectedCoincidentLines.map(li => getOid(li.feature)).filter(Boolean)
-                    );
+                    const excludeOids = new Set(selectedCoincidentLines.map(li => getOid(li.feature)).filter(Boolean));
                     const snapInfo = await findSnapTarget(dst, excludeOids);
                     if (snapInfo) dst = snapInfo.geometry;
-
                     const updates=[];
                     for (const li of selectedCoincidentLines) {
                         try {
@@ -993,7 +1312,6 @@
                     }
                     updateStatus(msg);
                 }
-
                 selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
                 selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
                 connectedFeatures=[];originalGeometries.clear();
@@ -1004,19 +1322,19 @@
             } catch(e){console.error("handleMoveToDestination error:",e);updateStatus("❌ Error moving feature.");}
         }
 
-        // FIX 2: isProcessingClick gate prevents double-click or rapid clicks from
-        // firing a second async handleClick before the first one completes.
         async function handleClick(event) {
             if (!toolActive) return;
             if (isProcessingClick) return;
             isProcessingClick = true;
             event.stopPropagation();
             try {
-                if(pickingFeatureMode){await pickFeature(event);}
-                else if(vertexMode==="add"){await addVertexToLine(event);}
-                else if(vertexMode==="delete"){await deleteVertexFromLine(event);}
-                else if(!selectedFeature){await handleFeatureSelection(event);}
-                else{await handleMoveToDestination(event);}
+                // Cut mode takes full priority over all move/vertex operations
+                if (cutMode) { await handleCutClick(event); return; }
+                if (pickingFeatureMode) { await pickFeature(event); return; }
+                if (vertexMode==="add")    { await addVertexToLine(event); return; }
+                if (vertexMode==="delete") { await deleteVertexFromLine(event); return; }
+                if (!selectedFeature) await handleFeatureSelection(event);
+                else                  await handleMoveToDestination(event);
             } finally {
                 isProcessingClick = false;
             }
@@ -1046,7 +1364,6 @@
                 if (!vertexHighlightLayer){vertexHighlightLayer=new GraphicsLayer({listMode:"hide"});mapView.map.add(vertexHighlightLayer);}
                 vertexHighlightLayer.removeAll();
                 let total=0;
-
                 const renderGeom=(geom)=>{
                     if(!geom?.paths)return;
                     for(const path of geom.paths)
@@ -1055,7 +1372,6 @@
                             total++;
                         }
                 };
-
                 if (lockedFeature?.featureType === 'line') {
                     renderGeom(lockedFeature.feature.geometry);
                     updateStatus(`👁 Showing ${total} vertices for locked feature (${lockedFeature.layerConfig.name}).`);
@@ -1159,6 +1475,7 @@
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;
             selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;
             connectedFeatures=[];originalGeometries.clear();vertexMode="none";
+            if (cutMode) disableCutMode();
             if(addVertexBtn)    addVertexBtn.style.background="#666";
             if(deleteVertexBtn) deleteVertexBtn.style.background="#666";
             if(lockFeatureBtn)  {lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";}
@@ -1172,29 +1489,32 @@
 
         // ── Wire up buttons ───────────────────────────────────────────────────
 
-        if(pointModeBtn)          pointModeBtn.onclick          =setPointMode;
-        if(lineModeBtn)           lineModeBtn.onclick           =setLineMode;
-        if(addVertexBtn)          addVertexBtn.onclick          =setAddVertexMode;
-        if(deleteVertexBtn)       deleteVertexBtn.onclick       =setDeleteVertexMode;
-        if(showVerticesToggleBtn) showVerticesToggleBtn.onclick =toggleVertexHighlight;
-        if(refreshVerticesBtn)    refreshVerticesBtn.onclick    =()=>renderVertexHighlights();
-        if(releaseFeatureBtn)     releaseFeatureBtn.onclick     =releaseLockedFeature;
-        if(enableBtn)             enableBtn.onclick             =enableTool;
-        if(disableBtn)            disableBtn.onclick            =disableTool;
-        if(cancelBtn)             cancelBtn.onclick             =cancelMove;
+        if(pointModeBtn)          pointModeBtn.onclick          = setPointMode;
+        if(lineModeBtn)           lineModeBtn.onclick           = setLineMode;
+        if(addVertexBtn)          addVertexBtn.onclick          = setAddVertexMode;
+        if(deleteVertexBtn)       deleteVertexBtn.onclick       = setDeleteVertexMode;
+        if(showVerticesToggleBtn) showVerticesToggleBtn.onclick = toggleVertexHighlight;
+        if(refreshVerticesBtn)    refreshVerticesBtn.onclick    = ()=>renderVertexHighlights();
+        if(releaseFeatureBtn)     releaseFeatureBtn.onclick     = releaseLockedFeature;
+        if(enableBtn)             enableBtn.onclick             = enableTool;
+        if(disableBtn)            disableBtn.onclick            = disableTool;
+        if(cancelBtn)             cancelBtn.onclick             = cancelMove;
+        if(cutModeBtn)            cutModeBtn.onclick            = () => cutMode ? disableCutMode() : enableCutMode();
+        if(cutUndoBtn)            cutUndoBtn.onclick            = undoLastCut;
+
+        cutCtxMenu.querySelector('#cutCtxExecute').onclick = executeCut;
+        cutCtxMenu.querySelector('#cutCtxCancel').onclick  = resetCutSelection;
 
         const refreshLayersBtn = toolBox.querySelector("#refreshLayers");
         if(refreshLayersBtn) {
             refreshLayersBtn.onclick = async () => {
-                refreshLayersBtn.disabled=true;
-                refreshLayersBtn.textContent="…";
+                refreshLayersBtn.disabled=true; refreshLayersBtn.textContent="…";
                 if(lockedFeature)   releaseLockedFeature();
                 if(selectedFeature) cancelMove();
+                if(cutMode)         disableCutMode();
                 updateStatus("Refreshing layers...");
-                await loadLayers();
-                updateLayerBadge();
-                refreshLayersBtn.disabled=false;
-                refreshLayersBtn.textContent="↺ Refresh";
+                await loadLayers(); updateLayerBadge();
+                refreshLayersBtn.disabled=false; refreshLayersBtn.textContent="↺ Refresh";
                 updateStatus(`Layers refreshed: ${pointLayers.length} point, ${lineLayers.length} line.`);
             };
         }
@@ -1221,6 +1541,8 @@
                 dismissPickerPopup(); disableTool();
                 clearVertexHighlights(); clearTimeout(highlightDebounceTimer);
                 if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}
+                if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}
+                cutCtxMenu.remove();
                 toolBox.remove();
                 if(window.gisToolHost?.activeTools instanceof Set) window.gisToolHost.activeTools.delete('snap-move-tool');
             };
