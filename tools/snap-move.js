@@ -297,15 +297,18 @@
             box-shadow:0 4px 16px rgba(0,0,0,.3);
             font:12px/1.4 Arial,sans-serif;min-width:175px;overflow:hidden;`;
         cutCtxMenu.innerHTML = `
-            <div style="padding:6px 10px;background:#e67e00;color:#fff;font-weight:bold;font-size:11px;">
-                ✂️ Lines found: <span id="cutCtxCount">0</span>
+            <div style="padding:6px 10px;background:#e67e00;color:#fff;font-weight:bold;font-size:11px;
+                        display:flex;align-items:center;justify-content:space-between;">
+                <span>✂️ Lines: <span id="cutCtxCount">0</span></span>
+                <button id="cutCtxSelectAll" style="padding:1px 7px;background:rgba(255,255,255,.25);
+                    color:#fff;border:1px solid rgba(255,255,255,.5);border-radius:3px;
+                    font-size:10px;cursor:pointer;font-family:inherit;">✓ All</button>
             </div>
-            <div id="cutCtxList" style="padding:6px 10px;font-size:11px;color:#444;
-                border-bottom:1px solid #eee;max-height:90px;overflow-y:auto;"></div>
+            <div id="cutCtxList" style="max-height:180px;overflow-y:auto;border-bottom:1px solid #eee;"></div>
             <div style="display:flex;flex-direction:column;">
                 <button id="cutCtxExecute" style="padding:7px 10px;background:#dc3545;color:#fff;
                     border:none;border-bottom:1px solid rgba(255,255,255,.2);
-                    cursor:pointer;text-align:left;font:bold 12px Arial,sans-serif;">✂ Execute Cut</button>
+                    cursor:pointer;text-align:left;font:bold 12px Arial,sans-serif;">✂ Cut Selected (0)</button>
                 <button id="cutCtxCancel" style="padding:7px 10px;background:#6c757d;color:#fff;
                     border:none;cursor:pointer;text-align:left;font:12px Arial,sans-serif;">✕ Cancel</button>
             </div>`;
@@ -367,6 +370,8 @@
         // Cut state
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
         let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
+        let cutSelectedIndices = new Set();   // indices into cutLinesToCut currently checked
+        let cutGraphicMap = new Map();        // index → esri/Graphic for per-line highlight control
         let undoStack = [];
         let cutGraphicsLayer = null;
 
@@ -928,20 +933,136 @@
                 resetCutSelection(); return;
             }
             cutPreviewMode = true;
-            const byLayer = {};
-            for (const li of cutLinesToCut) {
-                byLayer[li.layerConfig.name] = (byLayer[li.layerConfig.name]||0)+1;
-                await highlightCutGeometry(li.feature.geometry, false);
+            // All lines selected by default
+            cutSelectedIndices = new Set(cutLinesToCut.map((_, i) => i));
+
+            // Load Graphic class so we can control each highlight independently
+            let GraphicClass = null;
+            try {
+                GraphicClass = await new Promise((res, rej) => {
+                    if (typeof require !== 'undefined') require(['esri/Graphic'], G => res(G), rej);
+                    else rej(new Error('require not found'));
+                });
+            } catch(e) { console.error('showCutPreview: could not load esri/Graphic:', e); }
+
+            await ensureCutGraphicsLayer();
+            cutGraphicMap.clear();
+            if (cutGraphicsLayer) cutGraphicsLayer.removeAll();
+
+            const selSym = { type:'simple-line', color:[220,53,69,0.95], width:3, style:'dash'  };
+            const hovSym = { type:'simple-line', color:[255,140,0,1],    width:4, style:'solid' };
+
+            // Create one graphic per line and store it for individual toggle/hover control
+            for (let i = 0; i < cutLinesToCut.length; i++) {
+                if (GraphicClass && cutGraphicsLayer) {
+                    const g = new GraphicClass({ geometry: cutLinesToCut[i].feature.geometry, symbol: selSym });
+                    cutGraphicsLayer.add(g);
+                    cutGraphicMap.set(i, g);
+                } else {
+                    await highlightCutGeometry(cutLinesToCut[i].feature.geometry, false);
+                }
             }
+
+            // Build selectable rows
+            const listEl = cutCtxMenu.querySelector('#cutCtxList');
+            listEl.innerHTML = '';
+
+            for (let i = 0; i < cutLinesToCut.length; i++) {
+                const li  = cutLinesToCut[i];
+                const oid = getOid(li.feature) ?? '?';
+                const vtx = (li.feature.geometry?.paths ?? []).reduce((s, p) => s + p.length, 0);
+
+                const row = document.createElement('label');
+                row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #f0f0f0;user-select:none;';
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.checked = true; cb.dataset.idx = String(i);
+                cb.style.cssText = 'margin-top:2px;cursor:pointer;flex-shrink:0;';
+
+                const info = document.createElement('div');
+                info.style.cssText = 'flex:1;font-size:11px;line-height:1.4;';
+                info.innerHTML = `<strong style="color:#2a2a2a;">${li.layerConfig.name}</strong>
+                    <div style="color:#888;font-size:10px;">OID: ${oid} · ${vtx} vertices</div>`;
+
+                const dot = document.createElement('span');
+                dot.textContent = '●'; dot.style.cssText = 'color:#dc3545;font-size:14px;flex-shrink:0;margin-top:1px;';
+
+                // Checkbox: toggle graphic on map + track in cutSelectedIndices
+                cb.addEventListener('change', () => {
+                    const idx = parseInt(cb.dataset.idx);
+                    const g   = cutGraphicMap.get(idx);
+                    if (cb.checked) {
+                        cutSelectedIndices.add(idx);
+                        dot.style.color = '#dc3545';
+                        if (g && cutGraphicsLayer) cutGraphicsLayer.add(g);
+                    } else {
+                        cutSelectedIndices.delete(idx);
+                        dot.style.color = '#bbb';
+                        if (g && cutGraphicsLayer) cutGraphicsLayer.remove(g);
+                    }
+                    updateCutExecuteBtn();
+                });
+
+                // Hover: swap the graphic's symbol so the user sees which line they're on
+                row.addEventListener('mouseenter', () => {
+                    const g = cutGraphicMap.get(i);
+                    if (g && cutSelectedIndices.has(i)) g.symbol = hovSym;
+                    row.style.background = '#fff5ee';
+                });
+                row.addEventListener('mouseleave', () => {
+                    const g = cutGraphicMap.get(i);
+                    if (g && cutSelectedIndices.has(i)) g.symbol = selSym;
+                    row.style.background = '';
+                });
+
+                row.appendChild(cb); row.appendChild(info); row.appendChild(dot);
+                listEl.appendChild(row);
+            }
+
+            // Select-All / None toggle
+            const selectAllBtn = cutCtxMenu.querySelector('#cutCtxSelectAll');
+            if (selectAllBtn) {
+                selectAllBtn.onclick = () => {
+                    const allOn = cutSelectedIndices.size === cutLinesToCut.length;
+                    [...listEl.querySelectorAll('label')].forEach((row, i) => {
+                        const cb  = row.querySelector('input');
+                        const dot = row.querySelector('span');
+                        const g   = cutGraphicMap.get(i);
+                        const was = cutSelectedIndices.has(i);
+                        cb.checked = !allOn;
+                        if (!allOn && !was) {
+                            cutSelectedIndices.add(i);
+                            if (dot) dot.style.color = '#dc3545';
+                            if (g && cutGraphicsLayer) cutGraphicsLayer.add(g);
+                        } else if (allOn && was) {
+                            cutSelectedIndices.delete(i);
+                            if (dot) dot.style.color = '#bbb';
+                            if (g && cutGraphicsLayer) cutGraphicsLayer.remove(g);
+                        }
+                    });
+                    selectAllBtn.textContent = allOn ? '✓ All' : '✗ None';
+                    updateCutExecuteBtn();
+                };
+            }
+
             cutCtxMenu.querySelector('#cutCtxCount').textContent = cutLinesToCut.length;
-            cutCtxMenu.querySelector('#cutCtxList').innerHTML =
-                Object.entries(byLayer).map(([n,c])=>`• ${n}: <b>${c}</b>`).join('<br>');
+            updateCutExecuteBtn();
             showCutContextMenu(cutSelectedPoint.geometry);
-            updateStatus(`✂️ ${cutLinesToCut.length} line(s) found. Confirm or cancel in the map menu.`);
+            updateStatus(`✂️ ${cutLinesToCut.length} line(s) found. Check/uncheck lines to cut, then confirm.`);
+        }
+
+        function updateCutExecuteBtn() {
+            const btn = cutCtxMenu.querySelector('#cutCtxExecute');
+            if (!btn || cutProcessing) return;
+            const n = cutSelectedIndices.size;
+            btn.textContent = `✂ Cut Selected (${n})`;
+            btn.disabled = n === 0;
         }
 
         async function executeCut() {
-            if (!cutLinesToCut.length || cutProcessing) return;
+            // Only operate on the lines the user has checked
+            const selectedLines = cutLinesToCut.filter((_, i) => cutSelectedIndices.has(i));
+            if (!selectedLines.length || cutProcessing) return;
             cutProcessing = true;
             cutCtxMenu.querySelector('#cutCtxExecute').disabled = true;
             cutCtxMenu.querySelector('#cutCtxCancel').disabled  = true;
@@ -949,7 +1070,7 @@
             const snapPt = {x:cutSelectedPoint.geometry.x, y:cutSelectedPoint.geometry.y};
             const undoBatch = {ts:new Date(), ops:[]};
             let ok=0, fail=0;
-            for (const li of cutLinesToCut) {
+            for (const li of selectedLines) {
                 try {
                     const split = splitLine(li.feature.geometry, li.cutInfo, snapPt);
                     if (!split) { fail++; continue; }
