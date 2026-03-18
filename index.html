@@ -2,460 +2,554 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GIS Tools – Install</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GIS Tools — Docs & Install</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#0e0e1a;color:#e0e0f0;font-family:'Segoe UI',Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:0 0 60px}
+.page-hdr{width:100%;max-width:880px;padding:28px 24px 0;display:flex;align-items:center;gap:14px}
+.page-hdr .icon{font-size:32px}
+.page-hdr h1{font-size:22px;font-weight:700;color:#c8c8ff;letter-spacing:.4px}
+.page-hdr p{font-size:12px;color:#5555aa;margin-top:3px}
+.tab-nav{width:100%;max-width:880px;display:flex;gap:4px;padding:20px 24px 0}
+.tab-btn{background:#1a1a2e;border:1px solid #2e2e45;border-bottom:none;border-radius:8px 8px 0 0;padding:10px 22px;color:#6666aa;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
+.tab-btn.active{background:#1e1e2e;border-color:#3a3a55;color:#c8c8ff}
+.tab-btn:hover:not(.active){background:#1e1e2e;color:#9999cc}
+.tab-pane{display:none;width:100%;max-width:880px;background:#1e1e2e;border:1px solid #3a3a55;border-radius:0 10px 10px 10px;padding:28px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.tab-pane.active{display:block}
 
-  body {
-    background: #13131f;
-    color: #e0e0f0;
-    font-family: 'Segoe UI', Arial, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 40px 20px;
-  }
+/* INSTALL */
+.step{display:flex;gap:16px;align-items:flex-start;margin-bottom:28px}
+.step-num{background:#2a2a45;border:1px solid #4444aa;color:#9999ff;font-weight:700;font-size:13px;border-radius:50%;width:28px;height:28px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.step-content h2{font-size:14px;font-weight:700;color:#c8c8ff;margin-bottom:4px}
+.step-content p{font-size:12px;color:#8888bb;line-height:1.6}
+.bar-hint{display:flex;align-items:center;gap:8px;background:#11111c;border:1px solid #2e2e45;border-radius:8px;padding:8px 14px;margin:8px 0 4px;font-size:11px;color:#6666aa}
+kbd{background:#2a2a45;border:1px solid #4444aa;border-radius:4px;padding:1px 6px;color:#9999ff;font-size:11px;font-family:inherit}
+.drag-demo{background:#11111c;border:1px solid #2e2e45;border-radius:10px;padding:20px 16px 16px;margin-top:10px;position:relative;overflow:hidden}
+.fake-bar{background:#1a1a2e;border:1px solid #3a3a55;border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:8px;font-size:11px;color:#5555aa;margin-bottom:24px;min-height:34px;position:relative}
+.fake-bar-label{color:#4444aa;font-size:10px;letter-spacing:.5px}
+.drop-zone{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:110px;height:22px;border:1.5px dashed #5555aa;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5555aa;transition:border-color .3s,color .3s}
+.drop-zone.active{border-color:#7777ff;color:#9999ff;background:rgba(85,85,170,.1)}
+.bookmarklet-link{display:inline-flex;align-items:center;gap:8px;background:#242438;border:1.5px solid #5555aa;border-radius:8px;padding:10px 16px;color:#c8c8ff;font-size:13px;font-family:'Segoe UI',Arial,sans-serif;font-weight:600;text-decoration:none;cursor:grab;transition:background .15s,border-color .15s,box-shadow .15s;user-select:none;box-shadow:0 2px 10px rgba(85,85,170,.2)}
+.bookmarklet-link:hover{background:#2e2e50;border-color:#8888dd;box-shadow:0 4px 18px rgba(85,85,170,.4);color:#fff}
+.bookmarklet-link:active{cursor:grabbing}
+.anim-ghost{position:absolute;display:inline-flex;align-items:center;gap:6px;background:#2e2e50;border:1.5px solid #8888dd;border-radius:7px;padding:7px 12px;color:#c8c8ff;font-size:12px;font-weight:600;pointer-events:none;white-space:nowrap;opacity:0;box-shadow:0 4px 18px rgba(85,85,170,.4)}
+.drag-hint{text-align:center;font-size:11px;color:#5555aa;margin-top:12px}
+.drag-hint span{color:#7777cc}
+.divider{display:flex;align-items:center;gap:10px;margin:6px 0 18px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:#2e2e45}
+.divider span{font-size:11px;color:#4444aa}
+.copy-btn{width:100%;padding:11px;background:#1a1a2e;border:1px solid #3a3a55;border-radius:8px;color:#8888bb;font-size:12px;font-family:'Segoe UI',Arial,sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .15s,border-color .15s,color .15s}
+.copy-btn:hover{background:#222238;border-color:#5555aa;color:#c8c8ff}
+.copy-btn.copied{border-color:#44aa88;color:#66ddaa;background:#0e1f1a}
+.copy-steps{margin-top:10px;background:#11111c;border:1px solid #2e2e45;border-radius:8px;padding:12px 14px;font-size:11px;color:#6666aa;line-height:2;display:none}
+.copy-steps.visible{display:block}
+.copy-steps b{color:#9999ff}
 
-  .card {
-    background: #1e1e2e;
-    border: 1px solid #3a3a55;
-    border-radius: 14px;
-    max-width: 640px;
-    width: 100%;
-    overflow: hidden;
-    box-shadow: 0 12px 48px rgba(0,0,0,0.6);
-  }
+/* HOW TO USE */
+.section-title{font-size:15px;font-weight:700;color:#c8c8ff;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #2e2e45}
+.req-box{background:#0e1a0e;border:1px solid #2e5c2e;border-radius:8px;padding:14px 16px;margin-bottom:24px;font-size:12px;color:#66bb66;display:flex;gap:10px;align-items:flex-start;line-height:1.6}
+.req-box .ri{font-size:18px;flex-shrink:0}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:28px}
+.info-card{background:#11111c;border:1px solid #2e2e45;border-radius:8px;padding:16px}
+.info-card .ic-icon{font-size:22px;margin-bottom:8px}
+.info-card h3{font-size:13px;font-weight:700;color:#c8c8ff;margin-bottom:4px}
+.info-card p{font-size:12px;color:#7777aa;line-height:1.6}
+.how-steps{margin-bottom:24px}
+.how-step{display:flex;gap:14px;margin-bottom:14px;align-items:flex-start}
+.how-step-num{background:#2a2a45;border:1px solid #4444aa;color:#9999ff;font-weight:700;font-size:12px;border-radius:50%;width:26px;height:26px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.how-step-text h4{font-size:13px;font-weight:600;color:#c8c8ff;margin-bottom:2px}
+.how-step-text p{font-size:12px;color:#7777aa;line-height:1.5}
 
-  .card-header {
-    background: #13131f;
-    padding: 22px 28px;
-    border-bottom: 1px solid #3a3a55;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .card-header .icon { font-size: 26px; }
-
-  .card-header h1 {
-    font-size: 18px;
-    font-weight: 700;
-    color: #c8c8ff;
-    letter-spacing: 0.4px;
-  }
-
-  .card-header p {
-    font-size: 12px;
-    color: #6666aa;
-    margin-top: 2px;
-  }
-
-  .card-body { padding: 28px; }
-
-  /* Step */
-  .step {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
-    margin-bottom: 28px;
-  }
-
-  .step-num {
-    background: #2a2a45;
-    border: 1px solid #4444aa;
-    color: #9999ff;
-    font-weight: 700;
-    font-size: 13px;
-    border-radius: 50%;
-    width: 28px;
-    height: 28px;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-top: 2px;
-  }
-
-  .step-content h2 {
-    font-size: 14px;
-    font-weight: 700;
-    color: #c8c8ff;
-    margin-bottom: 4px;
-  }
-
-  .step-content p {
-    font-size: 12px;
-    color: #8888bb;
-    line-height: 1.6;
-  }
-
-  /* Bookmarks bar hint */
-  .bar-hint {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: #11111c;
-    border: 1px solid #2e2e45;
-    border-radius: 8px;
-    padding: 8px 14px;
-    margin: 10px 0 6px;
-    font-size: 11px;
-    color: #6666aa;
-  }
-
-  .bar-hint kbd {
-    background: #2a2a45;
-    border: 1px solid #4444aa;
-    border-radius: 4px;
-    padding: 1px 6px;
-    color: #9999ff;
-    font-size: 11px;
-    font-family: inherit;
-  }
-
-  /* Drag demo box */
-  .drag-demo {
-    background: #11111c;
-    border: 1px solid #2e2e45;
-    border-radius: 10px;
-    padding: 20px 16px 16px;
-    margin-top: 10px;
-    position: relative;
-    overflow: hidden;
-  }
-
-  /* Fake bookmarks bar */
-  .fake-bar {
-    background: #1a1a2e;
-    border: 1px solid #3a3a55;
-    border-radius: 6px;
-    padding: 6px 10px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    color: #5555aa;
-    margin-bottom: 24px;
-    min-height: 34px;
-    position: relative;
-  }
-
-  .fake-bar-label { color: #4444aa; font-size: 10px; letter-spacing: 0.5px; }
-
-  /* Drop zone highlight */
-  .drop-zone {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 110px;
-    height: 22px;
-    border: 1.5px dashed #5555aa;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 10px;
-    color: #5555aa;
-    transition: border-color 0.3s, color 0.3s;
-  }
-
-  .drop-zone.active {
-    border-color: #7777ff;
-    color: #9999ff;
-    background: rgba(85,85,170,0.1);
-  }
-
-  /* The draggable bookmarklet button (actual install link) */
-  .bookmarklet-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: #242438;
-    border: 1.5px solid #5555aa;
-    border-radius: 8px;
-    padding: 10px 16px;
-    color: #c8c8ff;
-    font-size: 13px;
-    font-family: 'Segoe UI', Arial, sans-serif;
-    font-weight: 600;
-    text-decoration: none;
-    cursor: grab;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
-    user-select: none;
-    box-shadow: 0 2px 10px rgba(85,85,170,0.2);
-  }
-
-  .bookmarklet-link:hover {
-    background: #2e2e50;
-    border-color: #8888dd;
-    box-shadow: 0 4px 18px rgba(85,85,170,0.4);
-    color: #fff;
-  }
-
-  .bookmarklet-link:active { cursor: grabbing; }
-
-  /* Animated ghost for demo */
-  .anim-ghost {
-    position: absolute;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: #2e2e50;
-    border: 1.5px solid #8888dd;
-    border-radius: 7px;
-    padding: 7px 12px;
-    color: #c8c8ff;
-    font-size: 12px;
-    font-weight: 600;
-    pointer-events: none;
-    white-space: nowrap;
-    opacity: 0;
-    box-shadow: 0 4px 18px rgba(85,85,170,0.4);
-  }
-
-  .drag-hint {
-    text-align: center;
-    font-size: 11px;
-    color: #5555aa;
-    margin-top: 12px;
-  }
-
-  .drag-hint span { color: #7777cc; }
-
-  /* Divider */
-  .divider {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 6px 0 18px;
-  }
-
-  .divider::before, .divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: #2e2e45;
-  }
-
-  .divider span { font-size: 11px; color: #4444aa; }
-
-  /* Copy button */
-  .copy-btn {
-    width: 100%;
-    padding: 11px;
-    background: #1a1a2e;
-    border: 1px solid #3a3a55;
-    border-radius: 8px;
-    color: #8888bb;
-    font-size: 12px;
-    font-family: 'Segoe UI', Arial, sans-serif;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
-  }
-
-  .copy-btn:hover { background: #222238; border-color: #5555aa; color: #c8c8ff; }
-  .copy-btn.copied { border-color: #44aa88; color: #66ddaa; background: #0e1f1a; }
-
-  .copy-steps {
-    margin-top: 10px;
-    background: #11111c;
-    border: 1px solid #2e2e45;
-    border-radius: 8px;
-    padding: 12px 14px;
-    font-size: 11px;
-    color: #6666aa;
-    line-height: 2;
-    display: none;
-  }
-
-  .copy-steps.visible { display: block; }
-  .copy-steps b { color: #9999ff; }
-
-  /* Footer */
-  .card-footer {
-    padding: 14px 28px;
-    border-top: 1px solid #2e2e45;
-    font-size: 11px;
-    color: #44446a;
-    text-align: center;
-  }
+/* TOOLS */
+.tool-group{margin-bottom:22px}
+.tool-group-header{font-size:11px;font-weight:700;letter-spacing:.6px;color:#5555aa;text-transform:uppercase;margin-bottom:8px;padding-left:4px}
+.tool-card{background:#11111c;border:1px solid #2e2e45;border-radius:8px;overflow:hidden;margin-bottom:8px}
+.tool-card-hdr{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;transition:background .15s;user-select:none}
+.tool-card-hdr:hover{background:#181828}
+.tci{font-size:20px;flex-shrink:0}
+.tcm{flex:1}
+.tcn{font-size:14px;font-weight:700;color:#c8c8ff}
+.tcs{font-size:11px;color:#5555aa;margin-top:2px}
+.tca{color:#4444aa;font-size:12px;transition:transform .2s;flex-shrink:0}
+.tca.open{transform:rotate(180deg)}
+.tool-card-body{display:none;padding:0 16px 16px;border-top:1px solid #1e1e35}
+.tool-card-body.open{display:block}
+.tc-sec{margin-top:16px}
+.tc-sec-title{font-size:11px;font-weight:700;letter-spacing:.5px;color:#7777cc;text-transform:uppercase;margin-bottom:8px}
+.tc-desc{font-size:12px;color:#8888bb;line-height:1.7}
+.tc-steps{list-style:none}
+.tc-step{display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;font-size:12px;color:#8888bb;line-height:1.5}
+.tc-sn{background:#1e1e35;border:1px solid #3a3a55;color:#7777cc;font-size:11px;font-weight:700;border-radius:50%;width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.tc-tips{display:flex;flex-direction:column;gap:6px}
+.tc-tip{background:#1a1a10;border:1px solid #4a4a20;border-radius:6px;padding:8px 12px;font-size:12px;color:#bbbb66;display:flex;gap:8px;line-height:1.5}
+.tc-tip.info{background:#101a2a;border-color:#1e3a5a;color:#6699cc}
+.tc-ss{background:#0e0e1a;border:1.5px dashed #2e2e45;border-radius:8px;padding:24px;text-align:center;color:#3a3a55;font-size:12px;margin-top:4px}
+.tc-ss .sc-icon{font-size:28px;margin-bottom:6px;display:block}
+@media(max-width:600px){.info-grid{grid-template-columns:1fr}.tab-btn{padding:8px 12px;font-size:11px}.tab-pane{padding:18px}}
 </style>
 </head>
 <body>
 
-<div class="card">
-  <div class="card-header">
-    <span class="icon">🔧</span>
-    <div>
-      <h1>GIS Tools – Quick Install</h1>
-      <p>Add the tool launcher to your browser in seconds</p>
-    </div>
-  </div>
-
-  <div class="card-body">
-
-    <!-- Step 1 -->
-    <div class="step">
-      <div class="step-num">1</div>
-      <div class="step-content">
-        <h2>Show your bookmarks bar</h2>
-        <p>If it's hidden, use the shortcut for your browser:</p>
-        <div class="bar-hint">Chrome / Edge: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd></div>
-        <div class="bar-hint">Firefox: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd></div>
-      </div>
-    </div>
-
-    <!-- Step 2 -->
-    <div class="step">
-      <div class="step-num">2</div>
-      <div class="step-content">
-        <h2>Drag the button below to your bookmarks bar</h2>
-        <p>Click and drag it up to your browser's bookmarks bar — just like moving a tab.</p>
-
-        <div class="drag-demo" id="dragDemo">
-          <!-- Fake bar at top -->
-          <div class="fake-bar">
-            <span class="fake-bar-label">📁 BOOKMARKS BAR</span>
-            <div class="drop-zone" id="dropZone">drop here</div>
-          </div>
-
-          <!-- Actual bookmarklet link (real href populated by JS) -->
-          <a class="bookmarklet-link" id="bookmarkletLink" href="#">
-            🔧 GIS Tools
-          </a>
-
-          <!-- Animated ghost -->
-          <div class="anim-ghost" id="animGhost">🔧 GIS Tools</div>
-
-          <div class="drag-hint"><span>⬆ drag me up</span> to your bookmarks bar</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Divider -->
-    <div class="divider"><span>or, if dragging doesn't work</span></div>
-
-    <!-- Copy fallback -->
-    <button class="copy-btn" id="copyBtn">📋 Copy bookmarklet code to clipboard</button>
-    <div class="copy-steps" id="copySteps">
-      <b>1.</b> Right-click your bookmarks bar → <b>Add bookmark / Add page…</b><br>
-      <b>2.</b> Set the <b>Name</b> to: <code>🔧 GIS Tools</code><br>
-      <b>3.</b> Paste the copied code into the <b>URL / Address</b> field<br>
-      <b>4.</b> Save — you're done!
-    </div>
-
-  </div>
-
-  <div class="card-footer">
-    Once installed, click the bookmark on any GIS page to launch the tool panel.
+<div class="page-hdr">
+  <span class="icon">🔧</span>
+  <div>
+    <h1>GIS Tools</h1>
+    <p>ArcGIS Web Map Enhancement Suite &nbsp;·&nbsp; Documentation & Install</p>
   </div>
 </div>
 
-<script>
-// ── Bookmarklet code ──────────────────────────────────────────────────────────
-const BOOKMARKLET = `javascript:(function(){if(window.gisToolHost){if(!(window.gisToolHost.activeTools instanceof Map)){window.gisToolHost.activeTools=new Map();}if(document.getElementById('gisToolLauncher'))return;}else{window.gisToolHost={baseUrl:'https://raw.githubusercontent.com/trelews96/gis-tools/main/',loadedTools:new Set(),activeTools:new Map(),async loadTool(n){try{if(this.activeTools.has(n))return;const s=document.getElementById('gisHostStatus');if(this.loadedTools.has(n)){if(s)s.textContent='Reinitializing '+n+'...';const r=await fetch(this.baseUrl+'tools/'+n+'.js');if(!r.ok)throw new Error('Failed to reload: '+r.statusText);eval(await r.text());if(s){s.textContent='✅ '+n+' reinitialized!';setTimeout(()=>s.textContent='',2500);}return;}if(s)s.textContent='Loading '+n+'...';const r=await fetch(this.baseUrl+'tools/'+n+'.js');if(!r.ok)throw new Error('Failed to load: '+r.statusText);eval(await r.text());this.loadedTools.add(n);if(s){s.textContent='✅ '+n+' loaded!';setTimeout(()=>s.textContent='',2500);}}catch(e){console.error('Error loading tool '+n+':',e);const s=document.getElementById('gisHostStatus');if(s)s.textContent='❌ Error loading '+n;}},async loadSharedUtils(){if(this.loadedTools.has('shared-utils'))return;try{const r=await fetch(this.baseUrl+'shared/utils.js');if(r.ok){eval(await r.text());this.loadedTools.add('shared-utils');}}catch(e){console.warn('Could not load shared utils:',e);}},closeTool(n){if(this.activeTools.has(n)){const i=this.activeTools.get(n);if(i&&i.cleanup)i.cleanup();this.activeTools.delete(n);}},closeAllTools(){for(const[,i]of this.activeTools){if(i&&i.cleanup)i.cleanup();}this.activeTools.clear();}};}window.gisToolHost.loadSharedUtils().catch(e=>console.warn(e));const G=[{label:'✏️ Geometry & Feature Editing',tools:[{id:'snap-move',label:'Snap Move Tool',icon:'📐'},{id:'click-copy',label:'Click-to-Copy',icon:'📋'},{id:'hole-punch',label:'Hole Punch Tool',icon:'⭕'},{id:'curve-creator',label:'Curve Creator',icon:'〰️'},{id:'path-editor',label:'Path Editor',icon:'🛤️'}]},{label:'📦 Packages & QC',tools:[{id:'ug-package',label:'UG Package (Vaults / Conduit / Fiber)',icon:'🏗️'},{id:'qc-review',label:'QC Review',icon:'🔍'}]},{label:'🗂️ Feature Management',tools:[{id:'attachment-manager',label:'Attachment Manager',icon:'📎'},{id:'sequential-editor',label:'Sequential Editor',icon:'🔢'},{id:'isolated-vault-checker',label:'Isolated Vault Checker',icon:'🔒'},{id:'fiber-endpoint-checker',label:'Fiber Endpoint Checker',icon:'🔌'}]},{label:'📊 Reporting & Tracking',tools:[{id:'metrics-by-woid',label:'Metrics Report',icon:'📈'},{id:'work-order-overview',label:'Work Order Overview',icon:'📋'},{id:'daily-tracking',label:'Daily Tracking',icon:'📅'},{id:'parent-child-reconciliation',label:'Parent/Child Reconciliation',icon:'🔄'},{id:'slack-loop-analysis',label:'Slack Loop Analysis',icon:'🔁'}]}];const se=document.createElement('style');se.id='gisHostStyles';se.textContent='#gisToolLauncher{position:fixed;top:20px;left:20px;z-index:99999;width:270px;background:#1e1e2e;border:1px solid #3a3a55;border-radius:10px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,.5);color:#e0e0f0;user-select:none}#gisHostHeader{display:flex;align-items:center;padding:10px 12px;background:#13131f;border-radius:10px 10px 0 0;cursor:grab;border-bottom:1px solid #3a3a55;gap:8px}#gisHostHeader:active{cursor:grabbing}#gisHostTitle{flex:1;font-weight:700;font-size:13px;letter-spacing:.5px;color:#c8c8ff}.gis-header-btn{background:none;border:1px solid #3a3a55;border-radius:4px;color:#aaa;width:22px;height:22px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;padding:0}.gis-header-btn:hover{background:#2e2e45;color:#fff}#gisCollapseBtn{font-size:13px}#gisCloseBtn{border-color:#6b2020;color:#e57373}#gisCloseBtn:hover{background:#6b2020;color:#fff}#gisHostBody{max-height:75vh;overflow-y:auto;padding:10px 10px 6px;scrollbar-width:thin;scrollbar-color:#3a3a55 transparent}#gisHostBody::-webkit-scrollbar{width:5px}#gisHostBody::-webkit-scrollbar-thumb{background:#3a3a55;border-radius:4px}.gis-group{margin-bottom:8px;border-radius:6px;overflow:hidden;border:1px solid #2e2e45}.gis-group-header{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;font-size:11px;font-weight:700;letter-spacing:.4px;cursor:pointer;background:#2a2a3e;color:#b0b0d0;text-transform:uppercase;transition:background .15s}.gis-group-header:hover{background:#32324a}.gis-group-arrow{font-size:10px;transition:transform .2s}.gis-group-arrow.collapsed{transform:rotate(-90deg)}.gis-group-tools{padding:6px;display:flex;flex-direction:column;gap:4px;background:#181828}.gis-group-tools.hidden{display:none}.gis-tool-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#242438;color:#d0d0f0;border:1px solid #2e2e48;border-radius:5px;cursor:pointer;font-size:12px;font-family:Segoe UI,Arial,sans-serif;text-align:left;transition:background .15s,border-color .15s,transform .1s;width:100%}.gis-tool-btn:hover{background:#2e2e50;border-color:#5555aa;transform:translateX(2px);color:#fff}.gis-tool-btn .gis-icon{font-size:14px;flex-shrink:0}#gisHostFooter{padding:8px 10px;border-top:1px solid #2e2e45;display:flex;flex-direction:column;gap:5px}#gisHostStatus{font-size:11px;color:#8888bb;min-height:14px;text-align:center}#gisCloseAllBtn{width:100%;padding:6px;background:#2a1a1a;color:#e57373;border:1px solid #5c2020;border-radius:5px;cursor:pointer;font-size:11px;font-family:Segoe UI,Arial,sans-serif;transition:background .15s}#gisCloseAllBtn:hover{background:#3d1f1f}';document.head.appendChild(se);const launcher=document.createElement('div');launcher.id='gisToolLauncher';const hdr=document.createElement('div');hdr.id='gisHostHeader';hdr.innerHTML='<span id="gisHostTitle">🔧 GIS Tools</span><button class="gis-header-btn" id="gisCollapseBtn" title="Collapse/Expand">▾</button><button class="gis-header-btn" id="gisCloseBtn" title="Close">✕</button>';const bdy=document.createElement('div');bdy.id='gisHostBody';G.forEach(g=>{const ge=document.createElement('div');ge.className='gis-group';const gh=document.createElement('div');gh.className='gis-group-header';gh.innerHTML='<span>'+g.label+'</span><span class="gis-group-arrow">▾</span>';const tl=document.createElement('div');tl.className='gis-group-tools';g.tools.forEach(t=>{const b=document.createElement('button');b.className='gis-tool-btn';b.innerHTML='<span class="gis-icon">'+t.icon+'</span><span>'+t.label+'</span>';b.addEventListener('click',()=>window.gisToolHost.loadTool(t.id));tl.appendChild(b);});gh.addEventListener('click',()=>{const a=gh.querySelector('.gis-group-arrow');tl.classList.toggle('hidden');a.classList.toggle('collapsed',tl.classList.contains('hidden'));});ge.appendChild(gh);ge.appendChild(tl);bdy.appendChild(ge);});const ftr=document.createElement('div');ftr.id='gisHostFooter';ftr.innerHTML='<div id="gisHostStatus"></div><button id="gisCloseAllBtn">⬛ Close All Tools</button>';launcher.appendChild(hdr);launcher.appendChild(bdy);launcher.appendChild(ftr);document.body.appendChild(launcher);let collapsed=false;document.getElementById('gisCollapseBtn').addEventListener('click',()=>{collapsed=!collapsed;bdy.style.display=collapsed?'none':'';ftr.style.display=collapsed?'none':'';document.getElementById('gisCollapseBtn').textContent=collapsed?'▸':'▾';hdr.style.borderBottom=collapsed?'none':'1px solid #3a3a55';hdr.style.borderRadius=collapsed?'10px':'10px 10px 0 0';});document.getElementById('gisCloseBtn').addEventListener('click',()=>{window.gisToolHost.closeAllTools();document.getElementById('gisHostStyles').remove();launcher.remove();});document.getElementById('gisCloseAllBtn').addEventListener('click',()=>{window.gisToolHost.closeAllTools();const s=document.getElementById('gisHostStatus');if(s){s.textContent='✅ All tools closed.';setTimeout(()=>{const el=document.getElementById('gisHostStatus');if(el)el.textContent='';},2500);}});(function(el,handle){let sx,sy,sl,stp,drag=false;handle.addEventListener('mousedown',e=>{if(e.target.closest('button'))return;drag=true;sx=e.clientX;sy=e.clientY;const r=el.getBoundingClientRect();sl=r.left;stp=r.top;e.preventDefault();});document.addEventListener('mousemove',e=>{if(!drag)return;el.style.left=Math.max(0,Math.min(window.innerWidth-el.offsetWidth,sl+e.clientX-sx))+'px';el.style.top=Math.max(0,Math.min(window.innerHeight-el.offsetHeight,stp+e.clientY-sy))+'px';el.style.right='auto';});document.addEventListener('mouseup',()=>drag=false);})(launcher,hdr);})()`;
+<div class="tab-nav">
+  <button class="tab-btn active" data-tab="install">📥 Install</button>
+  <button class="tab-btn" data-tab="howto">📖 How to Use</button>
+  <button class="tab-btn" data-tab="tools">🔧 Tool Reference</button>
+</div>
 
-// Set the real href on the bookmarklet link
+<!-- ══ INSTALL TAB ══ -->
+<div id="tab-install" class="tab-pane active">
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <h2>Show your bookmarks bar</h2>
+      <p>If it's hidden, use the shortcut for your browser:</p>
+      <div class="bar-hint">Chrome / Edge: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd></div>
+      <div class="bar-hint">Firefox: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd></div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <h2>Drag the button below to your bookmarks bar</h2>
+      <p>Click and drag it up to your browser's bookmarks bar — just like moving a tab.</p>
+      <div class="drag-demo" id="dragDemo">
+        <div class="fake-bar">
+          <span class="fake-bar-label">📁 BOOKMARKS BAR</span>
+          <div class="drop-zone" id="dropZone">drop here</div>
+        </div>
+        <a class="bookmarklet-link" id="bookmarkletLink" href="#">🔧 GIS Tools</a>
+        <div class="anim-ghost" id="animGhost">🔧 GIS Tools</div>
+        <div class="drag-hint"><span>⬆ drag me up</span> to your bookmarks bar</div>
+      </div>
+    </div>
+  </div>
+  <div class="divider"><span>or, if dragging doesn't work</span></div>
+  <button class="copy-btn" id="copyBtn">📋 Copy bookmarklet code to clipboard</button>
+  <div class="copy-steps" id="copySteps">
+    <b>1.</b> Right-click your bookmarks bar → <b>Add bookmark / Add page…</b><br>
+    <b>2.</b> Set the <b>Name</b> to: <code>🔧 GIS Tools</code><br>
+    <b>3.</b> Paste the copied code into the <b>URL / Address</b> field<br>
+    <b>4.</b> Save — you're done!
+  </div>
+</div>
+
+<!-- ══ HOW TO USE TAB ══ -->
+<div id="tab-howto" class="tab-pane">
+  <div class="req-box">
+    <span class="ri">⚠️</span>
+    <div><b>Requirement:</b> GIS Tools only works on an ArcGIS web map page (Map Viewer or Experience Builder). Clicking the bookmark on any other page will have no effect. Make sure your web map is fully loaded before launching.</div>
+  </div>
+
+  <p class="section-title">Launching the Tool Panel</p>
+  <div class="how-steps">
+    <div class="how-step"><div class="how-step-num">1</div><div class="how-step-text"><h4>Open your ArcGIS web map</h4><p>Navigate to your Map Viewer or Experience Builder app and wait for the map to fully load.</p></div></div>
+    <div class="how-step"><div class="how-step-num">2</div><div class="how-step-text"><h4>Click the 🔧 GIS Tools bookmark</h4><p>Click the bookmark in your bookmarks bar. The dark GIS Tools panel will appear in the top-left corner of the page.</p></div></div>
+    <div class="how-step"><div class="how-step-num">3</div><div class="how-step-text"><h4>Click any tool to load it</h4><p>Tools load on demand from GitHub when you click them. The first load may take a moment — watch the status bar at the bottom of the launcher for confirmation before using the tool.</p></div></div>
+    <div class="how-step"><div class="how-step-num">4</div><div class="how-step-text"><h4>Close tools when finished</h4><p>Use the ✕ on individual tool panels to close them, or click <b>⬛ Close All Tools</b> at the bottom of the launcher to reset everything at once.</p></div></div>
+  </div>
+
+  <p class="section-title">Panel Controls</p>
+  <div class="info-grid">
+    <div class="info-card"><div class="ic-icon">✋</div><h3>Drag to Reposition</h3><p>Click and drag the panel header bar to move the launcher anywhere on screen so it doesn't block your map.</p></div>
+    <div class="info-card"><div class="ic-icon">▾</div><h3>Collapse / Expand</h3><p>Click the ▾ button in the header to collapse the launcher to just the title bar, freeing up screen space while keeping it accessible.</p></div>
+    <div class="info-card"><div class="ic-icon">✕</div><h3>Close the Launcher</h3><p>The red ✕ button closes the launcher and all open tools. Click the bookmark again at any time to relaunch it.</p></div>
+    <div class="info-card"><div class="ic-icon">📂</div><h3>Tool Groups</h3><p>Click any group header (Geometry, Packages, etc.) to collapse or expand that category to keep the panel tidy.</p></div>
+  </div>
+
+  <p class="section-title">General Tips & Gotchas</p>
+  <div class="tc-tips">
+    <div class="tc-tip">⚠️ Tools modify live map data. Always confirm you are on the correct web map and work order before making edits.</div>
+    <div class="tc-tip info">💡 If a tool doesn't open or behaves unexpectedly, try refreshing the page and clicking the bookmark again — this fully reinitializes the host.</div>
+    <div class="tc-tip info">💡 The launcher resets on page refresh. This is by design — each session starts clean.</div>
+    <div class="tc-tip">⚠️ On slow connections, tools may take a few seconds to load the first time. Wait for the ✅ confirmation in the status bar before interacting with the tool panel.</div>
+  </div>
+</div>
+
+<!-- ══ TOOLS TAB ══ -->
+<div id="tab-tools" class="tab-pane">
+
+  <!-- Geometry & Feature Editing -->
+  <div class="tool-group">
+    <div class="tool-group-header">✏️ Geometry & Feature Editing</div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">📐</span>
+        <div class="tcm"><div class="tcn">GIS Edit Tools</div><div class="tcs">Move features, edit vertices, split lines, and copy features on the map</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">A lightweight editing toolbar that attaches to your ArcGIS web map without replacing the native editor. Provides four focused editing modes in a single draggable panel: moving features and vertices with automatic snapping, locking edits to a single feature when features overlap, splitting lines at a point location, and placing copies of existing features at clicked locations.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Move & Vertex Tools</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Click <b>Enable Tool</b> to activate editing mode.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Choose <b>Point Mode</b> to move point features, or <b>Line Mode</b> to move individual line vertices. Connected line endpoints follow automatically in Point Mode.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Click the feature or vertex to select it, then click the destination to move it. The destination snaps to the nearest point or vertex within tolerance.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>In Line Mode, use <b>Add Vertex</b> / <b>Delete Vertex</b> to insert or remove vertices on any visible line.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>Toggle <b>Show Vertices</b> to display all line vertices as a colored overlay. Click <b>Refresh</b> to update after panning.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Single Feature Lock</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Click <b>Pick Feature</b>, then click a feature on the map to lock all edits to that feature only.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Perform your edits — only the locked feature is affected, even if others overlap at the same location.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Click <b>Release Lock</b> when done to return to normal editing mode.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Cut & Split Lines</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Click <b>Enable Cut Mode</b>, then click a point feature on the map.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>A confirmation menu lists all intersecting lines found within a 15 ft buffer. Hover over each to highlight it on the map.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Uncheck any lines you do not want to cut, then confirm. Each selected line is split into two new segments at the point location.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Click <b>Undo Cut</b> to reverse the most recent cut batch if needed.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Click & Copy</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Click <b>Enable Copy Mode</b>, then click a feature on the map to use it as a template.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>If multiple features overlap at the click location, a picker menu lets you choose the correct template.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Each subsequent click places a copy at that location with snapping and a live crosshair preview.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Press <b>ESC</b> or click <b>Clear Template</b> to pick a new template without leaving copy mode.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip">⚠️ Use Single Feature Lock whenever features overlap — without it, coincident vertices on multiple lines may all move together.</div>
+            <div class="tc-tip info">💡 The Undo Cut stack only covers the current session and cannot be used after a page refresh.</div>
+            <div class="tc-tip info">💡 Snapping is automatic — destinations will snap to the nearest point feature or line vertex within the configured tolerance.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">🛤️</span>
+        <div class="tcm"><div class="tcn">Path Editor</div><div class="tcs">Guided sequential attribute editing across multiple map features</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Rather than clicking features one by one on the map, Path Editor lets you define a selection, configure which layers and fields to edit, and step through each feature in a structured queue. Supports single click, drawn path, and polygon selection modes. Includes a visual filter builder, bulk edit mode, drag-and-drop attachment uploads, per-layer CSV export, and a session report for audit trails.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Choose a selection mode: <b>Single Click</b> for spot edits, <b>Line Path</b> to select features along a corridor in sequential order, or <b>Polygon</b> to select all features within a drawn area.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Click or draw on the map. Discovered layers appear as collapsible cards showing feature counts.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Enable each layer you want to edit. Set each to <b>Edit Fields</b> or <b>View Only</b>, select which fields to include, and configure processing order.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Optionally use the <b>Filter Builder</b> to narrow each layer's feature set using plain-English conditions. Click <b>Test Filter</b> to preview the match count before proceeding.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>Click <b>Review & Start</b> to enter editing mode. Features are presented one at a time with a progress bar at the top.</span></li>
+            <li class="tc-step"><span class="tc-sn">6</span><span>Fill in fields, attach files if needed, then click <b>Submit & Next</b>. Use <b>Skip</b> to defer a feature or <b>Previous</b> to go back.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip info">💡 Save your layer/field configuration after setup — repeat workflows can be reloaded instantly with the <b>Load</b> button.</div>
+            <div class="tc-tip info">💡 <b>Apply Previous Values</b> fills the current form with the last submitted feature's values — great for repetitive edits along a run.</div>
+            <div class="tc-tip info">💡 Download a CSV from any layer card before editing to review the exact data you're about to change in Excel first.</div>
+            <div class="tc-tip">⚠️ <b>Bulk Edit</b> applies the same values to ALL selected features at once — verify your filter is correct before using it.</div>
+            <div class="tc-tip info">💡 Use <b>Line Path</b> mode when editing assets along a route (e.g., spans along a road) — features are queued in the order they appear along the drawn path.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Packages & QC -->
+  <div class="tool-group">
+    <div class="tool-group-header">📦 Packages & QC</div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">🏗️</span>
+        <div class="tcm"><div class="tcn">UG Package</div><div class="tcs">Place preconfigured vaults and auto-draw conduit and fiber between them</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Speeds up underground package data entry by creating preconfigured vault features at each clicked map location, then automatically drawing conduit and fiber connections between each created vault in sequence. Eliminates manual feature creation and attribute entry for standard vault-to-vault runs.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Launch the UG Package tool and configure vault type and conduit/fiber settings as prompted.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Click each vault location on the map in the order you want them connected. A vault feature is created at each click.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>When finished placing vaults, confirm to have the tool automatically draw conduit and fiber between each vault in the order they were placed.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip">⚠️ Ensure you are on the correct web map with the appropriate underground layers loaded and visible before starting.</div>
+            <div class="tc-tip info">💡 Plan your vault locations before clicking — connections are drawn in placement order and cannot be reordered without re-running.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">🔍</span>
+        <div class="tcm"><div class="tcn">QC Review</div><div class="tcs">Streamlined pass/fail review workflow for completed features</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Quickly identifies all features in a completed status that need QC review. Presents each feature one at a time — zooming to it and opening its popup for photo review — then provides a simple Pass / Fail / Missing Photo decision interface. Passing a feature marks it QC Complete; failing a feature creates a gig point and logs the selected issue types and notes.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Optionally filter by <b>Work Order</b> and/or <b>Installation Date Range</b> to scope your review queue.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Click <b>Query Features</b>. The progress counter shows the total number of features found.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>The tool zooms to each feature and opens its popup. Review the photos and feature attributes.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Select <b>Pass</b>, <b>Fail</b>, or <b>Missing Photo</b>. For failures, check the applicable issue type(s) and add optional notes.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>Click <b>Submit QC →</b> to record the decision and advance to the next feature. Use <b>Skip</b> to defer or <b>Previous</b> to go back.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip info">💡 Use the date range filter to limit your queue to a specific installation window rather than reviewing an entire work order at once.</div>
+            <div class="tc-tip">⚠️ Gig points created on failed features are written to the map immediately — failures cannot be undone through this tool.</div>
+            <div class="tc-tip info">💡 Sort by <b>Newest to Oldest</b> to prioritize the most recently installed features first.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feature Management -->
+  <div class="tool-group">
+    <div class="tool-group-header">🗂️ Feature Management</div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">📎</span>
+        <div class="tcm"><div class="tcn">Attachment Manager</div><div class="tcs">Bulk upload or download photos for any layer, with optional timestamp watermarking</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Handles mass photo management for map layers. Upload multiple photos to features at once, or download all attachments from a layer in bulk. Includes an optional watermark that stamps photos with a timestamp at upload time — useful for documentation and audit trail requirements.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Select the target layer from the dropdown.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Choose <b>Upload</b> or <b>Download</b> mode.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>If uploading, enable the <b>Timestamp Watermark</b> option before selecting files if timestamping is required.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Select or drag-and-drop your files and execute the operation.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip">⚠️ Enable the watermark option <em>before</em> selecting files — it cannot be applied retroactively after files are chosen.</div>
+            <div class="tc-tip info">💡 Bulk downloads are saved to your default browser Downloads folder. Check there after a large export.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reporting & Tracking -->
+  <div class="tool-group">
+    <div class="tool-group-header">📊 Reporting & Tracking</div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">📋</span>
+        <div class="tcm"><div class="tcn">Work Order Overview</div><div class="tcs">Active work order dashboard with progress, run rates, and crew performance</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Displays all active work orders as individual cards, each showing progress bars for Construction, Billing, and Invoice milestones alongside run rate estimations and estimated completion dates. Clicking any card opens a detailed view with a layer-by-layer production breakdown across all categories, invoice opportunity callouts, and a ranked crew performance table. Clicking any cell in the breakdown table filters the live map to that specific layer and category combination.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Optionally filter by <b>Purchase Order</b> and select which layers to include in the analysis.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Click <b>Load Overview</b> to generate the work order cards.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Use the sort dropdown to order cards by completion %, age, or other criteria.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Click any work order card to open its <b>Detailed Analysis</b> view.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>In the detailed view, use the date range filter buttons to adjust the analysis window, and click any table cell to filter the map to that layer + category.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip info">💡 Sort by <b>Completion % (least first)</b> to immediately surface the most behind-schedule work orders.</div>
+            <div class="tc-tip info">💡 The <b>Invoice Opportunity</b> callout in the detailed view shows units ready for daily submission — check this before submitting dailies.</div>
+            <div class="tc-tip info">💡 Crew performance ranks by constructed units and daily rate. Use this to identify high and low performers on a given work order.</div>
+            <div class="tc-tip">⚠️ Run rates and estimated completion dates are based on pace within the selected date range — adjust the filter to see different projections.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">📅</span>
+        <div class="tcm"><div class="tcn">Daily Tracking</div><div class="tcs">Zoom to a daily, filter the map, and verify recorded quantities match actual feature quantities</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Enter a daily number to immediately zoom to that daily's location, filter the map to show only features associated with that daily, and display all CWI labor codes tied to it. Then compares the quantity recorded in each feature's daily tracking table against the actual measured quantity of the feature itself, flagging any mismatches that need to be resolved before the daily can be billed.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Enter the daily number in the input field and click <b>Run Analysis</b>.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>The map zooms to the daily's extent and filters to matching features. All associated CWI labor codes are shown.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Review the quantity comparison table. Any row where the daily tracking table quantity doesn't match the feature quantity is flagged as a mismatch.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Click <b>Zoom</b> next to a flagged feature to navigate to it on the map and investigate.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>Correct mismatched quantities, then re-run the analysis to confirm everything is resolved before submitting for billing.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip">⚠️ Quantity mismatches will cause billing issues — always resolve all flagged features before submitting a daily.</div>
+            <div class="tc-tip info">💡 The map filter applied by this tool may persist after closing the tool. Reset map filters manually if the map still appears filtered afterward.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">🔄</span>
+        <div class="tcm"><div class="tcn">Parent/Child Reconciliation</div><div class="tcs">Detect quantity mismatches between coincident fiber and strand/conduit for billing compliance</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Finds locations where fiber is coincident with strand or conduit and compares the daily tracking table quantities between the paired features. Mismatches are flagged because composite billing codes require all payable code quantities to match exactly — a single mismatch will prevent the composite code from being billed out. The tool produces a sortable list of each problem location with fiber ID, labor codes, quantities, the signed difference, and direct zoom buttons.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Launch the tool and click <b>Run Analysis</b>. The tool scans for fiber features coincident with strand or conduit.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Review the mismatch list — each row shows the Fiber ID, both labor codes, their quantities, and the difference.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Click the <b>UG</b> or <b>Fiber</b> zoom button on any row to jump directly to that feature on the map.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Correct the quantities in the daily tracking tables, then re-run to confirm all mismatches are resolved.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip">⚠️ Unresolved mismatches block billing for the composite code — run this check before submitting any daily that includes both fiber and strand/conduit.</div>
+            <div class="tc-tip info">💡 A positive <b>Diff</b> value means the UG quantity is higher; negative means the fiber quantity is higher.</div>
+            <div class="tc-tip info">💡 Use <b>Export CSV</b> to download the full mismatch list and share with the billing team for tracking.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-card-hdr" onclick="toggle(this)">
+        <span class="tci">🔁</span>
+        <div class="tcm"><div class="tcn">Slack Loop Analysis</div><div class="tcs">Find slack loop features that are missing sequential numbers</div></div>
+        <span class="tca">▾</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tc-sec"><div class="tc-sec-title">Description</div>
+          <div class="tc-desc">Scans slack loop features within a selected work order and identifies any that are missing sequential numbers. Generates a detailed list showing location type, OID, fiber count, minimum distance, and issue type so editors can quickly navigate to each problem location and assign the missing sequentials.</div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">How to Use</div>
+          <ol class="tc-steps">
+            <li class="tc-step"><span class="tc-sn">1</span><span>Select the <b>Work Order ID</b> from the dropdown.</span></li>
+            <li class="tc-step"><span class="tc-sn">2</span><span>Set the <b>Fiber Detection Tolerance</b> (meters) — how close a fiber cable must be to a location to be counted.</span></li>
+            <li class="tc-step"><span class="tc-sn">3</span><span>Set the <b>Slack Loop Tolerance</b> (meters) — the minimum distance a loop must span to be considered valid.</span></li>
+            <li class="tc-step"><span class="tc-sn">4</span><span>Click <b>Run Analysis</b>. The summary shows totals for locations, fiber cables, slack loops, and issues found.</span></li>
+            <li class="tc-step"><span class="tc-sn">5</span><span>Review the <b>Missing Slack Loops</b> table and click <b>Zoom</b> next to each entry to navigate to it and add the missing sequential.</span></li>
+          </ol>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Tips & Gotchas</div>
+          <div class="tc-tips">
+            <div class="tc-tip info">💡 Start with the default tolerances and adjust if results seem over- or under-inclusive for your specific dataset density.</div>
+            <div class="tc-tip info">💡 Use <b>Export CSV</b> to share the missing loop list with editors or use it as a completion checklist.</div>
+            <div class="tc-tip">⚠️ Make sure the full work order area is visible on the map before running — the analysis respects the current map extent.</div>
+          </div>
+        </div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- end tools tab -->
+
+<script>
+const BOOKMARKLET=`javascript:(function(){if(window.gisToolHost){if(!(window.gisToolHost.activeTools instanceof Map)){window.gisToolHost.activeTools=new Map();}if(document.getElementById('gisToolLauncher'))return;}else{window.gisToolHost={baseUrl:'https://raw.githubusercontent.com/trelews96/gis-tools/main/',loadedTools:new Set(),activeTools:new Map(),async loadTool(n){try{if(this.activeTools.has(n))return;const s=document.getElementById('gisHostStatus');if(this.loadedTools.has(n)){if(s)s.textContent='Reinitializing '+n+'...';const r=await fetch(this.baseUrl+'tools/'+n+'.js');if(!r.ok)throw new Error('Failed to reload: '+r.statusText);eval(await r.text());if(s){s.textContent='✅ '+n+' reinitialized!';setTimeout(()=>s.textContent='',2500);}return;}if(s)s.textContent='Loading '+n+'...';const r=await fetch(this.baseUrl+'tools/'+n+'.js');if(!r.ok)throw new Error('Failed to load: '+r.statusText);eval(await r.text());this.loadedTools.add(n);if(s){s.textContent='✅ '+n+' loaded!';setTimeout(()=>s.textContent='',2500);}}catch(e){console.error('Error loading tool '+n+':',e);const s=document.getElementById('gisHostStatus');if(s)s.textContent='❌ Error loading '+n;}},async loadSharedUtils(){if(this.loadedTools.has('shared-utils'))return;try{const r=await fetch(this.baseUrl+'shared/utils.js');if(r.ok){eval(await r.text());this.loadedTools.add('shared-utils');}}catch(e){console.warn('Could not load shared utils:',e);}},closeTool(n){if(this.activeTools.has(n)){const i=this.activeTools.get(n);if(i&&i.cleanup)i.cleanup();this.activeTools.delete(n);}},closeAllTools(){for(const[,i]of this.activeTools){if(i&&i.cleanup)i.cleanup();}this.activeTools.clear();}};}window.gisToolHost.loadSharedUtils().catch(e=>console.warn(e));const G=[{label:'✏️ Geometry & Feature Editing',tools:[{id:'snap-move',label:'GIS Edit Tools',icon:'📐'},{id:'path-editor',label:'Path Editor',icon:'🛤️'}]},{label:'📦 Packages & QC',tools:[{id:'ug-package',label:'UG Package',icon:'🏗️'},{id:'qc-review',label:'QC Review',icon:'🔍'}]},{label:'🗂️ Feature Management',tools:[{id:'attachment-manager',label:'Attachment Manager',icon:'📎'}]},{label:'📊 Reporting & Tracking',tools:[{id:'work-order-overview',label:'Work Order Overview',icon:'📋'},{id:'daily-tracking',label:'Daily Tracking',icon:'📅'},{id:'parent-child-reconciliation',label:'Parent/Child Reconciliation',icon:'🔄'},{id:'slack-loop-analysis',label:'Slack Loop Analysis',icon:'🔁'}]}];const se=document.createElement('style');se.id='gisHostStyles';se.textContent='#gisToolLauncher{position:fixed;top:20px;left:20px;z-index:99999;width:270px;background:#1e1e2e;border:1px solid #3a3a55;border-radius:10px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,.5);color:#e0e0f0;user-select:none}#gisHostHeader{display:flex;align-items:center;padding:10px 12px;background:#13131f;border-radius:10px 10px 0 0;cursor:grab;border-bottom:1px solid #3a3a55;gap:8px}#gisHostHeader:active{cursor:grabbing}#gisHostTitle{flex:1;font-weight:700;font-size:13px;letter-spacing:.5px;color:#c8c8ff}.gis-header-btn{background:none;border:1px solid #3a3a55;border-radius:4px;color:#aaa;width:22px;height:22px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;padding:0}.gis-header-btn:hover{background:#2e2e45;color:#fff}#gisCollapseBtn{font-size:13px}#gisCloseBtn{border-color:#6b2020;color:#e57373}#gisCloseBtn:hover{background:#6b2020;color:#fff}#gisHostBody{max-height:75vh;overflow-y:auto;padding:10px 10px 6px;scrollbar-width:thin;scrollbar-color:#3a3a55 transparent}#gisHostBody::-webkit-scrollbar{width:5px}#gisHostBody::-webkit-scrollbar-thumb{background:#3a3a55;border-radius:4px}.gis-group{margin-bottom:8px;border-radius:6px;overflow:hidden;border:1px solid #2e2e45}.gis-group-header{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;font-size:11px;font-weight:700;letter-spacing:.4px;cursor:pointer;background:#2a2a3e;color:#b0b0d0;text-transform:uppercase;transition:background .15s}.gis-group-header:hover{background:#32324a}.gis-group-arrow{font-size:10px;transition:transform .2s}.gis-group-arrow.collapsed{transform:rotate(-90deg)}.gis-group-tools{padding:6px;display:flex;flex-direction:column;gap:4px;background:#181828}.gis-group-tools.hidden{display:none}.gis-tool-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#242438;color:#d0d0f0;border:1px solid #2e2e48;border-radius:5px;cursor:pointer;font-size:12px;font-family:Segoe UI,Arial,sans-serif;text-align:left;transition:background .15s,border-color .15s,transform .1s;width:100%}.gis-tool-btn:hover{background:#2e2e50;border-color:#5555aa;transform:translateX(2px);color:#fff}.gis-tool-btn .gis-icon{font-size:14px;flex-shrink:0}#gisHostFooter{padding:8px 10px;border-top:1px solid #2e2e45;display:flex;flex-direction:column;gap:5px}#gisHostStatus{font-size:11px;color:#8888bb;min-height:14px;text-align:center}#gisCloseAllBtn{width:100%;padding:6px;background:#2a1a1a;color:#e57373;border:1px solid #5c2020;border-radius:5px;cursor:pointer;font-size:11px;font-family:Segoe UI,Arial,sans-serif;transition:background .15s}#gisCloseAllBtn:hover{background:#3d1f1f}';document.head.appendChild(se);const launcher=document.createElement('div');launcher.id='gisToolLauncher';const hdr=document.createElement('div');hdr.id='gisHostHeader';hdr.innerHTML='<span id="gisHostTitle">🔧 GIS Tools</span><button class="gis-header-btn" id="gisCollapseBtn" title="Collapse/Expand">▾</button><button class="gis-header-btn" id="gisCloseBtn" title="Close">✕</button>';const bdy=document.createElement('div');bdy.id='gisHostBody';G.forEach(g=>{const ge=document.createElement('div');ge.className='gis-group';const gh=document.createElement('div');gh.className='gis-group-header';gh.innerHTML='<span>'+g.label+'</span><span class="gis-group-arrow">▾</span>';const tl=document.createElement('div');tl.className='gis-group-tools';g.tools.forEach(t=>{const b=document.createElement('button');b.className='gis-tool-btn';b.innerHTML='<span class="gis-icon">'+t.icon+'</span><span>'+t.label+'</span>';b.addEventListener('click',()=>window.gisToolHost.loadTool(t.id));tl.appendChild(b);});gh.addEventListener('click',()=>{const a=gh.querySelector('.gis-group-arrow');tl.classList.toggle('hidden');a.classList.toggle('collapsed',tl.classList.contains('hidden'));});ge.appendChild(gh);ge.appendChild(tl);bdy.appendChild(ge);});const ftr=document.createElement('div');ftr.id='gisHostFooter';ftr.innerHTML='<div id="gisHostStatus"></div><button id="gisCloseAllBtn">⬛ Close All Tools</button>';launcher.appendChild(hdr);launcher.appendChild(bdy);launcher.appendChild(ftr);document.body.appendChild(launcher);let collapsed=false;document.getElementById('gisCollapseBtn').addEventListener('click',()=>{collapsed=!collapsed;bdy.style.display=collapsed?'none':'';ftr.style.display=collapsed?'none':'';document.getElementById('gisCollapseBtn').textContent=collapsed?'▸':'▾';hdr.style.borderBottom=collapsed?'none':'1px solid #3a3a55';hdr.style.borderRadius=collapsed?'10px':'10px 10px 0 0';});document.getElementById('gisCloseBtn').addEventListener('click',()=>{window.gisToolHost.closeAllTools();document.getElementById('gisHostStyles').remove();launcher.remove();});document.getElementById('gisCloseAllBtn').addEventListener('click',()=>{window.gisToolHost.closeAllTools();const s=document.getElementById('gisHostStatus');if(s){s.textContent='✅ All tools closed.';setTimeout(()=>{const el=document.getElementById('gisHostStatus');if(el)el.textContent='';},2500);}});(function(el,handle){let sx,sy,sl,stp,drag=false;handle.addEventListener('mousedown',e=>{if(e.target.closest('button'))return;drag=true;sx=e.clientX;sy=e.clientY;const r=el.getBoundingClientRect();sl=r.left;stp=r.top;e.preventDefault();});document.addEventListener('mousemove',e=>{if(!drag)return;el.style.left=Math.max(0,Math.min(window.innerWidth-el.offsetWidth,sl+e.clientX-sx))+'px';el.style.top=Math.max(0,Math.min(window.innerHeight-el.offsetHeight,stp+e.clientY-sy))+'px';el.style.right='auto';});document.addEventListener('mouseup',()=>drag=false);})(launcher,hdr);})()`;
+
 document.getElementById('bookmarkletLink').href = BOOKMARKLET;
 
-// ── Drag animation loop ───────────────────────────────────────────────────────
-const demo    = document.getElementById('dragDemo');
-const ghost   = document.getElementById('animGhost');
-const dropZ   = document.getElementById('dropZone');
-const anchor  = document.getElementById('bookmarkletLink');
+// Tabs
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+    if(btn.dataset.tab==='install') setTimeout(startAnim,300);
+  });
+});
 
-function runAnim() {
-  const aRect = anchor.getBoundingClientRect();
-  const dRect = demo.getBoundingClientRect();
-  const zRect = dropZ.getBoundingClientRect();
-
-  // Starting position (centered on anchor, relative to demo)
-  const startX = aRect.left - dRect.left + aRect.width / 2 - ghost.offsetWidth / 2;
-  const startY = aRect.top  - dRect.top  + aRect.height / 2 - ghost.offsetHeight / 2;
-
-  // End position (over drop zone)
-  const endX = zRect.left - dRect.left;
-  const endY = zRect.top  - dRect.top + zRect.height / 2 - ghost.offsetHeight / 2;
-
-  ghost.style.left    = startX + 'px';
-  ghost.style.top     = startY + 'px';
-  ghost.style.opacity = '0';
-  ghost.style.transition = 'none';
-
-  let t0 = null;
-  const FADE_IN  = 200;
-  const TRAVEL   = 700;
-  const HOLD     = 600;
-  const FADE_OUT = 200;
-  const PAUSE    = 1200;
-  const TOTAL    = FADE_IN + TRAVEL + HOLD + FADE_OUT + PAUSE;
-
-  function step(ts) {
-    if (!t0) t0 = ts;
-    const e = ts - t0;
-
-    if (e < FADE_IN) {
-      ghost.style.opacity   = (e / FADE_IN).toString();
-      ghost.style.left      = startX + 'px';
-      ghost.style.top       = startY + 'px';
-      ghost.style.transition = 'none';
-      dropZ.classList.remove('active');
-    } else if (e < FADE_IN + TRAVEL) {
-      const p = (e - FADE_IN) / TRAVEL;
-      const ease = 1 - Math.pow(1 - p, 3);
-      ghost.style.left    = (startX + (endX - startX) * ease) + 'px';
-      ghost.style.top     = (startY + (endY - startY) * ease) + 'px';
-      ghost.style.opacity = '1';
-    } else if (e < FADE_IN + TRAVEL + HOLD) {
-      ghost.style.left = endX + 'px';
-      ghost.style.top  = endY + 'px';
-      dropZ.classList.add('active');
-    } else if (e < FADE_IN + TRAVEL + HOLD + FADE_OUT) {
-      const p = (e - FADE_IN - TRAVEL - HOLD) / FADE_OUT;
-      ghost.style.opacity = (1 - p).toString();
-      dropZ.classList.remove('active');
-    } else {
-      ghost.style.opacity = '0';
-      dropZ.classList.remove('active');
-    }
-
-    if (e < TOTAL) {
-      requestAnimationFrame(step);
-    } else {
-      setTimeout(runAnim, 100);
-    }
-  }
-
-  requestAnimationFrame(step);
+// Tool accordions
+function toggle(hdr){
+  const body=hdr.nextElementSibling, arrow=hdr.querySelector('.tca');
+  const open=body.classList.contains('open');
+  body.classList.toggle('open',!open);
+  arrow.classList.toggle('open',!open);
 }
 
-// Small delay so layout settles before measuring
-setTimeout(runAnim, 500);
+// Drag animation
+const demo=document.getElementById('dragDemo'),ghost=document.getElementById('animGhost'),dropZ=document.getElementById('dropZone'),anchor=document.getElementById('bookmarkletLink');
+let animHandle=null;
 
-// ── Copy to clipboard ─────────────────────────────────────────────────────────
-const copyBtn   = document.getElementById('copyBtn');
-const copySteps = document.getElementById('copySteps');
+function startAnim(){
+  if(animHandle) return;
+  animHandle=requestAnimationFrame(()=>{animHandle=null;runAnim();});
+}
 
-copyBtn.addEventListener('click', () => {
-  navigator.clipboard.writeText(BOOKMARKLET).then(() => {
-    copyBtn.textContent = '✅ Copied!';
-    copyBtn.classList.add('copied');
-    copySteps.classList.add('visible');
-    setTimeout(() => {
-      copyBtn.innerHTML = '📋 Copy bookmarklet code to clipboard';
-      copyBtn.classList.remove('copied');
-    }, 2500);
-  }).catch(() => {
-    copyBtn.textContent = '❌ Copy failed – try a different browser';
-  });
+function runAnim(){
+  const aR=anchor.getBoundingClientRect(),dR=demo.getBoundingClientRect(),zR=dropZ.getBoundingClientRect();
+  if(!dR.width){setTimeout(runAnim,500);return;}
+  const sx=aR.left-dR.left+aR.width/2-ghost.offsetWidth/2, sy=aR.top-dR.top+aR.height/2-ghost.offsetHeight/2;
+  const ex=zR.left-dR.left, ey=zR.top-dR.top+zR.height/2-ghost.offsetHeight/2;
+  ghost.style.cssText=`left:${sx}px;top:${sy}px;opacity:0;transition:none`;
+  let t0=null;
+  const FI=200,TR=700,HO=600,FO=200,PA=1200,TOT=FI+TR+HO+FO+PA;
+  function step(ts){
+    if(!t0)t0=ts; const e=ts-t0;
+    if(e<FI){ghost.style.opacity=(e/FI).toString();ghost.style.left=sx+'px';ghost.style.top=sy+'px';dropZ.classList.remove('active');}
+    else if(e<FI+TR){const p=(e-FI)/TR,ease=1-Math.pow(1-p,3);ghost.style.left=(sx+(ex-sx)*ease)+'px';ghost.style.top=(sy+(ey-sy)*ease)+'px';ghost.style.opacity='1';}
+    else if(e<FI+TR+HO){ghost.style.left=ex+'px';ghost.style.top=ey+'px';dropZ.classList.add('active');}
+    else if(e<FI+TR+HO+FO){ghost.style.opacity=(1-(e-FI-TR-HO)/FO).toString();dropZ.classList.remove('active');}
+    else{ghost.style.opacity='0';dropZ.classList.remove('active');}
+    e<TOT?requestAnimationFrame(step):setTimeout(runAnim,100);
+  }
+  requestAnimationFrame(step);
+}
+setTimeout(runAnim,500);
+
+// Copy button
+const copyBtn=document.getElementById('copyBtn'),copySteps=document.getElementById('copySteps');
+copyBtn.addEventListener('click',()=>{
+  navigator.clipboard.writeText(BOOKMARKLET).then(()=>{
+    copyBtn.textContent='✅ Copied!';copyBtn.classList.add('copied');copySteps.classList.add('visible');
+    setTimeout(()=>{copyBtn.innerHTML='📋 Copy bookmarklet code to clipboard';copyBtn.classList.remove('copied');},2500);
+  }).catch(()=>copyBtn.textContent='❌ Copy failed – try a different browser');
 });
 </script>
 </body>
