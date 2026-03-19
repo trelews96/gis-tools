@@ -15,7 +15,7 @@ body{background:#0e0e1a;color:#e0e0f0;font-family:'Segoe UI',Arial,sans-serif;mi
 .tab-btn{background:#1a1a2e;border:1px solid #2e2e45;border-bottom:none;border-radius:8px 8px 0 0;padding:10px 22px;color:#6666aa;font-family:'Segoe UI',Arial,sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
 .tab-btn.active{background:#1e1e2e;border-color:#3a3a55;color:#c8c8ff}
 .tab-btn:hover:not(.active){background:#1e1e2e;color:#9999cc}
-.tab-pane{display:none;width:100%;max-width:880px;background:#1e1e2e;border:1px solid #3a3a55;border-radius:0 10px 10px 10px;padding:28px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.tab-pane{display:none;width:100%;max-width:880px;background:#1e1e2e;border:1px solid #3a3a55;border-radius:0 10px 10px 10px;padding:28px;box-shadow:0 8px 40px rgba(0,0,0,.5);overflow:hidden}
 .tab-pane.active{display:block}
 
 /* INSTALL */
@@ -86,6 +86,7 @@ kbd{background:#2a2a45;border:1px solid #4444aa;border-radius:4px;padding:1px 6p
 .tc-tip.info{background:#101a2a;border-color:#1e3a5a;color:#6699cc}
 .tc-ss{background:#0e0e1a;border:1.5px dashed #2e2e45;border-radius:8px;padding:24px;text-align:center;color:#3a3a55;font-size:12px;margin-top:4px}
 .tc-ss .sc-icon{font-size:28px;margin-bottom:6px;display:block}
+.tool-card-body img{width:100%;max-height:400px;object-fit:contain;object-position:top;border-radius:8px;border:1px solid #2e2e45;background:#0e0e1a;display:block}
 @media(max-width:600px){.info-grid{grid-template-columns:1fr}.tab-btn{padding:8px 12px;font-size:11px}.tab-pane{padding:18px}}
 </style>
 </head>
@@ -230,7 +231,7 @@ kbd{background:#2a2a45;border:1px solid #4444aa;border-radius:4px;padding:1px 6p
             <div class="tc-tip info">💡 Snapping is automatic — destinations will snap to the nearest point feature or line vertex within the configured tolerance.</div>
           </div>
         </div>
-        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><img src="images/gis-edit-tool-overview.png" style="width:100%;border-radius:8px;border:1px solid #2e2e45;" alt="GIS Edit Tools Overview"></div></div>
+        <div class="tc-sec"><div class="tc-sec-title">Screenshot</div><div class="tc-ss"><span class="sc-icon">📷</span>Screenshot coming soon</div></div>
       </div>
     </div>
 
