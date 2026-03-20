@@ -38,7 +38,7 @@
 
         let pointLayers   = [];
         let lineLayers    = [];
-        let polygonLayers = [];   // NEW: needed for click & copy
+        let polygonLayers = [];
 
         async function loadLayers() {
             pointLayers = []; lineLayers = []; polygonLayers = [];
@@ -146,12 +146,21 @@
                     <div id="h-activate" class="smt-hint">
                         Enable to start clicking on the map — cursor becomes a crosshair.
                         Disable at any time to restore normal map navigation.
-                        All active modes (move, cut, copy) are suspended when disabled.
                     </div>
                     <div class="smt-row">
                         <button id="enableTool"  style="background:#28a745;">▶ Enable Tool</button>
                         <button id="disableTool" style="background:#666;" disabled>⏹ Disable Tool</button>
                     </div>
+                    <div class="smt-sublabel">
+                        <span>Snapping</span>
+                        <button class="smt-info-btn" data-hint="h-snapping">▾ more</button>
+                    </div>
+                    <div id="h-snapping" class="smt-hint">
+                        When enabled, move destinations automatically snap to the nearest point
+                        feature or line vertex within tolerance. Disable if you need to place a
+                        feature at an exact click location without being pulled to nearby geometry.
+                    </div>
+                    <button id="snappingToggle" style="width:100%;background:#28a745;margin-bottom:4px;">⦿ Snapping: ON</button>
                     <div class="smt-sublabel">
                         <span>Cancel</span>
                         <button class="smt-info-btn" data-hint="h-cancel">▾ more</button>
@@ -174,7 +183,10 @@
                     </div>
                     <div id="h-lock" class="smt-hint">
                         Pin all edits to one specific feature — ideal when features overlap.
-                        <br><strong>Point lock:</strong> moves only that point; connected lines are unaffected.<br>
+                        Click <em>Pick Feature</em> then click any point or line on the map.
+                        If multiple features overlap a picker menu will appear — hover a row
+                        to highlight that feature on the map.<br><br>
+                        <strong>Point lock:</strong> moves only that point; connected lines are unaffected.<br>
                         <strong>Line lock:</strong> restricts vertex moves, add/delete, and vertex highlights to that line.
                     </div>
                     <div class="smt-row">
@@ -185,7 +197,7 @@
                 </div>
             </div>
 
-            <!-- ── Section 3: Feature Editing Modes ─────────────────── -->
+            <!-- ── Section 3: Move & Vertex Tools ───────────────────── -->
             <div class="smt-section" style="border:1px solid #b8e8c8;">
                 <div class="smt-section-header" style="background:#d0f0dc;color:#1a6e3a;">🖱 Move &amp; Vertex Tools</div>
                 <div class="smt-body" style="background:#f0fff4;">
@@ -196,7 +208,7 @@
                     <div id="h-move" class="smt-hint">
                         <strong>Point:</strong> Click a point → click destination. Connected line endpoints follow.<br>
                         <strong>Line:</strong> Click a vertex → click destination. Coincident shared vertices move together.<br>
-                        Destinations snap to the nearest point feature or line vertex automatically.
+                        Destinations snap to the nearest point feature or line vertex (when snapping is on).
                     </div>
                     <div class="smt-row">
                         <button id="pointMode" style="background:#3367d6;">📍 Point Mode</button>
@@ -240,8 +252,10 @@
                     </div>
                     <div id="h-cut" class="smt-hint">
                         Click a point feature that sits on or near a line. The tool searches within
-                        a <strong>15 ft</strong> buffer and shows a confirmation menu. Confirming
-                        splits each found line at the point into two new segments with recalculated lengths.<br><br>
+                        a <strong>15 ft</strong> buffer and shows a confirmation menu listing each
+                        detected line. Check/uncheck lines to control which get cut, and hover a row
+                        to highlight that line on the map. Confirming splits each selected line at
+                        the point into two new segments with recalculated lengths.<br><br>
                         <strong>Undo</strong> restores the last cut batch (only available while the tool is open).
                     </div>
                     <div class="smt-row">
@@ -266,11 +280,11 @@
                         <strong>Points</strong> are placed exactly at the click.<br>
                         <strong>Lines</strong> are offset so the first vertex aligns with the click.<br>
                         <strong>Polygons</strong> are offset so the centroid aligns with the click.<br><br>
-                        Placement snaps to nearby points and line vertices. Press <strong>ESC</strong>
-                        or click "Clear Template" to stop placing and pick a new template.
+                        Placement snaps to nearby points and line vertices (when snapping is on).
+                        Press <strong>ESC</strong> or click "Clear Template" to stop placing and pick a new template.
                     </div>
                     <div class="smt-row">
-                        <button id="copyModeBtn"         style="background:#2e7d32;">📋 Enable Copy Mode</button>
+                        <button id="copyModeBtn"          style="background:#2e7d32;">📋 Enable Copy Mode</button>
                         <button id="clearCopyTemplateBtn" style="background:#666;" disabled>✕ Clear Template</button>
                     </div>
                     <div id="copyTemplateInfo" style="display:none;padding:5px 7px;background:#e8ffe8;
@@ -362,16 +376,18 @@
         let selectedVertex = null, selectedCoincidentLines = [], waitingForDestination = false;
         let connectedFeatures = [], originalGeometries = new Map(), clickHandler = null;
         let isProcessingClick = false;
+        let snappingEnabled = true;          // NEW: global snap toggle
         let lockedFeature = null, pickingFeatureMode = false;
         let vertexHighlightActive = false, vertexHighlightLayer = null;
         let extentWatchHandle = null, highlightDebounceTimer = null;
         let pickerPopup = null;
+        let pickerHoverGraphic = null;       // NEW: hover highlight for lock picker
 
         // Cut state
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
         let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
-        let cutSelectedIndices = new Set();   // indices into cutLinesToCut currently checked
-        let cutGraphicMap = new Map();        // index → esri/Graphic for per-line highlight control
+        let cutSelectedIndices = new Set();
+        let cutGraphicMap = new Map();
         let undoStack = [];
         let cutGraphicsLayer = null;
 
@@ -396,6 +412,7 @@
         const lockedFeatureInfo     = $("#lockedFeatureInfo");
         const enableBtn             = $("#enableTool");
         const disableBtn            = $("#disableTool");
+        const snappingToggleBtn     = $("#snappingToggle");   // NEW
         const cancelBtn             = $("#cancelMove");
         const closeBtn              = $("#closeTool");
         const status                = $("#toolStatus");
@@ -404,7 +421,6 @@
         const cutModeInfo           = $("#cutModeInfo");
         const copyModeBtn           = $("#copyModeBtn");
         const clearCopyTemplateBtn  = $("#clearCopyTemplateBtn");
-        const copyLayerSelect       = null;   // removed — picker replaces dropdown
         const copyTemplateInfo      = $("#copyTemplateInfo");
         const copyTemplateDetails   = $("#copyTemplateDetails");
         const copyCountInfo         = $("#copyCountInfo");
@@ -495,6 +511,15 @@
             return {x: x/ring.length, y: y/ring.length};
         }
 
+        // Ensure a snap geometry is a proper typed point object so ArcGIS
+        // applyEdits can autocast it without silently rejecting it.
+        function toTypedPoint(g, fallbackSr) {
+            if (!g) return g;
+            if (g.type) return g;  // already a full ESRI geometry
+            return { type:'point', x:g.x, y:g.y,
+                     spatialReference: g.spatialReference || fallbackSr };
+        }
+
         // ── Cut geometry helpers ──────────────────────────────────────────────
 
         function findCutInfo(lineGeom, snapPt) {
@@ -559,7 +584,34 @@
             } catch(e) { console.error('highlightCutGeometry error:',e); }
         }
 
-        // ── Copy snap indicator (uses mapView.graphics directly) ──────────────
+        // ── Picker hover highlight (for Single Feature Editing picker) ─────────
+        // Uses mapView.graphics directly — no extra layer needed.
+
+        function showPickerHoverHighlight(geometry) {
+            clearPickerHoverHighlight();
+            if (!geometry) return;
+            const isLine = geometry.type === 'polyline';
+            const graphic = {
+                geometry,
+                symbol: isLine
+                    ? { type:'simple-line',  color:[0,120,255,0.9], width:4, style:'solid' }
+                    : { type:'simple-marker', style:'circle', color:[0,120,255,0.3], size:22,
+                        outline:{ color:[0,80,200,0.9], width:2.5 } }
+            };
+            mapView.graphics.add(graphic);
+            // Retrieve the autocast Graphic instance the collection actually stored —
+            // remove() requires this reference, not the original plain object.
+            pickerHoverGraphic = mapView.graphics.getItemAt(mapView.graphics.length - 1);
+        }
+
+        function clearPickerHoverHighlight() {
+            if (pickerHoverGraphic) {
+                mapView.graphics.remove(pickerHoverGraphic);
+                pickerHoverGraphic = null;
+            }
+        }
+
+        // ── Copy snap indicator ───────────────────────────────────────────────
 
         function showCopySnapIndicator(point) {
             hideCopySnapIndicator();
@@ -576,23 +628,21 @@
             if (copySnapGraphic) { mapView.graphics.remove(copySnapGraphic); copySnapGraphic = null; }
         }
 
-        // ── Copy: find snap point across all geometry types ───────────────────
+        // ── Copy: find snap point ─────────────────────────────────────────────
 
         async function findCopySnapPoint(screenPoint) {
+            if (!snappingEnabled) return null;
             try {
                 const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
                 const mp  = mapView.toMap(screenPoint);
                 let best = null, bestD = Infinity;
-
                 const hit = await mapView.hitTest(screenPoint, {
                     include: mapView.map.allLayers.filter(l => l.type === 'feature')
                 });
-
                 for (const r of hit.results) {
                     if (!r.graphic?.geometry) continue;
                     const geom = r.graphic.geometry;
                     const candidates = [];
-
                     if (geom.type === 'point') {
                         candidates.push({ x:geom.x, y:geom.y, spatialReference:geom.spatialReference });
                     } else if (geom.type === 'polyline') {
@@ -604,7 +654,6 @@
                             for (const v of ring)
                                 candidates.push({ x:v[0], y:v[1], spatialReference:geom.spatialReference });
                     }
-
                     for (const c of candidates) {
                         const d = calcDist(mp, c);
                         if (d < bestD && d < tol) { bestD = d; best = c; }
@@ -630,12 +679,9 @@
             return out;
         }
 
-        // populateCopyLayerDropdown removed — picker replaces dropdown
-
         // ── Copy: apply chosen template feature ───────────────────────────────
 
         async function applyCopyTemplate(feature, layer, cfg) {
-            // Fetch full attributes if needed
             let fullFeature = feature;
             try {
                 const oid = feature.attributes?.[layer.objectIdField];
@@ -672,16 +718,13 @@
             updateStatus(`📋 Template set (${cfg.name} · ${fullFeature.geometry?.type}). Click the map to place copies. ESC to clear.`);
         }
 
-        // ── Copy: select template via picker (replaces dropdown + selectCopyTemplate) ──
+        // ── Copy: select template via picker ─────────────────────────────────
 
         async function selectCopyTemplate(event) {
             const sp = {x: event.x, y: event.y};
             updateStatus('Identifying feature to copy…');
-
             const candidates = [], seenOids = new Set();
             const allCfgs = getAllFeatureLayers();
-
-            // hitTest across all feature layers
             if (mapView.hitTest) {
                 const hit = await mapView.hitTest(sp, {
                     include: mapView.map.allLayers.filter(l => l.type === 'feature')
@@ -696,8 +739,6 @@
                     candidates.push({ feature: r.graphic, layer: r.layer, layerConfig: cfg });
                 }
             }
-
-            // Spatial query fallback
             if (candidates.length === 0) {
                 const mp  = mapView.toMap(sp);
                 const ext = makeExt(mp.x, mp.y, POINT_SNAP_TOLERANCE * (mapView.resolution || 1), mapView.spatialReference);
@@ -718,23 +759,19 @@
                     } catch(e) { console.error(`selectCopyTemplate fallback error on ${cfg.name}:`, e); }
                 }
             }
-
             if (candidates.length === 0) {
-                updateStatus('❌ No feature found at this location. Click directly on a feature to copy.');
-                return;
+                updateStatus('❌ No feature found at this location. Click directly on a feature to copy.'); return;
             }
-
             if (candidates.length === 1) {
                 await applyCopyTemplate(candidates[0].feature, candidates[0].layer, candidates[0].layerConfig);
             } else {
-                // Reuse the feature picker popup — row onclick calls applyCopyTemplate
                 const rect = mapView.container.getBoundingClientRect();
                 showCopyPickerPopup(candidates, rect.left + sp.x, rect.top + sp.y);
                 updateStatus(`🗂 ${candidates.length} overlapping features. Choose one to use as template.`);
             }
         }
 
-        // ── Copy picker popup (separate from lock picker to avoid state collision) ──
+        // ── Copy picker popup ─────────────────────────────────────────────────
 
         let copyPickerPopup = null;
 
@@ -801,12 +838,10 @@
 
         async function placeCopyFeature(event) {
             if (!copyTemplateFeature || !copyPlacementMode || !copyTemplateLayer) return;
-
             const snapPt = await findCopySnapPoint({x:event.x,y:event.y});
             const dst    = snapPt || mapView.toMap({x:event.x,y:event.y});
             const tmpl   = copyTemplateFeature.geometry;
             let newGeom;
-
             if (tmpl.type === 'point') {
                 newGeom = { type:'point', x:dst.x, y:dst.y, spatialReference: tmpl.spatialReference || mapView.spatialReference };
             } else if (tmpl.type === 'polyline') {
@@ -820,10 +855,7 @@
             } else {
                 updateStatus(`❌ Unsupported geometry type: ${tmpl.type}`); return;
             }
-
             const attrs = copyAttributesForNewFeature(copyTemplateFeature, copyTemplateLayer);
-
-            // Apply layer template defaults if available
             try {
                 const tpl = copyTemplateLayer.templates?.[0];
                 if (tpl?.prototype?.attributes) {
@@ -831,7 +863,6 @@
                         if (!(k in attrs) && v != null) attrs[k] = v;
                 }
             } catch {}
-
             updateStatus('Creating copy…');
             try {
                 const res = await copyTemplateLayer.applyEdits({ addFeatures:[{ geometry:newGeom, attributes:attrs }] });
@@ -841,8 +872,7 @@
                     if (copyCountInfo) copyCountInfo.textContent = `✅ ${copiedCount} cop${copiedCount===1?'y':'ies'} created`;
                     updateStatus(`📋 Copy ${copiedCount} placed${snapPt?' (snapped)':''}. Click for more or ESC to clear.`);
                 } else {
-                    const msg = r?.error?.message || 'Unknown error';
-                    updateStatus(`❌ Copy failed: ${msg}`);
+                    updateStatus(`❌ Copy failed: ${r?.error?.message || 'Unknown error'}`);
                     console.error('placeCopyFeature applyEdits error:', r);
                 }
             } catch(e) { console.error('placeCopyFeature error:',e); updateStatus('❌ Error placing copy.'); }
@@ -859,7 +889,7 @@
             if (copyCountInfo)    copyCountInfo.textContent = '';
             if (clearCopyTemplateBtn) clearCopyTemplateBtn.disabled = true;
             mapView.container.style.cursor = 'crosshair';
-            if (copyMode) updateStatus('📋 Copy mode active. Click any feature on the target layer as a template.');
+            if (copyMode) updateStatus('📋 Copy mode active. Click any feature on the map as a template.');
         }
 
         // ── Copy: mode toggle ─────────────────────────────────────────────────
@@ -868,12 +898,10 @@
             copyMode = true;
             copyModeBtn.style.background = '#1a4d1a';
             copyModeBtn.textContent = '📋 Disable Copy Mode';
-            // Dim move/vertex buttons
             [pointModeBtn,lineModeBtn,addVertexBtn,deleteVertexBtn].forEach(b => { if(b) b.style.opacity='0.45'; });
-            // ESC key to clear template
             copyKeyHandler = e => { if (e.key === 'Escape' && copyPlacementMode) clearCopyTemplate(); };
             document.addEventListener('keydown', copyKeyHandler);
-            updateStatus('📋 Copy mode active. Click any feature on the target layer as a template.');
+            updateStatus('📋 Copy mode active. Click any feature on the map as a template.');
         }
 
         function disableCopyMode() {
@@ -884,8 +912,6 @@
             if (copyKeyHandler) { document.removeEventListener('keydown', copyKeyHandler); copyKeyHandler = null; }
             updateStatus(toolActive ? `Ready. Click a ${currentMode==='point'?'point feature':'line vertex'}.` : 'Tool disabled.');
         }
-
-        // ── Copy click handler ────────────────────────────────────────────────
 
         async function handleCopyClick(event) {
             if (!copyPlacementMode) await selectCopyTemplate(event);
@@ -933,10 +959,8 @@
                 resetCutSelection(); return;
             }
             cutPreviewMode = true;
-            // All lines selected by default
             cutSelectedIndices = new Set(cutLinesToCut.map((_, i) => i));
 
-            // Load Graphic class so we can control each highlight independently
             let GraphicClass = null;
             try {
                 GraphicClass = await new Promise((res, rej) => {
@@ -952,7 +976,6 @@
             const selSym = { type:'simple-line', color:[220,53,69,0.95], width:3, style:'dash'  };
             const hovSym = { type:'simple-line', color:[255,140,0,1],    width:4, style:'solid' };
 
-            // Create one graphic per line and store it for individual toggle/hover control
             for (let i = 0; i < cutLinesToCut.length; i++) {
                 if (GraphicClass && cutGraphicsLayer) {
                     const g = new GraphicClass({ geometry: cutLinesToCut[i].feature.geometry, symbol: selSym });
@@ -963,7 +986,6 @@
                 }
             }
 
-            // Build selectable rows
             const listEl = cutCtxMenu.querySelector('#cutCtxList');
             listEl.innerHTML = '';
 
@@ -987,23 +1009,19 @@
                 const dot = document.createElement('span');
                 dot.textContent = '●'; dot.style.cssText = 'color:#dc3545;font-size:14px;flex-shrink:0;margin-top:1px;';
 
-                // Checkbox: toggle graphic on map + track in cutSelectedIndices
                 cb.addEventListener('change', () => {
                     const idx = parseInt(cb.dataset.idx);
                     const g   = cutGraphicMap.get(idx);
                     if (cb.checked) {
-                        cutSelectedIndices.add(idx);
-                        dot.style.color = '#dc3545';
+                        cutSelectedIndices.add(idx); dot.style.color = '#dc3545';
                         if (g && cutGraphicsLayer) cutGraphicsLayer.add(g);
                     } else {
-                        cutSelectedIndices.delete(idx);
-                        dot.style.color = '#bbb';
+                        cutSelectedIndices.delete(idx); dot.style.color = '#bbb';
                         if (g && cutGraphicsLayer) cutGraphicsLayer.remove(g);
                     }
                     updateCutExecuteBtn();
                 });
 
-                // Hover: swap the graphic's symbol so the user sees which line they're on
                 row.addEventListener('mouseenter', () => {
                     const g = cutGraphicMap.get(i);
                     if (g && cutSelectedIndices.has(i)) g.symbol = hovSym;
@@ -1019,7 +1037,6 @@
                 listEl.appendChild(row);
             }
 
-            // Select-All / None toggle
             const selectAllBtn = cutCtxMenu.querySelector('#cutCtxSelectAll');
             if (selectAllBtn) {
                 selectAllBtn.onclick = () => {
@@ -1031,12 +1048,10 @@
                         const was = cutSelectedIndices.has(i);
                         cb.checked = !allOn;
                         if (!allOn && !was) {
-                            cutSelectedIndices.add(i);
-                            if (dot) dot.style.color = '#dc3545';
+                            cutSelectedIndices.add(i); if (dot) dot.style.color = '#dc3545';
                             if (g && cutGraphicsLayer) cutGraphicsLayer.add(g);
                         } else if (allOn && was) {
-                            cutSelectedIndices.delete(i);
-                            if (dot) dot.style.color = '#bbb';
+                            cutSelectedIndices.delete(i); if (dot) dot.style.color = '#bbb';
                             if (g && cutGraphicsLayer) cutGraphicsLayer.remove(g);
                         }
                     });
@@ -1060,7 +1075,6 @@
         }
 
         async function executeCut() {
-            // Only operate on the lines the user has checked
             const selectedLines = cutLinesToCut.filter((_, i) => cutSelectedIndices.has(i));
             if (!selectedLines.length || cutProcessing) return;
             cutProcessing = true;
@@ -1151,6 +1165,7 @@
         function resetCutSelection() {
             cutSelectedPoint=null; cutSelectedPointLayer=null;
             cutLinesToCut=[]; cutPreviewMode=false;
+            cutSelectedIndices.clear(); cutGraphicMap.clear();
             clearCutHighlights(); hideCutContextMenu();
             if (cutMode) updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');
         }
@@ -1170,9 +1185,12 @@
             updateStatus(toolActive?`Ready. Click a ${currentMode==='point'?'point feature':'line vertex'}.`:'Tool disabled.');
         }
 
-        // ── Feature picker popup ──────────────────────────────────────────────
+        // ── Feature picker popup (Single Feature Editing) ─────────────────────
 
-        function dismissPickerPopup() { if (pickerPopup){pickerPopup.remove();pickerPopup=null;} }
+        function dismissPickerPopup() {
+            if (pickerPopup) { pickerPopup.remove(); pickerPopup = null; }
+            clearPickerHoverHighlight();   // always clean up hover highlight on close
+        }
 
         function showFeaturePickerPopup(candidates, pageX, pageY) {
             dismissPickerPopup();
@@ -1198,7 +1216,9 @@
             candidates.forEach(c => {
                 const row=document.createElement("div");
                 row.style.cssText="padding:6px 10px;cursor:pointer;border-bottom:1px solid #f0f0f0;display:flex;flex-direction:column;gap:2px;";
-                row.onmouseenter=()=>row.style.background="#f0f4ff"; row.onmouseleave=()=>row.style.background="";
+                // Hover: highlight the feature on the map so the user knows which one they're looking at
+                row.onmouseenter=()=>{ row.style.background="#f0f4ff"; showPickerHoverHighlight(c.feature.geometry); };
+                row.onmouseleave=()=>{ row.style.background=""; clearPickerHoverHighlight(); };
                 const oid=getOid(c.feature)??"?", typeIcon=c.featureType==='point'?'📍':'〰️';
                 const title=document.createElement("div"); title.style.cssText="font-weight:bold;color:#2a2a2a;font-size:11px;";
                 title.textContent=`${typeIcon} ${c.layerConfig.name}`;
@@ -1431,8 +1451,10 @@
             try {
                 if (currentMode==="point") {
                     const excludeOids=new Set([getOid(selectedFeature)].filter(Boolean));
-                    const snapInfo=await findSnapTarget(dst,excludeOids);
-                    if (snapInfo) dst=snapInfo.geometry;
+                    // ── FIX: gate snap on toggle; ensure geometry is typed so applyEdits doesn't silently fail ──
+                    const snapInfo = snappingEnabled ? await findSnapTarget(dst, excludeOids) : null;
+                    if (snapInfo) dst = toTypedPoint(snapInfo.geometry, mapView.spatialReference);
+
                     const isLockedPoint=lockedFeature?.featureType==='point';
                     if (!isLockedPoint) await updateConnectedLines(dst);
                     const upd=selectedFeature.clone(); upd.geometry=dst;
@@ -1443,7 +1465,7 @@
                     updateStatus(msg);
                 } else {
                     const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));
-                    const snapInfo=await findSnapTarget(dst,excludeOids);
+                    const snapInfo = snappingEnabled ? await findSnapTarget(dst, excludeOids) : null;
                     if (snapInfo) dst=snapInfo.geometry;
                     const updates=[];
                     for(const li of selectedCoincidentLines){try{const newPaths=clonePaths(li.feature.geometry);const path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths);const upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name});}catch(e){console.error("handleMoveToDestination line prep error:",e);}}
@@ -1470,13 +1492,13 @@
             isProcessingClick = true;
             event.stopPropagation();
             try {
-                if      (cutMode)            await handleCutClick(event);
-                else if (copyMode)           await handleCopyClick(event);
-                else if (pickingFeatureMode) await pickFeature(event);
-                else if (vertexMode==="add") await addVertexToLine(event);
+                if      (cutMode)               await handleCutClick(event);
+                else if (copyMode)              await handleCopyClick(event);
+                else if (pickingFeatureMode)    await pickFeature(event);
+                else if (vertexMode==="add")    await addVertexToLine(event);
                 else if (vertexMode==="delete") await deleteVertexFromLine(event);
-                else if (!selectedFeature)   await handleFeatureSelection(event);
-                else                         await handleMoveToDestination(event);
+                else if (!selectedFeature)      await handleFeatureSelection(event);
+                else                            await handleMoveToDestination(event);
             } finally {
                 isProcessingClick = false;
             }
@@ -1559,6 +1581,13 @@
         if(cutUndoBtn)            cutUndoBtn.onclick            = undoLastCut;
         if(copyModeBtn)           copyModeBtn.onclick           = ()=>copyMode?disableCopyMode():enableCopyMode();
         if(clearCopyTemplateBtn)  clearCopyTemplateBtn.onclick  = clearCopyTemplate;
+
+        // NEW: snapping toggle
+        if(snappingToggleBtn) snappingToggleBtn.onclick = () => {
+            snappingEnabled = !snappingEnabled;
+            snappingToggleBtn.style.background = snappingEnabled ? '#28a745' : '#888';
+            snappingToggleBtn.textContent = snappingEnabled ? '⦿ Snapping: ON' : '⦾ Snapping: OFF';
+        };
 
         cutCtxMenu.querySelector('#cutCtxExecute').onclick = executeCut;
         cutCtxMenu.querySelector('#cutCtxCancel').onclick  = resetCutSelection;
