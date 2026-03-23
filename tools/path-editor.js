@@ -282,15 +282,19 @@
             const msRow=$('#multiSelectRow');
             if(msRow)msRow.style.display=selectionMode==='single'?'flex':'none';
         }
+        // Fix 2: flush sketchLayer graphics on every mode switch so the polygon
+        // can't be clicked and re-entered into the SketchViewModel's editor
         toolBox.querySelectorAll('.modeCard').forEach(card=>{
             card.addEventListener('click',()=>{
                 card.querySelector('input').checked=true;selectionMode=card.dataset.mode;updateModeCards();
+                if(sketchViewModel){try{sketchViewModel.cancel();}catch(e){}}
+                if(sketchLayer){try{sketchLayer.removeAll();}catch(e){sketchLayer.graphics&&sketchLayer.graphics.removeAll();}}
                 if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
                 selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
                 if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
-                if(sketchViewModel){try{sketchViewModel.cancel();}catch(e){}}
                 selectedFeaturesByLayer.clear();$('#selectionResults').innerHTML='';
                 $('#configureLayersBtn').style.display='none';$('#clearSelectionBtn').disabled=true;
+                clearSelectionHighlights();
                 startSelection();
             });
         });
@@ -317,7 +321,10 @@
                     const sp=mapView.toScreen(event.mapPoint);
                     const p1=mapView.toMap({x:sp.x,y:sp.y}),p2=mapView.toMap({x:sp.x+10,y:sp.y});
                     if(!window.geometryEngine)await new Promise(r=>window.require(['esri/geometry/geometryEngine'],ge=>{window.geometryEngine=ge;r();}));
-                    const bufDist=window.geometryEngine.distance(p1,p2,'meters');
+                    // Fix 3: cap the buffer at 150m so zoomed-out clicks can't
+                    // sweep in thousands of features and hit the 2000-record limit
+                    const rawDist=window.geometryEngine.distance(p1,p2,'meters');
+                    const bufDist=Math.min(rawDist,150);
                     const bufGeom=window.geometryEngine.buffer(event.mapPoint,bufDist,'meters');
 
                     // Add click marker
@@ -530,11 +537,12 @@
 
         // ── Layer Configuration ───────────────────────────────────────────────
         async function showLayerConfiguration(){
-            // Stop multi-select clicking when user moves to configuration
             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
             accumulateMode=false;
             const msChk=$('#multiSelectChk');if(msChk)msChk.checked=false;
-            // Clear all selection highlights — layers will re-highlight individually as they are enabled
+            // Fix 1: remove all click marker dots when advancing to configuration
+            selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
+            if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
             clearSelectionHighlights();
             const c=$('#layerConfigContainer');c.innerHTML='';let order=1;
             for(const[,data]of selectedFeaturesByLayer)c.appendChild(await createLayerConfigSection(data.layer,data.features,order++));
@@ -816,7 +824,20 @@
             layerConfigs.sort((a,b)=>a.order-b.order);
             applyFiltersToConfigs().then(()=>{if($('#skipSummaryChk')?.checked)startEditing();else displaySummary();});
         }
-        async function applyFiltersToConfigs(){for(const c of layerConfigs){if(!c.filterEnabled||!c.filterWhere){c.filterApplied=false;continue;}try{const qp={where:c.filterWhere,returnGeometry:true,outFields:['*']};if(selectionGraphic?.geometry){qp.geometry=selectionGraphic.geometry;qp.spatialRelationship='intersects';}const res=await c.layer.queryFeatures(qp);c.features=res.features;c.filterApplied=true;}catch(err){c.filterError=err.message;c.filterApplied=false;}}}
+        async function applyFiltersToConfigs(){
+            for(const c of layerConfigs){
+                if(!c.filterEnabled||!c.filterWhere){c.filterApplied=false;continue;}
+                try{
+                    // Constrain to the OIDs already selected so the filter narrows
+                    // the selection rather than querying the whole service
+                    const oidField=c.layer.objectIdField||'OBJECTID';
+                    const objectIds=c.features.map(f=>f.attributes[oidField]).filter(id=>id!=null);
+                    const qp={where:c.filterWhere,objectIds,returnGeometry:true,outFields:['*']};
+                    const res=await c.layer.queryFeatures(qp);
+                    c.features=res.features;c.filterApplied=true;
+                }catch(err){c.filterError=err.message;c.filterApplied=false;}
+            }
+        }
         function displaySummary(){
             if(!layerConfigs.length){$('#summaryContent').innerHTML='<span style="color:#f38ba8;">No layers selected.</span>';$('#startEditingBtn').disabled=true;}
             else{$('#startEditingBtn').disabled=false;let total=0,html='';layerConfigs.forEach((c,i)=>{total+=c.features.length;html+=`<div style="padding:6px 0;border-bottom:1px solid #313244;"><div style="font-weight:700;font-size:12px;">${i+1}. ${c.mode==='edit'?'✏️':'👁'} ${c.layer.title}</div><div style="font-size:11px;color:#a6adc8;">${c.features.length} features${c.filterApplied?'<span style="color:#89b4fa;"> · filtered</span>':''}</div>${c.fields.length?`<div style="font-size:10px;color:#6c7086;margin-top:2px;">Fields: ${c.fields.map(f=>f.alias||f.name).join(', ')}</div>`:''}</div>`;});$('#summaryContent').innerHTML=`<div style="font-size:13px;font-weight:700;color:#a6e3a1;margin-bottom:8px;">${total} features total</div>`+html;}
