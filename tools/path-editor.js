@@ -457,33 +457,48 @@
             $('#configureLayersBtn').style.display='none';updateStatus('Selection cleared.');
         }
 
-        let selectionHighlightGraphics = [];
+        // keyed by lid → Graphic[] so individual layers can be updated independently
+        let selectionHighlightGraphics = new Map();
 
-        function highlightSelectionFeatures(){
-            clearSelectionHighlights();
-            if(!selectedFeaturesByLayer.size) return;
+        function highlightLayerFeatures(lid, features){
+            clearLayerHighlights(lid);
+            if(!features.length) return;
             window.require(['esri/Graphic'], Graphic => {
-                selectedFeaturesByLayer.forEach(d => {
-                    d.features.forEach(feature => {
-                        if(!feature.geometry) return;
-                        let symbol;
-                        if(feature.geometry.type==='point')
-                            symbol={type:'simple-marker',color:[89,185,250,.7],size:14,outline:{color:[255,255,255,1],width:1.5}};
-                        else if(feature.geometry.type==='polyline')
-                            symbol={type:'simple-line',color:[89,185,250,.85],width:5};
-                        else
-                            symbol={type:'simple-fill',color:[89,185,250,.25],outline:{color:[89,185,250,1],width:2}};
-                        const g = new Graphic({geometry:feature.geometry, symbol});
-                        mapView.graphics.add(g);
-                        selectionHighlightGraphics.push(g);
-                    });
+                const graphics = [];
+                features.forEach(feature => {
+                    if(!feature.geometry) return;
+                    let symbol;
+                    if(feature.geometry.type==='point')
+                        symbol={type:'simple-marker',color:[89,185,250,.7],size:14,outline:{color:[255,255,255,1],width:1.5}};
+                    else if(feature.geometry.type==='polyline')
+                        symbol={type:'simple-line',color:[89,185,250,.85],width:5};
+                    else
+                        symbol={type:'simple-fill',color:[89,185,250,.25],outline:{color:[89,185,250,1],width:2}};
+                    const g = new Graphic({geometry:feature.geometry, symbol});
+                    mapView.graphics.add(g);
+                    graphics.push(g);
                 });
+                selectionHighlightGraphics.set(lid, graphics);
             });
         }
 
+        function clearLayerHighlights(lid){
+            const graphics = selectionHighlightGraphics.get(lid) || [];
+            graphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});
+            selectionHighlightGraphics.delete(lid);
+        }
+
+        // Highlights every layer in the current selection (used after selection completes)
+        function highlightSelectionFeatures(){
+            clearSelectionHighlights();
+            selectedFeaturesByLayer.forEach((d, lid) => highlightLayerFeatures(lid, d.features));
+        }
+
         function clearSelectionHighlights(){
-            selectionHighlightGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});
-            selectionHighlightGraphics=[];
+            selectionHighlightGraphics.forEach(graphics => {
+                graphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});
+            });
+            selectionHighlightGraphics.clear();
         }
         function highlightBulkFeatures(features){
             clearBulkHighlights();
@@ -519,6 +534,8 @@
             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
             accumulateMode=false;
             const msChk=$('#multiSelectChk');if(msChk)msChk.checked=false;
+            // Clear all selection highlights — layers will re-highlight individually as they are enabled
+            clearSelectionHighlights();
             const c=$('#layerConfigContainer');c.innerHTML='';let order=1;
             for(const[,data]of selectedFeaturesByLayer)c.appendChild(await createLayerConfigSection(data.layer,data.features,order++));
             setPhase('configuration');updateStatus('Configure layers and fields, then click Review & Start.');
@@ -741,10 +758,13 @@
                     if(!d?.features.length){testResult.textContent='No features in current selection.';testResult.style.color='#f9e2af';return;}
                     const oidField=layer.objectIdField||'OBJECTID';
                     const objectIds=d.features.map(f=>f.attributes[oidField]).filter(id=>id!=null);
-                    const res=await layer.queryFeatures({where,objectIds,returnCountOnly:true,returnGeometry:false});
-                    const pct=Math.round((res.count/d.features.length)*100);
-                    testResult.textContent=`✓ ${res.count} of ${d.features.length} selected features match (${pct}%)`;
-                    testResult.style.color=res.count===0?'#f9e2af':'#a6e3a1';
+                    // Fetch matching features with geometry so we can highlight them
+                    const res=await layer.queryFeatures({where,objectIds,returnGeometry:true,outFields:['*']});
+                    const pct=Math.round((res.features.length/d.features.length)*100);
+                    testResult.textContent=`✓ ${res.features.length} of ${d.features.length} selected features match (${pct}%)`;
+                    testResult.style.color=res.features.length===0?'#f9e2af':'#a6e3a1';
+                    // Update this layer's map highlights to show only matching features
+                    if(ti.checked) highlightLayerFeatures(lid, res.features);
                 }catch(err){testResult.textContent='✗ '+err.message;testResult.style.color='#f38ba8';}
             };
             actRow.appendChild(addBtn);actRow.appendChild(testBtn);
@@ -767,8 +787,15 @@
             body.appendChild(modeRow);body.appendChild(fieldsSection);body.appendChild(optDiv);body.appendChild(filterDiv);body.appendChild(orderDiv);
             modeRow.querySelectorAll('input[type=radio]').forEach(r=>{r.onchange=()=>{fieldsSection.style.display=r.value==='edit'?'block':'none';};});
             header.addEventListener('click',e=>{if(e.target.closest('label.toggle-wrap'))return;const open=body.style.display==='block';body.style.display=open?'none':'block';chevron.textContent=open?'▼':'▲';});
-            ti.onchange=()=>{card.classList.toggle('enabled',ti.checked);if(ti.checked){body.style.display='block';chevron.textContent='▲';}};
-            card.appendChild(header);card.appendChild(body);
+            ti.onchange=()=>{
+                card.classList.toggle('enabled',ti.checked);
+                if(ti.checked){
+                    body.style.display='block';chevron.textContent='▲';
+                    highlightLayerFeatures(lid, features);
+                } else {
+                    clearLayerHighlights(lid);
+                }
+            };            card.appendChild(header);card.appendChild(body);
             return card;
         }
 
