@@ -59,7 +59,18 @@
             return '📎';
         }
 
-        // ── Toolbox HTML ──────────────────────────────────────────────────────
+        // ── Auto-calculation rules ────────────────────────────────────────────
+        // Each rule fires when all watchFields have values and writes the result
+        // to targetField. layerMatch is a case-insensitive substring of the layer title.
+        // Add more rules here as needed.
+        const AUTO_CALC_RULES = [
+            {
+                layerMatch: 'fiber cable',
+                watchFields: ['sequential_in', 'sequential_out'],
+                targetField: 'sequential_qty',
+                compute: (vals) => Math.abs(vals['sequential_in'] - vals['sequential_out'])
+            }
+        ];
         const toolBox = document.createElement('div');
         toolBox.id = 'pathEditorToolbox';
         toolBox.style.cssText = `
@@ -809,7 +820,72 @@
 
         function getFieldTypeLabel(field){if(field.domain?.type==='coded-value')return 'Dropdown';return{integer:'Int','small-integer':'Int',double:'Decimal',single:'Decimal',date:'Date',string:'Text'}[field.type]||field.type;}
 
-        // ── Summary ───────────────────────────────────────────────────────────
+        // ── Auto-calc watchers ────────────────────────────────────────────────
+        function applyAutoCalcWatchers(item){
+            const fc = $('#editFormContainer');
+            const layerTitle = (item.layer.title || '').toLowerCase();
+
+            AUTO_CALC_RULES.forEach(rule => {
+                if(!layerTitle.includes(rule.layerMatch.toLowerCase())) return;
+
+                // Ensure all watch fields have inputs in the form.
+                // Skip this rule if any watch field is missing.
+                const watchEls = rule.watchFields.map(fn =>
+                    fc.querySelector(`[data-field-name="${fn}"]`)
+                );
+                if(watchEls.some(el => !el)) return;
+
+                // Ensure the target field has an input — inject a hidden one if absent.
+                let targetEl = fc.querySelector(`[data-field-name="${rule.targetField}"]`);
+                if(!targetEl){
+                    const hidden = document.createElement('input');
+                    hidden.type = 'hidden';
+                    hidden.dataset.fieldName = rule.targetField;
+                    hidden.dataset.fieldType = 'integer'; // sequential_qty is a count
+                    hidden.dataset.autoCalc   = 'true';
+                    fc.appendChild(hidden);
+                    targetEl = hidden;
+                }
+
+                // Visible indicator shown below the second watch field
+                const secondWatchEl = watchEls[watchEls.length - 1];
+                const parentDiv = secondWatchEl.closest('div[style*="margin-bottom"]') || secondWatchEl.parentElement;
+                let indicator = fc.querySelector(`[data-autocalc-indicator="${rule.targetField}"]`);
+                if(!indicator){
+                    indicator = document.createElement('div');
+                    indicator.dataset.autocalcIndicator = rule.targetField;
+                    indicator.style.cssText = 'font-size:10px;color:#a6e3a1;margin-top:3px;display:none;';
+                    parentDiv.appendChild(indicator);
+                }
+
+                function recalculate(){
+                    const vals = {};
+                    watchEls.forEach((el, i) => {
+                        const raw = el.dataset.selectedCode !== undefined
+                            ? el.dataset.selectedCode : el.value;
+                        vals[rule.watchFields[i]] = raw !== '' ? Number(raw) : NaN;
+                    });
+                    const allReady = rule.watchFields.every(fn => !isNaN(vals[fn]));
+                    if(allReady){
+                        const result = rule.compute(vals);
+                        targetEl.value = result;
+                        indicator.textContent = `↳ ${rule.targetField} will be set to ${result}`;
+                        indicator.style.display = 'block';
+                    } else {
+                        targetEl.value = '';
+                        indicator.style.display = 'none';
+                    }
+                }
+
+                watchEls.forEach(el => {
+                    el.addEventListener('input',  recalculate);
+                    el.addEventListener('change', recalculate);
+                });
+
+                // Run once on form load in case values are pre-populated
+                recalculate();
+            });
+        }
         function buildSummary(){
             layerConfigs=[];
             $('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{
@@ -861,7 +937,10 @@
             const oidField=getObjectIdField(item.feature),oid=item.feature.attributes[oidField];
             $('#featureInfo').innerHTML=`<strong>OID:</strong> ${oid} &nbsp;|&nbsp; <strong>Mode:</strong> ${item.mode==='edit'?'Editing':'View Only'}`;
             const fc=$('#editFormContainer');fc.innerHTML='';
-            if(item.mode==='edit'&&item.fields.length>0)item.fields.forEach(f=>fc.appendChild(createFieldInput(f,item.feature.attributes[f.name])));
+            if(item.mode==='edit'&&item.fields.length>0){
+                item.fields.forEach(f=>fc.appendChild(createFieldInput(f,item.feature.attributes[f.name])));
+                applyAutoCalcWatchers(item);
+            }
             else fc.innerHTML='<div style="color:#6c7086;font-style:italic;font-size:12px;">View only — no fields to edit.</div>';
             $('#prevBtn').disabled=currentIndex===0;$('#skipBtn').style.display=item.allowSkip?'block':'none';
             $('#applyPrevRow').style.display=(lastSubmittedValues&&item.mode==='edit'&&item.fields.length>0)?'block':'none';
