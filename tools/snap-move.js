@@ -149,10 +149,10 @@
                         <button id="lineMode"  style="background:#666;">〰️ Line [Q]</button>
                     </div>
                     <div class="smt-sublabel"><span>Vertex Tools <span style="font-weight:normal;color:#888;">(Line Mode only)</span></span><button class="smt-info-btn" data-hint="h-vertex">▾ more</button></div>
-                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [Space]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [Shift]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
+                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [3]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [4]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
                     <div class="smt-row">
-                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [Space]</button>
-                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [Shift]</button>
+                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [3]</button>
+                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [4]</button>
                     </div>
                     <div class="smt-sublabel"><span>Snap to Point</span><button class="smt-info-btn" data-hint="h-snap">▾ more</button></div>
                     <div id="h-snap" class="smt-hint" style="display:none;">
