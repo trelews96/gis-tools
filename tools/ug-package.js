@@ -14,6 +14,7 @@ async function main(){
   let conduits=[{id:uid()}],fibers=[{id:uid()}];
   let spanOverride={},fiberOverride={};   // ← new per-layer optional fields
   let fiberSplit=true,currentTmplName=null;
+  let createConduit=true,createFiber=true;
   let pts=[],active=false,waypointMode=false;
   let clickH=null,keyH=null,moveH=null,pickH=null,gl=null;
   let pickMode=false,pickOpts={vault:true,conduit:true,fiber:true};
@@ -400,7 +401,7 @@ async function main(){
   }
   function collectAllState(){
     saveCurrentStepState();
-    return{cfg,vCfg,conduits,fibers,fiberSplit,spanOverride,fiberOverride};
+    return{cfg,vCfg,conduits,fibers,fiberSplit,spanOverride,fiberOverride,createConduit,createFiber};
   }
   function doSaveTemplate(name){const state=collectAllState();Tmpl.save(name,state);currentTmplName=name;render();setStatus(`Template "${name}" saved.`,'success');}
   function applyTemplate(name){
@@ -408,6 +409,8 @@ async function main(){
     cfg=t.data.cfg||{};vCfg=t.data.vCfg||{};
     conduits=t.data.conduits||[{id:uid()}];fibers=t.data.fibers||[{id:uid()}];
     fiberSplit=t.data.fiberSplit!==undefined?t.data.fiberSplit:true;
+    createConduit=t.data.createConduit!==undefined?t.data.createConduit:true;
+    createFiber=t.data.createFiber!==undefined?t.data.createFiber:true;
     spanOverride=t.data.spanOverride||{};fiberOverride=t.data.fiberOverride||{};
     currentTmplName=name;render();setStatus(`Template "${name}" loaded.`,'success');
   }
@@ -564,9 +567,12 @@ async function main(){
 
       <div class="sec"><div class="sec-hdr">
         <span>🔵 Conduit Stack <span class="badge bp" style="margin-left:5px">${conduits.length} row${conduits.length!==1?'s':''}</span></span>
-        <button class="btn btn-p btn-sm" id="btn-add-cd">+ Add Row</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${mkToggle('createConduit','Create',createConduit)}
+          <button class="btn btn-p btn-sm" id="btn-add-cd">+ Add Row</button>
+        </div>
       </div>
-      <div style="overflow-x:auto"><div id="cd-stk">${renderConduitStack()}</div></div>
+      <div style="${!createConduit?'opacity:.35;pointer-events:none':''}overflow-x:auto"><div id="cd-stk">${renderConduitStack()}</div></div>
       <div style="padding:4px 10px 4px;font-size:9px;color:#585b70">Each row creates one span per vault-to-vault segment.</div>
       ${ovrSection('so',spanOverride)}
       </div>
@@ -574,12 +580,13 @@ async function main(){
       <div class="sec"><div class="sec-hdr">
         <div style="display:flex;align-items:center;gap:8px">
           <span>🟣 Fiber Stack <span class="badge bp" style="margin-left:5px">${fibers.length} row${fibers.length!==1?'s':''}</span></span>
-          ${mkToggle('fiberSplit','Split per segment',fiberSplit)}
+          ${mkToggle('createFiber','Create',createFiber)}
+          ${createFiber?mkToggle('fiberSplit','Split per seg',fiberSplit):''}
         </div>
         <button class="btn btn-p btn-sm" id="btn-add-fb">+ Add Row</button>
       </div>
-      <div style="overflow-x:auto"><div id="fb-stk">${renderFiberStack()}</div></div>
-      <div style="padding:4px 10px 4px;font-size:9px;color:#585b70">${fiberSplit?'One fiber per vault-to-vault segment.':'One fiber spanning all vaults.'}</div>
+      <div style="${!createFiber?'opacity:.35;pointer-events:none':''}overflow-x:auto"><div id="fb-stk">${renderFiberStack()}</div></div>
+      <div style="padding:4px 10px 4px;font-size:9px;color:#585b70">${createFiber?(fiberSplit?'One fiber per vault-to-vault segment.':'One fiber spanning all vaults.'):'Fiber creation disabled.'}</div>
       ${ovrSection('fo',fiberOverride)}
       </div>
 
@@ -831,8 +838,8 @@ async function main(){
       const vl=mv.map.allLayers.find(l=>l.layerId===LAYERS.vault.id);
       const sl=mv.map.allLayers.find(l=>l.layerId===LAYERS.span.id);
       const cl=mv.map.allLayers.find(l=>l.layerId===LAYERS.cable.id);
-      if(!vl||!sl)throw new Error('Vault or Span layer not found');
-      if(fibers.length&&!cl)throw new Error('Fiber cable layer not found');
+      if(createConduit&&!sl)throw new Error('Span layer not found');
+      if(createFiber&&fibers.length&&!cl)throw new Error('Fiber cable layer not found');
 
       // Base attributes shared by all features
       const base={workflow_stage:cfg.workflow_stage,workflow_status:cfg.workflow_status,work_type:cfg.work_type,client_code:cfg.client_code,project_id:cfg.project_id,job_number:cfg.job_number,purchase_order_id:cfg.purchase_order_id,workorder_id:cfg.workorder_id,delete_feature:'NO',construction_status:'NA'};
@@ -845,8 +852,8 @@ async function main(){
 
       const vaultCount=pts.filter(p=>!p.noVault).length;
       const segments=buildSegments(pts),segCt=segments.length;
-      const fiberFeatureCount=fiberSplit?segCt*fibers.length:fibers.length;
-      const total=vaultCount+segCt*conduits.length+fiberFeatureCount;
+      const fiberFeatureCount=createFiber?(fiberSplit?segCt*fibers.length:fibers.length):0;
+      const total=vaultCount+(createConduit?segCt*conduits.length:0)+fiberFeatureCount;
       let done=0;const tick=msg=>{done++;setP(Math.round(done/total*100),msg);};
 
       // Vaults
@@ -859,6 +866,7 @@ async function main(){
       }
 
       // Spans
+      if(createConduit){
       for(let ri=0;ri<conduits.length;ri++){
         const rv=readConduit(conduits[ri]);
         const spanOpts=Object.fromEntries(Object.entries(rv).filter(([,v])=>v!==''));
@@ -872,9 +880,10 @@ async function main(){
           tick(`Creating spans… row ${ri+1}/${conduits.length}, seg ${si+1}/${segCt}`);
         }
       }
+      }
 
       // Fibers
-      for(let ri=0;ri<fibers.length;ri++){
+      if(createFiber){
         const rv=readFiber(fibers[ri]);
         const fibOpts=Object.fromEntries(Object.entries(rv).filter(([,v])=>v!==''));
         if(fibOpts.fiber_count)fibOpts.fiber_count=parseInt(fibOpts.fiber_count);
@@ -897,6 +906,8 @@ async function main(){
         }
       }
 
+      } // end createFiber
+
       setP(100,'Done!');clearGL();
       const rvRes=qs('#rv-result');
       if(rvRes){
@@ -916,7 +927,11 @@ async function main(){
   }
 
   // ── Global Callbacks ──────────────────────────────────────────────────
-  window.__pkgToggle=id=>{if(id==='fiberSplit'){saveConduits();saveFibers();saveVCfg();saveSpanOverride();saveFiberOverride();fiberSplit=!fiberSplit;const track=box.querySelector('#ttrack_fiberSplit');if(track)track.classList.toggle('on',fiberSplit);const footer=box.querySelector('#sec-fib > div:last-of-type');if(footer)footer.innerHTML=fiberSplit?'One fiber per vault-to-vault segment.':'One fiber spanning all vaults.';}};
+  window.__pkgToggle=id=>{
+    if(id==='fiberSplit'){saveConduits();saveFibers();saveVCfg();saveSpanOverride();saveFiberOverride();fiberSplit=!fiberSplit;const track=box.querySelector('#ttrack_fiberSplit');if(track)track.classList.toggle('on',fiberSplit);}
+    if(id==='createConduit'){createConduit=!createConduit;render();}
+    if(id==='createFiber'){createFiber=!createFiber;render();}
+  };;
   window.__pkgPickOpt=(key,val)=>{pickOpts[key]=val;};
   window.__pkgStartPick=()=>{initGL().then(()=>startPick());};
   window.__pkgEndPick=()=>{endPick();pickMode=false;render();};
