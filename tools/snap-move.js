@@ -128,10 +128,10 @@
                 <div class="smt-section-header" style="background:#ead8ff;color:#5a1a9e;">📌 Single Feature Editing</div>
                 <div class="smt-body" style="background:#faf0ff;">
                     <div class="smt-sublabel"><span>Lock to Feature</span><button class="smt-info-btn" data-hint="h-lock">▾ more</button></div>
-                    <div id="h-lock" class="smt-hint" style="display:none;">Pin all edits to one specific feature — ideal when features overlap. Hover a row in the picker to highlight that feature on the map.<br><br><strong>Point lock:</strong> moves only that point; connected lines are unaffected.<br><strong>Line lock:</strong> restricts vertex moves, add/delete, snap-to-point, and highlights to that line only.</div>
+                    <div id="h-lock" class="smt-hint" style="display:none;">Pin all edits to one specific feature — ideal when features overlap. Hover a row in the picker to highlight that feature on the map.<br><br><strong>Point lock:</strong> moves only that point; connected lines are unaffected.<br><strong>Line lock:</strong> restricts vertex moves, add/delete, snap-to-point, and highlights to that line only.<br><br>                        <strong>Z</strong> = toggle Pick Feature &nbsp;·&nbsp; <strong>X</strong> = Release Lock</div>
                     <div class="smt-row">
-                        <button id="lockFeatureBtn"    style="background:#666;">🎯 Pick Feature</button>
-                        <button id="releaseFeatureBtn" style="background:#666;" disabled>🔓 Release Lock</button>
+                        <button id="lockFeatureBtn"    style="background:#666;">🎯 Pick Feature [Z]</button>
+                        <button id="releaseFeatureBtn" style="background:#666;" disabled>🔓 Release Lock [X]</button>
                     </div>
                     <div id="lockedFeatureInfo" style="font-size:10px;color:#6f42c1;min-height:14px;font-style:italic;margin-top:2px;"></div>
                 </div>
@@ -149,10 +149,10 @@
                         <button id="lineMode"  style="background:#666;">〰️ Line [Q]</button>
                     </div>
                     <div class="smt-sublabel"><span>Vertex Tools <span style="font-weight:normal;color:#888;">(Line Mode only)</span></span><button class="smt-info-btn" data-hint="h-vertex">▾ more</button></div>
-                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [A]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [D]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
+                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [Space]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [Shift]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
                     <div class="smt-row">
-                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [A]</button>
-                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [D]</button>
+                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [Space]</button>
+                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [Shift]</button>
                     </div>
                     <div class="smt-sublabel"><span>Snap to Point</span><button class="smt-info-btn" data-hint="h-snap">▾ more</button></div>
                     <div id="h-snap" class="smt-hint" style="display:none;">
@@ -497,22 +497,23 @@
         // ── Hotkeys ───────────────────────────────────────────────────────────
 
         function handleHotkey(e) {
-            if(!toolActive)return;
-            const tag=e.target.tagName;
-            if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target.isContentEditable)return;
-            switch(e.key){
-                case 'e':case 'E': e.preventDefault();if(!cutMode&&!copyMode&&!snapToPointMode)setPointMode();break;
-                case 'q':case 'Q': e.preventDefault();if(!cutMode&&!copyMode&&!snapToPointMode)setLineMode();break;
-                case 'a':case 'A': e.preventDefault();if(!cutMode&&!copyMode&&!snapToPointMode)setAddVertexMode();break;
-                case 'd':case 'D': e.preventDefault();if(!cutMode&&!copyMode&&!snapToPointMode)setDeleteVertexMode();break;
-                case 's':case 'S': e.preventDefault();snapToPointMode?disableSnapToPointMode():enableSnapToPointMode();break;
-                case 'c':case 'C': e.preventDefault();cutMode?disableCutMode():enableCutMode();break;
+            if (!toolActive) return;
+            const tag = e.target?.tagName;
+            if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable) return;
+            switch(e.key) {
+                case 'e': case 'E': e.preventDefault(); if(!cutMode&&!copyMode&&!snapToPointMode) setPointMode(); break;
+                case 'q': case 'Q': e.preventDefault(); if(!cutMode&&!copyMode&&!snapToPointMode) setLineMode(); break;
+                case 'c': case 'C': e.preventDefault(); cutMode ? disableCutMode() : enableCutMode(); break;
+                case 'Shift':       e.preventDefault(); if(!cutMode&&!copyMode&&!snapToPointMode) setDeleteVertexMode(); break;
+                case 'z': case 'Z': e.preventDefault(); if(!cutMode&&!copyMode) { pickingFeatureMode ? (() => { pickingFeatureMode=false; lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666"; lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature"; updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled."); })() : (() => { pickingFeatureMode=true; if(selectedFeature)cancelMove(); lockFeatureBtn.style.background="#e6ac00"; lockFeatureBtn.textContent="⏳ Click a feature..."; updateStatus("🖱 Click any point or line feature on the map to lock all edits to it."); })(); } break;
+                case 'x': case 'X': e.preventDefault(); if(lockedFeature) releaseLockedFeature(); break;
+                case 's': case 'S': e.preventDefault(); snapToPointMode ? disableSnapToPointMode() : enableSnapToPointMode(); break;
                 case 'Escape':
                     e.preventDefault();
-                    if(copyPlacementMode)clearCopyTemplate();
-                    else if(cutPreviewMode)resetCutSelection();
-                    else if(snapToPointMode)disableSnapToPointMode();
-                    else if(selectedFeature)cancelMove();
+                    if(copyPlacementMode)    clearCopyTemplate();
+                    else if(cutPreviewMode)  resetCutSelection();
+                    else if(snapToPointMode) disableSnapToPointMode();
+                    else if(selectedFeature) cancelMove();
                     break;
             }
         }
@@ -724,7 +725,7 @@
             toolActive=false;pickingFeatureMode=false;isProcessingClick=false;
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];originalGeometries.clear();vertexMode="none";
             if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(snapToPointMode)disableSnapToPointMode();
-            if(hotkeyHandler){document.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}
+            if(hotkeyHandler){window.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}
             if(addVertexBtn)addVertexBtn.style.background="#666";if(deleteVertexBtn)deleteVertexBtn.style.background="#666";
             if(lockFeatureBtn){lockFeatureBtn.style.background=lockedFeature?"#6f42c1":"#666";lockFeatureBtn.textContent=lockedFeature?"🎯 Re-Pick":"🎯 Pick Feature";}
             if(clickHandler)clickHandler.remove();
