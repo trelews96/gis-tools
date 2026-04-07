@@ -464,12 +464,12 @@ async function main(){
   function enableCopyGeo(){
     copyGeoMode=true;
     mv.container.style.cursor='copy';
-    setStatus('Click any span or fiber line to copy its vertices into the placement path.','warn');
+    updateCopyGeoBtn();
+    setStatus('Click lines to copy geometry. Click multiple lines to chain them. Press Esc or Done when finished.','warn');
     copyGeoH=mv.on('click',async function(evt){
       evt.stopPropagation();
       const mapPt=mv.toMap({x:evt.x,y:evt.y}),tol=mv.resolution*SNAP_PX*4;
       const ext={type:'extent',xmin:mapPt.x-tol,ymin:mapPt.y-tol,xmax:mapPt.x+tol,ymax:mapPt.y+tol,spatialReference:mapPt.spatialReference};
-      // Step 1: spatial search to find the nearest feature (may be simplified geometry)
       let bestLayer=null,bestOid=null,bestDist=Infinity;
       const layerIds=[LAYERS.span.id,LAYERS.cable.id];
       for(const lid of layerIds){
@@ -491,22 +491,18 @@ async function main(){
           }
         } catch(e){}
       }
-      disableCopyGeo();
-      if(!bestLayer||bestOid===null){setStatus('No line feature found near click.','warn');return;}
-      // Step 2: re-query by objectId WITHOUT spatial filter to get full non-simplified geometry
+      if(!bestLayer||bestOid===null){setStatus('No line feature found near click — try another spot.','warn');return;}
       let fullGeo=null;
       try {
         const fullRes=await bestLayer.queryFeatures({objectIds:[bestOid],returnGeometry:true,outFields:[]});
         if(fullRes.features&&fullRes.features.length) fullGeo=fullRes.features[0].geometry;
       } catch(e){}
       if(!fullGeo||!fullGeo.paths){setStatus('Could not retrieve full geometry.','warn');return;}
-      // Flatten all paths into one ordered coord list
       const allCoords=[];
       for(const path of fullGeo.paths){
         for(const coord of path) allCoords.push({x:coord[0],y:coord[1],spatialReference:fullGeo.spatialReference});
       }
       if(allCoords.length<2){setStatus('Feature has too few vertices.','warn');return;}
-      // Build pts: if vault mode on → endpoints=vault, else all=free point
       const newEntries=allCoords.map(function(pt,i){
         const isEndpoint=(i===0||i===allCoords.length-1);
         return{pt:pt,noVault:!(copyGeoAddVaults&&isEndpoint)};
@@ -516,17 +512,23 @@ async function main(){
         addMarker(entry.pt,pts.length-1,entry.noVault);
       }
       refreshPlaceUI();
-      const vCt=newEntries.filter(function(p){return !p.noVault;}).length;
-      const fCt=newEntries.filter(function(p){return p.noVault;}).length;
-      setStatus('Copied '+allCoords.length+' vertices — '+vCt+' vaults, '+fCt+' free pts.','success');
+      // Count total vaults and free pts so far
+      const totalVaults=pts.filter(function(p){return !p.noVault;}).length;
+      const totalFree=pts.filter(function(p){return p.noVault;}).length;
+      setStatus('Copied '+allCoords.length+' vertices. Total: '+pts.length+' points ('+totalVaults+' vaults, '+totalFree+' free). Click another line or press Done.','success');
     });
+  }
+  function updateCopyGeoBtn(){
+    const btn=qs('#btn-copy-geo');
+    if(!btn) return;
+    if(copyGeoMode){btn.classList.add('btn-active');btn.textContent='\u2705 Done Copying';}
+    else{btn.classList.remove('btn-active');btn.textContent='\ud83d\udccb Copy Geometry';}
   }
   function disableCopyGeo(){
     copyGeoMode=false;
     if(copyGeoH){copyGeoH.remove();copyGeoH=null;}
     mv.container.style.cursor=active?'crosshair':'default';
-    const btn=qs('#btn-copy-geo');
-    if(btn){btn.classList.remove('btn-active');btn.textContent='\ud83d\udccb Copy Geometry';}
+    updateCopyGeoBtn();
   }
 
   // ── Vertex Highlights ─────────────────────────────────────────────────
@@ -1163,6 +1165,7 @@ async function main(){
     if(k==='L'){e.preventDefault();toggleBearingLock();return;}
     if(k==='Z'||e.key==='Escape'){
       e.preventDefault();
+      if(copyGeoMode){disableCopyGeo();setStatus('Copy geometry finished.','info');return;}
       if(arcMode){cancelArc();render();setStatus('Arc cancelled.');return;}
       undoLast();return;
     }
