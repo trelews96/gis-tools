@@ -18,7 +18,7 @@ async function main(){
   let clickH=null,keyH=null,moveH=null,pickH=null,gl=null;
   let pickMode=false,pickOpts={vault:true,conduit:true,fiber:true};
   let arcMode=false,arcPts=[],arcDensity=50;
-  let snapMode='hard',snapThreshDeg=8;
+  let snapMode='soft',snapThreshDeg=8;
   let bearingLock=false,lockedBearing=null;
   let pendingPt=null;
 
@@ -294,6 +294,28 @@ async function main(){
     gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[pts.map(p=>[p.pt.x,p.pt.y])],spatialReference:pts[0].pt.spatialReference},symbol:{type:'simple-line',color:[137,180,250,0.75],width:2,style:'dash'},attributes:{_pkg:'line'}}));
   }
   function removeSnapRing(){rmTag('snap');}
+  function addSnapRing(pt){
+    if(!gl||!window.__pkgGr)return;removeSnapRing();
+    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'circle',
+      color:[250,179,135,0],size:'20px',outline:{color:[250,179,135,0.9],width:2.5}},
+      attributes:{_pkg:'snap'}}));
+  }
+  function addVertexSnapRing(pt){
+    if(!gl||!window.__pkgGr)return;removeSnapRing();
+    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'square',
+      color:[137,220,235,0],size:'18px',outline:{color:[137,220,235,0.9],width:2.5}},
+      attributes:{_pkg:'snap'}}));
+  }
+  let _snapHoverTimer=null;
+  function scheduleSnapHover(screenEvt){
+    clearTimeout(_snapHoverTimer);
+    _snapHoverTimer=setTimeout(async()=>{
+      if(!active)return;
+      const snap=await findSnap(screenEvt);
+      if(snap){snap.type==='vertex'?addVertexSnapRing(snap.pt):addSnapRing(snap.pt);}
+      else removeSnapRing();
+    },80);
+  }
   function removeLastMarker(){if(!gl)return;const vg=gl.graphics.filter(g=>g.attributes?._pkg==='vault').toArray();if(vg.length)gl.remove(vg[vg.length-1]);refreshLine();}
   function clearGL(){if(gl)gl.removeAll();}
 
@@ -321,9 +343,41 @@ async function main(){
   }
 
   // ── Snap ──────────────────────────────────────────────────────────────
+  // Returns {pt, type:'vault'|'vertex'} or null
   async function findSnap(screenEvt){
-    for(const p of [...pts].reverse()){const sp=mv.toScreen(p.pt);if(Math.hypot(screenEvt.x-sp.x,screenEvt.y-sp.y)<SNAP_PX)return p.pt;}
-    try{const vl=mv.map.allLayers.find(l=>l.layerId===LAYERS.vault.id);if(!vl)return null;const mapPt=mv.toMap({x:screenEvt.x,y:screenEvt.y}),tol=mv.resolution*SNAP_PX;const res=await vl.queryFeatures({geometry:{type:'extent',xmin:mapPt.x-tol,ymin:mapPt.y-tol,xmax:mapPt.x+tol,ymax:mapPt.y+tol,spatialReference:mapPt.spatialReference},returnGeometry:true,outFields:['*'],num:1});if(res.features?.length){const geo=res.features[0].geometry;const sp=mv.toScreen(geo);if(Math.hypot(screenEvt.x-sp.x,screenEvt.y-sp.y)<SNAP_PX)return geo;}}catch(_){}return null;
+    // 1. Already-placed points
+    for(const p of [...pts].reverse()){
+      const sp=mv.toScreen(p.pt);
+      if(Math.hypot(screenEvt.x-sp.x,screenEvt.y-sp.y)<SNAP_PX)return{pt:p.pt,type:'vault'};
+    }
+    const mapPt=mv.toMap({x:screenEvt.x,y:screenEvt.y}),tol=mv.resolution*SNAP_PX;
+    const ext={type:'extent',xmin:mapPt.x-tol,ymin:mapPt.y-tol,xmax:mapPt.x+tol,ymax:mapPt.y+tol,spatialReference:mapPt.spatialReference};
+    // 2. Existing vault features
+    try{
+      const vl=mv.map.allLayers.find(l=>l.layerId===LAYERS.vault.id);
+      if(vl){const res=await vl.queryFeatures({geometry:ext,returnGeometry:true,outFields:[],num:1});
+        if(res.features?.length){const geo=res.features[0].geometry;const sp=mv.toScreen(geo);
+          if(Math.hypot(screenEvt.x-sp.x,screenEvt.y-sp.y)<SNAP_PX)return{pt:geo,type:'vault'};}}
+    }catch(_){}
+    // 3. Polyline vertices (span + cable layers — whichever has geometry near cursor)
+    const lineLayers=[LAYERS.span.id,LAYERS.cable.id]
+      .map(id=>mv.map.allLayers.find(l=>l.layerId===id)).filter(Boolean);
+    for(const layer of lineLayers){
+      try{
+        const res=await layer.queryFeatures({geometry:ext,returnGeometry:true,outFields:[],num:10});
+        for(const feat of (res.features||[])){
+          const geo=feat.geometry;if(!geo?.paths)continue;
+          for(const path of geo.paths){
+            for(const coord of path){
+              const vpt={x:coord[0],y:coord[1],spatialReference:geo.spatialReference};
+              const sp=mv.toScreen(vpt);
+              if(Math.hypot(screenEvt.x-sp.x,screenEvt.y-sp.y)<SNAP_PX)return{pt:vpt,type:'vertex'};
+            }
+          }
+        }
+      }catch(_){}
+    }
+    return null;
   }
 
   // ── Feature Creator ───────────────────────────────────────────────────
@@ -705,7 +759,7 @@ async function main(){
   function enableTool(){
     active=true;
     clickH=mv.on('click',handleClick);
-    moveH=mv.on('pointer-move',e=>{if(!active||arcMode)return;if(!pts.length){clearPreview();return;}updatePreview(mv.toMap({x:e.x,y:e.y}));});
+    moveH=mv.on('pointer-move',e=>{if(!active||arcMode)return;if(!pts.length){clearPreview();return;}updatePreview(mv.toMap({x:e.x,y:e.y}));scheduleSnapHover(e);});
     keyH=handleKey;document.addEventListener('keydown',keyH);
     mv.container.style.cursor='crosshair';
     const en=qs('#btn-enable'),di=qs('#btn-disable');if(en)en.disabled=true;if(di)di.disabled=false;
@@ -732,10 +786,9 @@ async function main(){
     }
     const isFree=waypointMode||(evt.native?.shiftKey||false);
     const snap=await findSnap(evt);let finalPt;
-    if(snap){finalPt=snap;setStatus('Snapped to existing vault.','warn');removeSnapRing();}
+    if(snap){finalPt=snap.pt;setStatus(snap.type==='vertex'?'🔷 Snapped to line vertex.':'Snapped to existing vault.','warn');removeSnapRing();}
     else{finalPt=pendingPt||resolvePoint(mv.toMap({x:evt.x,y:evt.y})).commitPt;}
     pts.push({pt:finalPt,noVault:isFree});addMarker(finalPt,pts.length-1,isFree);clearPreview();
-    if(waypointMode){waypointMode=false;const btn=qs('#btn-waypoint');if(btn){btn.classList.remove('btn-active');btn.textContent='✕ Free Pt';}}
     if(bearingLock&&!isFree&&pts.filter(p=>!p.noVault).length>=2){const vaults=pts.filter(p=>!p.noVault);lockedBearing=Geo.bearing(vaults[vaults.length-2].pt,vaults[vaults.length-1].pt);}
     refreshPlaceUI();
     setStatus(`${isFree?'✕ Free point':'📍 Vault'} ${pts.length} placed.${pts.length>=2?' Enter to review.':' Place 1 more.'}`, 'info');
