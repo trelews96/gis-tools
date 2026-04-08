@@ -1016,7 +1016,7 @@ async function main(){
   // ── Bind ──────────────────────────────────────────────────────────────
   function bind(){
     function on(id,ev,fn){const e=qs('#'+id);if(e) e.addEventListener(ev,fn);}
-    on('btn-close','click',function(){disableTool();endPick();clearGL();styleEl.remove();document.removeEventListener('click',closeAllDrops);box.remove();});
+    on('btn-close','click',function(){disableTool();disableCopyGeo();endPick();clearGL();styleEl.remove();document.removeEventListener('click',closeAllDrops);box.remove();});
     if(step==='setup'){
       on('btn-pick-toggle','click',function(){pickMode=!pickMode;render();});
       on('btn-sv-current','click',function(){const err=validateSetup();if(err){showErr('#setup-err',err);return;}doSaveTemplate(currentTmplName);});
