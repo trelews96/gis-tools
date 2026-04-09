@@ -166,6 +166,12 @@
                 </div>
                 <div id="fileList" style="margin-top:6px;"></div>
             </div>
+
+            <!-- Existing attachments on this feature -->
+            <div id="existingAttachmentsSection" style="margin-bottom:10px;display:none;">
+                <div style="font-size:11px;font-weight:700;color:#f9e2af;margin-bottom:6px;">🗂️ Existing Attachments</div>
+                <div id="existingAttachmentsList"></div>
+            </div>
             <div style="display:flex;gap:6px;margin-bottom:6px;">
                 <button id="submitBtn" class="btn btn-success" style="flex:2;">Submit & Next ›</button>
                 <button id="skipBtn"   class="btn btn-warning" style="flex:1;">Skip</button>
@@ -997,6 +1003,7 @@
             $('#prevBtn').disabled=currentIndex===0;$('#skipBtn').style.display=item.allowSkip?'block':'none';
             $('#applyPrevRow').style.display=(lastSubmittedValues&&item.mode==='edit'&&item.fields.length>0)?'block':'none';
             filesToUpload=[];updateFileList();
+            loadExistingAttachments(item);
             highlightFeature(item.feature,item.showPopup);
             updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
         }
@@ -1168,7 +1175,91 @@
         function updateFileList(){const fl=$('#fileList');if(!fl)return;if(!filesToUpload.length){fl.innerHTML='';return;}fl.innerHTML=filesToUpload.map((f,i)=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 6px;background:#313244;border-radius:4px;margin:3px 0;font-size:11px;"><span>${fileTypeLabel(f)} ${f.name} <span style="color:#6c7086;">(${(f.size/1024).toFixed(1)}KB)</span></span><button class="removeFileBtn" data-index="${i}" style="background:#f38ba8;color:#1e1e2e;border:none;border-radius:3px;padding:1px 6px;cursor:pointer;font-size:11px;">×</button></div>`).join('');fl.querySelectorAll('.removeFileBtn').forEach(btn=>btn.addEventListener('click',e=>{filesToUpload.splice(parseInt(e.target.dataset.index),1);updateFileList();}));}
         async function uploadAttachments(layer,feature){if(!filesToUpload.length)return;try{await layer.load();if(!layer.capabilities?.operations?.supportsAdd){updateStatus('Layer does not support attachments — files skipped.');filesToUpload=[];updateFileList();return;}let ok=0,fail=0;for(let i=0;i<filesToUpload.length;i++){const f=filesToUpload[i];try{updateStatus(`Uploading attachment ${i+1}/${filesToUpload.length}: ${f.name}…`);const fd=new FormData();fd.append('attachment',f);const res=await layer.addAttachment(feature,fd);if(res?.addAttachmentResult||res?.objectId)ok++;else throw new Error('Unexpected result');}catch(e){fail++;console.warn('Attachment upload failed:',f.name,e);}await new Promise(r=>setTimeout(r,300));}updateStatus(`Attachments: ${ok} uploaded${fail?', '+fail+' failed':''}`);}catch(e){updateStatus('Attachment upload error: '+e.message);}filesToUpload=[];updateFileList();}
 
-        // ── Cleanup ───────────────────────────────────────────────────────────
+        // ── Existing Attachment Viewer ────────────────────────────────────────
+        async function loadExistingAttachments(item){
+            const section = $('#existingAttachmentsSection');
+            const list    = $('#existingAttachmentsList');
+            if(!section || !list) return;
+
+            section.style.display = 'none';
+            list.innerHTML = '<div style="font-size:11px;color:#6c7086;">Loading…</div>';
+
+            try{
+                await item.layer.load();
+                // Not all layers support attachments
+                if(!item.layer.capabilities?.data?.supportsAttachment){
+                    section.style.display = 'none';
+                    return;
+                }
+
+                const oidField = getObjectIdField(item.feature);
+                const oid      = item.feature.attributes[oidField];
+                const result   = await item.layer.queryAttachments({ objectIds:[oid] });
+                const attachments = result[oid] || [];
+
+                if(!attachments.length){
+                    section.style.display = 'none';
+                    return;
+                }
+
+                section.style.display = 'block';
+                list.innerHTML = '';
+                attachments.forEach(att => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;background:#313244;border-radius:6px;margin-bottom:4px;';
+
+                    const info = document.createElement('div');
+                    info.style.cssText = 'flex:1;min-width:0;';
+                    const name = document.createElement('div');
+                    name.style.cssText = 'font-size:11px;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+                    name.textContent = att.name;
+                    const size = document.createElement('div');
+                    size.style.cssText = 'font-size:10px;color:#6c7086;';
+                    size.textContent = att.size ? `${(att.size/1024).toFixed(1)} KB` : '';
+                    info.appendChild(name);
+                    info.appendChild(size);
+
+                    const btnWrap = document.createElement('div');
+                    btnWrap.style.cssText = 'display:flex;gap:4px;flex-shrink:0;';
+
+                    // Download — open in new tab so portal auth is preserved
+                    const dlBtn = document.createElement('button');
+                    dlBtn.type = 'button'; dlBtn.className = 'btn btn-info';
+                    dlBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
+                    dlBtn.textContent = '⬇ Download';
+                    dlBtn.onclick = () => window.open(att.url, '_blank');
+
+                    // Delete
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button'; delBtn.className = 'btn btn-danger';
+                    delBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
+                    delBtn.textContent = '🗑 Delete';
+                    delBtn.onclick = async () => {
+                        if(!confirm(`Delete attachment "${att.name}"?`)) return;
+                        try{
+                            delBtn.disabled = true; delBtn.textContent = '…';
+                            await item.layer.deleteAttachments(item.feature, [att.id]);
+                            row.remove();
+                            const remaining = list.querySelectorAll('div[style]');
+                            if(!remaining.length) section.style.display = 'none';
+                            updateStatus(`Deleted attachment: ${att.name}`);
+                        }catch(err){
+                            delBtn.disabled = false; delBtn.textContent = '🗑 Delete';
+                            updateStatus('Delete failed: ' + err.message);
+                        }
+                    };
+
+                    btnWrap.appendChild(dlBtn);
+                    btnWrap.appendChild(delBtn);
+                    row.appendChild(info);
+                    row.appendChild(btnWrap);
+                    list.appendChild(row);
+                });
+            }catch(err){
+                section.style.display = 'none';
+                console.warn('Could not load attachments:', err);
+            }
+        }
         function cleanup(){
             if(sketchViewModel){sketchViewModel.destroy();sketchViewModel=null;}
             if(sketchLayer){mapView.map.remove(sketchLayer);sketchLayer=null;}
