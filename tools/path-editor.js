@@ -19,15 +19,15 @@
         let sketchViewModel      = null;
         let sketchLayer          = null;
         let selectionGraphic     = null;
-        let selectionGraphics    = [];      // multi-select click markers
-        let accumulateMode       = false;   // multi-select toggle
+        let selectionGraphics    = [];
+        let accumulateMode       = false;
         let selectedFeaturesByLayer = new Map();
         let layerConfigs         = [];
         let currentEditingQueue  = [];
         let currentIndex         = 0;
         let currentPhase         = 'selection';
         let highlightGraphics    = [];
-        let bulkHighlightGraphics = [];    // bulk-edit preview highlights
+        let bulkHighlightGraphics = [];
         let editLog              = [];
         let sessionStartTime     = null;
         let selectionMode        = 'single';
@@ -60,9 +60,6 @@
         }
 
         // ── Auto-calculation rules ────────────────────────────────────────────
-        // Each rule fires when all watchFields have values and writes the result
-        // to targetField. layerMatch is a case-insensitive substring of the layer title.
-        // Add more rules here as needed.
         const AUTO_CALC_RULES = [
             {
                 layerMatch: 'fiber cable',
@@ -71,6 +68,7 @@
                 compute: (vals) => Math.abs(vals['sequential_in'] - vals['sequential_out'])
             }
         ];
+
         const toolBox = document.createElement('div');
         toolBox.id = 'pathEditorToolbox';
         toolBox.style.cssText = `
@@ -97,7 +95,6 @@
                 <label class="modeCard" data-mode="line"><input type="radio" name="selectionMode" value="line" style="display:none;"><div class="modeIcon">📏</div><div class="modeLabel">Line Path</div></label>
                 <label class="modeCard" data-mode="polygon"><input type="radio" name="selectionMode" value="polygon" style="display:none;"><div class="modeIcon">⬡</div><div class="modeLabel">Polygon</div></label>
             </div>
-            <!-- Multi-select toggle: only shown for single-click mode -->
             <div id="multiSelectRow" style="margin-bottom:10px;padding:7px 10px;background:#313244;border-radius:6px;display:flex;align-items:center;gap:8px;">
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;color:#a6adc8;flex:1;">
                     <input type="checkbox" id="multiSelectChk" style="accent-color:#cba6f7;">
@@ -166,8 +163,6 @@
                 </div>
                 <div id="fileList" style="margin-top:6px;"></div>
             </div>
-
-            <!-- Existing attachments on this feature -->
             <div id="existingAttachmentsSection" style="margin-bottom:10px;display:none;">
                 <div style="font-size:11px;font-weight:700;color:#f9e2af;margin-bottom:6px;">🗂️ Existing Attachments</div>
                 <div id="existingAttachmentsList"></div>
@@ -184,7 +179,6 @@
         <div id="bulkEditPhase" style="display:none;">
             <div style="font-weight:700;color:#f9e2af;margin-bottom:6px;">⚡ Bulk Edit Mode</div>
             <div style="font-size:11px;color:#a6adc8;margin-bottom:10px;">Set values once and apply to all selected features.</div>
-            <!-- Bulk edit map preview notice -->
             <div id="bulkEditMapNotice" style="display:none;margin-bottom:10px;padding:8px 10px;background:#2a1f3d;border:1px solid #cba6f7;border-radius:6px;font-size:11px;color:#cba6f7;">
                 🗺️ Features highlighted on map in orange
             </div>
@@ -286,12 +280,9 @@
         $('#multiSelectChk').addEventListener('change',e=>{
             accumulateMode=e.target.checked;
             if(!accumulateMode){
-                // Switching off: remove click handler so user starts fresh on next click
                 if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
-                // Re-enable if there are existing selections, otherwise restart
                 if(selectedFeaturesByLayer.size===0) startSelection();
             } else {
-                // Switching on: re-enable click handler if not already running
                 if(!mapClickHandler&&selectionMode==='single') enableSingleFeatureSelection();
             }
         });
@@ -299,12 +290,9 @@
         // ── Mode Cards ────────────────────────────────────────────────────────
         function updateModeCards(){
             toolBox.querySelectorAll('.modeCard').forEach(c=>c.classList.toggle('active',c.dataset.mode===selectionMode));
-            // Multi-select toggle only relevant for single-click
             const msRow=$('#multiSelectRow');
             if(msRow)msRow.style.display=selectionMode==='single'?'flex':'none';
         }
-        // Fix 2: flush sketchLayer graphics on every mode switch so the polygon
-        // can't be clicked and re-entered into the SketchViewModel's editor
         toolBox.querySelectorAll('.modeCard').forEach(card=>{
             card.addEventListener('click',()=>{
                 card.querySelector('input').checked=true;selectionMode=card.dataset.mode;updateModeCards();
@@ -342,26 +330,21 @@
                     const sp=mapView.toScreen(event.mapPoint);
                     const p1=mapView.toMap({x:sp.x,y:sp.y}),p2=mapView.toMap({x:sp.x+10,y:sp.y});
                     if(!window.geometryEngine)await new Promise(r=>window.require(['esri/geometry/geometryEngine'],ge=>{window.geometryEngine=ge;r();}));
-                    // Fix 3: cap the buffer at 150m so zoomed-out clicks can't
-                    // sweep in thousands of features and hit the 2000-record limit
                     const rawDist=window.geometryEngine.distance(p1,p2,'meters');
                     const bufDist=Math.min(rawDist,150);
                     const bufGeom=window.geometryEngine.buffer(event.mapPoint,bufDist,'meters');
 
-                    // Add click marker
                     await new Promise(r=>window.require(['esri/Graphic'],G=>{
                         const g=new G({geometry:event.mapPoint,symbol:{type:'simple-marker',color:[255,0,0,.8],size:accumulateMode?8:12,outline:{color:[255,255,255,1],width:1.5}}});
                         mapView.graphics.add(g);
                         if(accumulateMode){selectionGraphics.push(g);}
                         else{
-                            // Remove previous marker
                             if(selectionGraphic)mapView.graphics.remove(selectionGraphic);
                             selectionGraphic=g;
                         }
                         r();
                     }));
 
-                    // Save existing selection before querying (for accumulate mode)
                     const savedSelection=accumulateMode?new Map(selectedFeaturesByLayer):null;
 
                     selectedFeaturesByLayer.clear();
@@ -369,7 +352,6 @@
                     const newResults=new Map(selectedFeaturesByLayer);
 
                     if(accumulateMode&&savedSelection&&savedSelection.size>0){
-                        // Restore existing selection then merge in new results
                         savedSelection.forEach((v,k)=>selectedFeaturesByLayer.set(k,v));
                         newResults.forEach((newData,key)=>{
                             if(selectedFeaturesByLayer.has(key)){
@@ -388,10 +370,8 @@
                         displaySelectionResults();
                         $('#clearSelectionBtn').disabled=false;
                         if(!accumulateMode){
-                            // Single-click mode: remove handler after successful selection
                             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
                         }
-                        // In accumulate mode: keep handler alive for more clicks
                     }else{
                         updateStatus('No features found — try clicking elsewhere.');
                     }
@@ -485,7 +465,6 @@
             $('#configureLayersBtn').style.display='none';updateStatus('Selection cleared.');
         }
 
-        // keyed by lid → Graphic[] so individual layers can be updated independently
         let selectionHighlightGraphics = new Map();
 
         function highlightLayerFeatures(lid, features){
@@ -516,7 +495,6 @@
             selectionHighlightGraphics.delete(lid);
         }
 
-        // Highlights every layer in the current selection (used after selection completes)
         function highlightSelectionFeatures(){
             clearSelectionHighlights();
             selectedFeaturesByLayer.forEach((d, lid) => highlightLayerFeatures(lid, d.features));
@@ -528,6 +506,7 @@
             });
             selectionHighlightGraphics.clear();
         }
+
         function highlightBulkFeatures(features){
             clearBulkHighlights();
             if(!features.length) return;
@@ -561,7 +540,6 @@
             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
             accumulateMode=false;
             const msChk=$('#multiSelectChk');if(msChk)msChk.checked=false;
-            // Fix 1: remove all click marker dots when advancing to configuration
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
             if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
             clearSelectionHighlights();
@@ -649,9 +627,6 @@
 
                 if(op==='includes'||op==='excludes'){
                     if(!Array.isArray(cond.values)||!cond.values.length)return null;
-                    // Determine quoting by inspecting the actual domain code type, not just
-                    // the field type. This fixes cases where a string field has numeric-looking
-                    // codes, or a numeric field's codes arrive as JS strings from the service.
                     let needsQuotes=isStr;
                     if(isDomain&&field.domain.codedValues.length>0){
                         needsQuotes=typeof field.domain.codedValues[0].code==='string';
@@ -659,7 +634,6 @@
                     const list=cond.values.map(x=>{
                         if(needsQuotes)return`'${String(x).replace(/'/g,"''")}'`;
                         const n=Number(x);
-                        // If cast to number produces NaN, fall back to quoting
                         return isNaN(n)?`'${String(x).replace(/'/g,"''")}'`:n;
                     }).join(', ');
                     return`${fn} ${op==='includes'?'IN':'NOT IN'} (${list})`;
@@ -667,7 +641,6 @@
                 if(!v&&!['blank','notblank'].includes(op))return null;
                 if(isDate){if(op==='eq')return`${fn} = DATE '${v}'`;if(op==='before')return`${fn} < DATE '${v}'`;if(op==='after')return`${fn} > DATE '${v}'`;if(op==='between'&&v2)return`${fn} >= DATE '${v}' AND ${fn} <= DATE '${v2}'`;return null;}
                 if(isDomain){
-                    // For domain single-value comparisons, use the same type-check approach
                     let needsQuotes=isStr;
                     if(field.domain.codedValues.length>0)needsQuotes=typeof field.domain.codedValues[0].code==='string';
                     const code=needsQuotes?`'${String(v).replace(/'/g,"''")}'`:isNaN(Number(v))?`'${String(v).replace(/'/g,"''")}'`:Number(v);
@@ -787,12 +760,10 @@
                     if(!d?.features.length){testResult.textContent='No features in current selection.';testResult.style.color='#f9e2af';return;}
                     const oidField=layer.objectIdField||'OBJECTID';
                     const objectIds=d.features.map(f=>f.attributes[oidField]).filter(id=>id!=null);
-                    // Fetch matching features with geometry so we can highlight them
                     const res=await layer.queryFeatures({where,objectIds,returnGeometry:true,outFields:['*']});
                     const pct=Math.round((res.features.length/d.features.length)*100);
                     testResult.textContent=`✓ ${res.features.length} of ${d.features.length} selected features match (${pct}%)`;
                     testResult.style.color=res.features.length===0?'#f9e2af':'#a6e3a1';
-                    // Update this layer's map highlights to show only matching features
                     if(ti.checked) highlightLayerFeatures(lid, res.features);
                 }catch(err){testResult.textContent='✗ '+err.message;testResult.style.color='#f38ba8';}
             };
@@ -817,12 +788,9 @@
             const moveUp     = orderDiv.querySelector('.moveUp');
             const moveDown   = orderDiv.querySelector('.moveDown');
 
-            // Keep dataset.order in sync whenever the number input changes
             orderInput.addEventListener('input', () => {
                 card.dataset.order = orderInput.value || '1';
             });
-
-            // Move card up: swap with the previous sibling and update both order values
             moveUp.addEventListener('click', () => {
                 const prev = card.previousElementSibling;
                 if(!prev) return;
@@ -833,8 +801,6 @@
                 orderInput.value = hisVal; card.dataset.order = hisVal;
                 prevInput.value  = myVal;  prev.dataset.order  = myVal;
             });
-
-            // Move card down: swap with the next sibling and update both order values
             moveDown.addEventListener('click', () => {
                 const next = card.nextElementSibling;
                 if(!next) return;
@@ -857,7 +823,8 @@
                 } else {
                     clearLayerHighlights(lid);
                 }
-            };            card.appendChild(header);card.appendChild(body);
+            };
+            card.appendChild(header);card.appendChild(body);
             return card;
         }
 
@@ -871,26 +838,22 @@
             AUTO_CALC_RULES.forEach(rule => {
                 if(!layerTitle.includes(rule.layerMatch.toLowerCase())) return;
 
-                // Ensure all watch fields have inputs in the form.
-                // Skip this rule if any watch field is missing.
                 const watchEls = rule.watchFields.map(fn =>
                     fc.querySelector(`[data-field-name="${fn}"]`)
                 );
                 if(watchEls.some(el => !el)) return;
 
-                // Ensure the target field has an input — inject a hidden one if absent.
                 let targetEl = fc.querySelector(`[data-field-name="${rule.targetField}"]`);
                 if(!targetEl){
                     const hidden = document.createElement('input');
                     hidden.type = 'hidden';
                     hidden.dataset.fieldName = rule.targetField;
-                    hidden.dataset.fieldType = 'integer'; // sequential_qty is a count
+                    hidden.dataset.fieldType = 'integer';
                     hidden.dataset.autoCalc   = 'true';
                     fc.appendChild(hidden);
                     targetEl = hidden;
                 }
 
-                // Visible indicator shown below the second watch field
                 const secondWatchEl = watchEls[watchEls.length - 1];
                 const parentDiv = secondWatchEl.closest('div[style*="margin-bottom"]') || secondWatchEl.parentElement;
                 let indicator = fc.querySelector(`[data-autocalc-indicator="${rule.targetField}"]`);
@@ -925,10 +888,10 @@
                     el.addEventListener('change', recalculate);
                 });
 
-                // Run once on form load in case values are pre-populated
                 recalculate();
             });
         }
+
         function buildSummary(){
             layerConfigs=[];
             $('#layerConfigContainer').querySelectorAll('[data-layer-id]').forEach(section=>{
@@ -943,12 +906,11 @@
             layerConfigs.sort((a,b)=>a.order-b.order);
             applyFiltersToConfigs().then(()=>{if($('#skipSummaryChk')?.checked)startEditing();else displaySummary();});
         }
+
         async function applyFiltersToConfigs(){
             for(const c of layerConfigs){
                 if(!c.filterEnabled||!c.filterWhere){c.filterApplied=false;continue;}
                 try{
-                    // Constrain to the OIDs already selected so the filter narrows
-                    // the selection rather than querying the whole service
                     const oidField=c.layer.objectIdField||'OBJECTID';
                     const objectIds=c.features.map(f=>f.attributes[oidField]).filter(id=>id!=null);
                     const qp={where:c.filterWhere,objectIds,returnGeometry:true,outFields:['*']};
@@ -957,6 +919,7 @@
                 }catch(err){c.filterError=err.message;c.filterApplied=false;}
             }
         }
+
         function displaySummary(){
             if(!layerConfigs.length){$('#summaryContent').innerHTML='<span style="color:#f38ba8;">No layers selected.</span>';$('#startEditingBtn').disabled=true;}
             else{$('#startEditingBtn').disabled=false;let total=0,html='';layerConfigs.forEach((c,i)=>{total+=c.features.length;html+=`<div style="padding:6px 0;border-bottom:1px solid #313244;"><div style="font-weight:700;font-size:12px;">${i+1}. ${c.mode==='edit'?'✏️':'👁'} ${c.layer.title}</div><div style="font-size:11px;color:#a6adc8;">${c.features.length} features${c.filterApplied?'<span style="color:#89b4fa;"> · filtered</span>':''}</div>${c.fields.length?`<div style="font-size:10px;color:#6c7086;margin-top:2px;">Fields: ${c.fields.map(f=>f.alias||f.name).join(', ')}</div>`:''}</div>`;});$('#summaryContent').innerHTML=`<div style="font-size:13px;font-weight:700;color:#a6e3a1;margin-bottom:8px;">${total} features total</div>`+html;}
@@ -973,7 +936,6 @@
             currentEditingQueue=[];
 
             if(interleave){
-                // Zip features across layers: L1[0], L2[0], L1[1], L2[1], …
                 const queues = layerConfigs.map(cfg =>
                     cfg.features.map(f=>({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip}))
                 );
@@ -987,6 +949,7 @@
 
             currentIndex=0;setPhase('editing');showCurrentFeature();
         }
+
         function showCurrentFeature(){
             if(currentIndex>=currentEditingQueue.length){setPhase('complete');clearHighlights();displayEditSummary();updateStatus('All features processed!');return;}
             const item=currentEditingQueue[currentIndex];
@@ -1007,6 +970,7 @@
             highlightFeature(item.feature,item.showPopup);
             updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
         }
+
         function applyPreviousValues(){
             if(!lastSubmittedValues)return;
             const item=currentEditingQueue[currentIndex];
@@ -1019,11 +983,13 @@
             });
             updateStatus('Previous values applied.');
         }
+
         function collectFormValues(fc){
             const vals={};
             fc.querySelectorAll('[data-field-name]').forEach(el=>{const name=el.dataset.fieldName,type=el.dataset.fieldType,raw=el.dataset.selectedCode!==undefined?el.dataset.selectedCode:el.value;if(raw==='')return;if(type==='integer'||type==='small-integer')vals[name]=parseInt(raw);else if(type==='double'||type==='single')vals[name]=parseFloat(raw);else if(type==='date')vals[name]=new Date(raw).getTime();else vals[name]=raw;});
             return vals;
         }
+
         async function submitFeature(){
             const item=currentEditingQueue[currentIndex];
             if(item.mode==='view'){currentIndex++;showCurrentFeature();return;}
@@ -1043,6 +1009,7 @@
                 updateStatus('Feature updated!');currentIndex++;setTimeout(()=>showCurrentFeature(),400);
             }catch(err){updateStatus('Error: '+err.message);alert('Error updating feature: '+err.message);}
         }
+
         function skipFeature(){const item=currentEditingQueue[currentIndex],oidField=getObjectIdField(item.feature);editLog.push({timestamp:new Date(),action:'skip',layerName:item.layer.title,featureOID:item.feature.attributes[oidField],success:true});currentIndex++;showCurrentFeature();}
         function prevFeature(){if(currentIndex>0){currentIndex--;showCurrentFeature();}}
 
@@ -1100,7 +1067,6 @@
             cfg.fields.forEach(f=>fc.appendChild(createFieldInput(f,null)));
             $('#applyBulkEditBtn').textContent=`Apply to ${cfg.features.length} Features`;
             $('#bulkEditResults').innerHTML='';
-            // Highlight all features that will be bulk edited in orange
             highlightBulkFeatures(cfg.features);
         }
         async function applyBulkEdit(){
@@ -1116,7 +1082,6 @@
                 updateStatus('Moving to next layer…');
                 setTimeout(()=>{currentBulkLayerIndex++;showBulkEditForm();},2000);
             }else{
-                // All layers done — clear highlights then go to complete
                 clearBulkHighlights();
                 setTimeout(()=>setPhase('complete'),2000);
             }
@@ -1186,80 +1151,207 @@
 
             try{
                 await item.layer.load();
-                // Not all layers support attachments
                 if(!item.layer.capabilities?.data?.supportsAttachment){
-                    section.style.display = 'none';
-                    return;
+                    section.style.display = 'none'; return;
                 }
 
                 const oidField = getObjectIdField(item.feature);
                 const oid      = item.feature.attributes[oidField];
                 const result   = await item.layer.queryAttachments({ objectIds:[oid] });
-                const attachments = result[oid] || [];
+                const attachments = (result[oid] || []);
 
-                if(!attachments.length){
-                    section.style.display = 'none';
-                    return;
-                }
+                if(!attachments.length){ section.style.display = 'none'; return; }
 
                 section.style.display = 'block';
                 list.innerHTML = '';
+
+                // ── Download All button (blob fetch — actually downloads) ──────
+                const dlAllBtn = document.createElement('button');
+                dlAllBtn.type = 'button'; dlAllBtn.className = 'btn btn-info';
+                dlAllBtn.style.cssText = 'width:100%;font-size:11px;margin-bottom:8px;';
+                dlAllBtn.textContent = `⬇ Download All (${attachments.length})`;
+                dlAllBtn.onclick = async () => {
+                    dlAllBtn.disabled = true;
+                    dlAllBtn.textContent = 'Downloading…';
+
+                    for (let i = 0; i < attachments.length; i++) {
+                        const att = attachments[i];
+                        dlAllBtn.textContent = `Downloading ${i + 1} / ${attachments.length}…`;
+                        try {
+                            const resp = await fetch(att.url, { credentials: 'include' });
+                            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                            const blob = await resp.blob();
+                            const url  = URL.createObjectURL(blob);
+                            const a    = document.createElement('a');
+                            a.href     = url;
+                            a.download = att.name;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                            await new Promise(r => setTimeout(r, 300));
+                        } catch (err) {
+                            updateStatus(`Failed to download "${att.name}": ${err.message}`);
+                        }
+                    }
+
+                    dlAllBtn.disabled = false;
+                    dlAllBtn.textContent = `⬇ Download All (${attachments.length})`;
+                    updateStatus(`Downloaded ${attachments.length} attachment(s).`);
+                };
+                list.appendChild(dlAllBtn);
+
+                // ── Per-attachment rows ───────────────────────────────────────
                 attachments.forEach(att => {
                     const row = document.createElement('div');
-                    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;background:#313244;border-radius:6px;margin-bottom:4px;';
+                    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px;background:#313244;border-radius:6px;margin-bottom:4px;';
 
                     const info = document.createElement('div');
                     info.style.cssText = 'flex:1;min-width:0;';
-                    const name = document.createElement('div');
-                    name.style.cssText = 'font-size:11px;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-                    name.textContent = att.name;
-                    const size = document.createElement('div');
-                    size.style.cssText = 'font-size:10px;color:#6c7086;';
-                    size.textContent = att.size ? `${(att.size/1024).toFixed(1)} KB` : '';
-                    info.appendChild(name);
-                    info.appendChild(size);
+
+                    const nameDisplay = document.createElement('div');
+                    nameDisplay.style.cssText = 'font-size:11px;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:text;border-bottom:1px dashed transparent;transition:border-color .15s;';
+                    nameDisplay.title = 'Click to rename';
+                    nameDisplay.textContent = att.name;
+                    nameDisplay.addEventListener('mouseenter', () => nameDisplay.style.borderBottomColor = '#6c7086');
+                    nameDisplay.addEventListener('mouseleave', () => nameDisplay.style.borderBottomColor = 'transparent');
+
+                    const nameInput = document.createElement('input');
+                    nameInput.type = 'text'; nameInput.value = att.name;
+                    nameInput.style.cssText = 'display:none;width:100%;padding:2px 4px;background:#1e1e2e;border:1px solid #cba6f7;border-radius:4px;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
+
+                    const renameStatus = document.createElement('div');
+                    renameStatus.style.cssText = 'font-size:10px;color:#6c7086;margin-top:2px;min-height:14px;';
+                    renameStatus.textContent = att.size ? `${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename` : '✏️ Click name to rename';
+
+                    let isRenaming = false;
+
+                    function enterEditMode(){
+                        if(isRenaming) return;
+                        nameDisplay.style.display = 'none';
+                        nameInput.style.display   = 'block';
+                        nameInput.focus(); nameInput.select();
+                        renameStatus.textContent  = 'Enter to confirm • Esc to cancel';
+                        renameStatus.style.color  = '#a6adc8';
+                    }
+                    function exitEditMode(){
+                        nameDisplay.style.display = 'block';
+                        nameInput.style.display   = 'none';
+                        renameStatus.textContent  = att.size ? `${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename` : '✏️ Click name to rename';
+                        renameStatus.style.color  = '#6c7086';
+                    }
+
+                    async function commitRename(){
+                        const newName = nameInput.value.trim();
+                        if(!newName || newName === att.name){ exitEditMode(); return; }
+                        isRenaming = true;
+                        renameStatus.textContent = 'Fetching file…';
+                        renameStatus.style.color = '#f9e2af';
+                        nameInput.disabled = true;
+                        try{
+                            const resp = await fetch(att.url, { credentials:'include' });
+                            if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                            const blob = await resp.blob();
+                            const origExt   = att.name.includes('.') ? att.name.split('.').pop() : '';
+                            const finalName = (!newName.includes('.') && origExt) ? `${newName}.${origExt}` : newName;
+                            const fd = new FormData();
+                            fd.append('attachment', new File([blob], finalName, { type: blob.type }));
+                            renameStatus.textContent = 'Uploading…';
+                            const addResult = await item.layer.addAttachment(item.feature, fd);
+                            if(!addResult?.addAttachmentResult?.success && !addResult?.objectId)
+                                throw new Error('Upload did not confirm success');
+                            renameStatus.textContent = 'Removing original…';
+                            await item.layer.deleteAttachments(item.feature, [att.id]);
+                            att.name = finalName;
+                            nameDisplay.textContent = finalName;
+                            nameInput.value         = finalName;
+                            renameStatus.textContent = `✓ Renamed  ✏️ Click name to rename`;
+                            renameStatus.style.color = '#a6e3a1';
+                            updateStatus(`Renamed to: ${finalName}`);
+                            exitEditMode();
+                        }catch(err){
+                            renameStatus.textContent = `✗ Rename failed: ${err.message}`;
+                            renameStatus.style.color = '#f38ba8';
+                            updateStatus('Rename failed: ' + err.message);
+                            exitEditMode();
+                        }finally{
+                            isRenaming = false;
+                            nameInput.disabled = false;
+                        }
+                    }
+
+                    nameDisplay.addEventListener('click', enterEditMode);
+                    nameInput.addEventListener('keydown', e => {
+                        if(e.key==='Enter')  { e.preventDefault(); commitRename(); }
+                        if(e.key==='Escape') { exitEditMode(); }
+                    });
+                    nameInput.addEventListener('blur', () => { if(!isRenaming) exitEditMode(); });
+
+                    info.appendChild(nameDisplay);
+                    info.appendChild(nameInput);
+                    info.appendChild(renameStatus);
 
                     const btnWrap = document.createElement('div');
                     btnWrap.style.cssText = 'display:flex;gap:4px;flex-shrink:0;';
 
-                    // Download — open in new tab so portal auth is preserved
                     const dlBtn = document.createElement('button');
                     dlBtn.type = 'button'; dlBtn.className = 'btn btn-info';
                     dlBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
-                    dlBtn.textContent = '⬇ Download';
-                    dlBtn.onclick = () => window.open(att.url, '_blank');
+                    dlBtn.textContent = '⬇';
+                    dlBtn.title = 'Download';
+                    dlBtn.onclick = async () => {
+                        try{
+                            dlBtn.disabled = true;
+                            const resp = await fetch(att.url, { credentials:'include' });
+                            if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                            const blob = await resp.blob();
+                            const url  = URL.createObjectURL(blob);
+                            const a    = document.createElement('a');
+                            a.href = url; a.download = att.name;
+                            document.body.appendChild(a); a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                        }catch(err){
+                            updateStatus('Download failed: ' + err.message);
+                        }finally{
+                            dlBtn.disabled = false;
+                        }
+                    };
 
-                    // Delete
                     const delBtn = document.createElement('button');
                     delBtn.type = 'button'; delBtn.className = 'btn btn-danger';
                     delBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
-                    delBtn.textContent = '🗑 Delete';
+                    delBtn.textContent = '🗑';
+                    delBtn.title = 'Delete';
                     delBtn.onclick = async () => {
-                        if(!confirm(`Delete attachment "${att.name}"?`)) return;
+                        if(!confirm(`Delete "${att.name}"?`)) return;
                         try{
-                            delBtn.disabled = true; delBtn.textContent = '…';
+                            delBtn.disabled = true;
                             await item.layer.deleteAttachments(item.feature, [att.id]);
                             row.remove();
-                            const remaining = list.querySelectorAll('div[style]');
-                            if(!remaining.length) section.style.display = 'none';
-                            updateStatus(`Deleted attachment: ${att.name}`);
+                            const rows = list.querySelectorAll('[data-att-row]');
+                            if(!rows.length) section.style.display = 'none';
+                            updateStatus(`Deleted: ${att.name}`);
                         }catch(err){
-                            delBtn.disabled = false; delBtn.textContent = '🗑 Delete';
+                            delBtn.disabled = false;
                             updateStatus('Delete failed: ' + err.message);
                         }
                     };
 
                     btnWrap.appendChild(dlBtn);
                     btnWrap.appendChild(delBtn);
+                    row.dataset.attRow = att.id;
                     row.appendChild(info);
                     row.appendChild(btnWrap);
                     list.appendChild(row);
                 });
+
             }catch(err){
                 section.style.display = 'none';
                 console.warn('Could not load attachments:', err);
             }
         }
+
         function cleanup(){
             if(sketchViewModel){sketchViewModel.destroy();sketchViewModel=null;}
             if(sketchLayer){mapView.map.remove(sketchLayer);sketchLayer=null;}
