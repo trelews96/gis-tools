@@ -136,9 +136,13 @@
         <div id="summaryPhase" style="display:none;">
             <div style="font-weight:700;margin-bottom:8px;">Review Configuration</div>
             <div id="summaryContent" class="card" style="margin-bottom:10px;"></div>
-            <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;background:#313244;padding:8px;border-radius:6px;">
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;background:#313244;padding:8px;border-radius:6px;">
                 <input type="checkbox" id="bulkEditMode" style="accent-color:#cba6f7;">
                 <div><strong style="color:#f9e2af;">⚡ Bulk Edit Mode</strong><div style="font-size:10px;color:#a6adc8;">Apply same values to all features at once</div></div>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;background:#313244;padding:8px;border-radius:6px;">
+                <input type="checkbox" id="interleaveMode" style="accent-color:#89b4fa;">
+                <div><strong style="color:#89b4fa;">⇄ Interleave Layers</strong><div style="font-size:10px;color:#a6adc8;">Alternate features between layers (e.g. Pole → Gig → Pole → Gig)</div></div>
             </label>
             <div style="display:flex;gap:6px;">
                 <button id="backToConfigBtn" class="btn btn-secondary" style="flex:1;">← Back</button>
@@ -803,6 +807,39 @@
             const orderDiv=document.createElement('div');orderDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:8px;display:flex;align-items:center;gap:8px;';
             orderDiv.innerHTML=`<span style="font-size:11px;color:#a6adc8;">Order:</span><input type="number" min="1" value="${order}" class="orderInput input-ctrl" style="width:50px;"><button class="moveUp btn btn-secondary" style="padding:3px 8px;">↑</button><button class="moveDown btn btn-secondary" style="padding:3px 8px;">↓</button>`;
 
+            const orderInput = orderDiv.querySelector('.orderInput');
+            const moveUp     = orderDiv.querySelector('.moveUp');
+            const moveDown   = orderDiv.querySelector('.moveDown');
+
+            // Keep dataset.order in sync whenever the number input changes
+            orderInput.addEventListener('input', () => {
+                card.dataset.order = orderInput.value || '1';
+            });
+
+            // Move card up: swap with the previous sibling and update both order values
+            moveUp.addEventListener('click', () => {
+                const prev = card.previousElementSibling;
+                if(!prev) return;
+                card.parentElement.insertBefore(card, prev);
+                const prevInput = prev.querySelector('.orderInput');
+                const myVal  = parseInt(orderInput.value) || parseInt(card.dataset.order);
+                const hisVal = parseInt(prevInput.value)  || parseInt(prev.dataset.order);
+                orderInput.value = hisVal; card.dataset.order = hisVal;
+                prevInput.value  = myVal;  prev.dataset.order  = myVal;
+            });
+
+            // Move card down: swap with the next sibling and update both order values
+            moveDown.addEventListener('click', () => {
+                const next = card.nextElementSibling;
+                if(!next) return;
+                card.parentElement.insertBefore(next, card);
+                const nextInput = next.querySelector('.orderInput');
+                const myVal  = parseInt(orderInput.value) || parseInt(card.dataset.order);
+                const hisVal = parseInt(nextInput.value)  || parseInt(next.dataset.order);
+                orderInput.value = hisVal; card.dataset.order = hisVal;
+                nextInput.value  = myVal;  next.dataset.order  = myVal;
+            });
+
             body.appendChild(modeRow);body.appendChild(fieldsSection);body.appendChild(optDiv);body.appendChild(filterDiv);body.appendChild(orderDiv);
             modeRow.querySelectorAll('input[type=radio]').forEach(r=>{r.onchange=()=>{fieldsSection.style.display=r.value==='edit'?'block':'none';};});
             header.addEventListener('click',e=>{if(e.target.closest('label.toggle-wrap'))return;const open=body.style.display==='block';body.style.display=open?'none':'block';chevron.textContent=open?'▼':'▲';});
@@ -925,8 +962,23 @@
             sessionStartTime=new Date();editLog=[];lastSubmittedValues=null;
             try{const sel=$('#savedConfigSelect');if(sel?.value)localStorage.setItem('pathEditorLastConfig',sel.value);}catch(e){}
             if($('#bulkEditMode')?.checked){startBulkEdit();return;}
+
+            const interleave = $('#interleaveMode')?.checked && layerConfigs.length > 1;
             currentEditingQueue=[];
-            layerConfigs.forEach(cfg=>cfg.features.forEach(f=>currentEditingQueue.push({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip})));
+
+            if(interleave){
+                // Zip features across layers: L1[0], L2[0], L1[1], L2[1], …
+                const queues = layerConfigs.map(cfg =>
+                    cfg.features.map(f=>({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip}))
+                );
+                const maxLen = Math.max(...queues.map(q=>q.length));
+                for(let i=0;i<maxLen;i++){
+                    queues.forEach(q=>{ if(i<q.length) currentEditingQueue.push(q[i]); });
+                }
+            }else{
+                layerConfigs.forEach(cfg=>cfg.features.forEach(f=>currentEditingQueue.push({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip})));
+            }
+
             currentIndex=0;setPhase('editing');showCurrentFeature();
         }
         function showCurrentFeature(){
