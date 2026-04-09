@@ -149,19 +149,18 @@
                         <button id="lineMode"  style="background:#666;">〰️ Line [Q]</button>
                     </div>
                     <div class="smt-sublabel"><span>Vertex Tools <span style="font-weight:normal;color:#888;">(Line Mode only)</span></span><button class="smt-info-btn" data-hint="h-vertex">▾ more</button></div>
-                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [3]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [4]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
+                    <div id="h-vertex" class="smt-hint" style="display:none;"><strong>Add [Space]:</strong> Click along a segment to insert a vertex at that spot.<br><strong>Delete [Shift]:</strong> Click a vertex to remove it. Lines with only 2 vertices cannot be reduced further.</div>
                     <div class="smt-row">
-                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [3]</button>
-                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [4]</button>
+                        <button id="addVertexMode"    style="background:#666;">➕ Add Vertex [Space]</button>
+                        <button id="deleteVertexMode" style="background:#666;">✖ Delete Vertex [Shift]</button>
                     </div>
                     <div class="smt-sublabel"><span>Snap to Point</span><button class="smt-info-btn" data-hint="h-snap">▾ more</button></div>
                     <div id="h-snap" class="smt-hint" style="display:none;">
-                        <strong>One-click shortcut</strong> that combines "Add Vertex" + "Move to Pole" into a single operation.<br><br>
-                        Click anywhere near a point feature and the tool will:<br>
-                        1. Find the nearest point feature within snap tolerance<br>
-                        2. Find all lines within 15 ft of that point, plus any line directly clicked<br>
-                        3. Insert a vertex at the exact point location on each line<br><br>
-                        Lines already snapped within 1 pixel are skipped automatically.<br><br>
+                        <strong>Two-click operation</strong> that snaps a specific line to a specific point feature.<br><br>
+                        1. Click any point feature (pole, anchor, etc.) to select it<br>
+                        2. Click the exact line you want bent to that point<br><br>
+                        A new vertex is inserted at the point's exact coordinates on the line. After each snap the pole is deselected — click the same pole again to snap another line to it, or click a new pole.<br><br>
+                        Press <strong>ESC</strong> to deselect the pole without leaving snap mode.<br><br>
                         <strong>Hotkey: S</strong>
                     </div>
                     <button id="snapToPointModeBtn" style="width:100%;background:#666;margin-bottom:4px;">🧲 Snap to Point [S]</button>
@@ -277,16 +276,17 @@
         let pickerPopup = null, pickerHoverGraphic = null;
         let hotkeyHandler = null;
         let snapToPointMode = false;
+        let snapToPointSelectedPole = null;  // stores the pole after first click
 
-        // Cut state
+        // Copy state
+        let copyMode = false, copyPlacementMode = false;
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
         let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
         let cutSelectedIndices = new Set(), cutGraphicMap = new Map();
         let undoStack = [];
         let cutGraphicsLayer = null;
 
-        // Copy state
-        let copyMode = false, copyPlacementMode = false;
+        let copySnapGeneration = 0;  // incremented on each mousemove; stale results are discarded
         let copyTemplateFeature = null, copyTemplateLayer = null;
         let copiedCount = 0;
         let copyMouseMoveHandler = null, copyKeyHandler = null, copySnapGraphic = null;
@@ -381,7 +381,14 @@
 
         // ── Copy helpers ──────────────────────────────────────────────────────
 
-        function showCopySnapIndicator(point){hideCopySnapIndicator();if(!point)return;copySnapGraphic={geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[50,200,50,0.9],size:14,outline:{color:[255,255,255,1],width:2}}};mapView.graphics.add(copySnapGraphic);}
+        function showCopySnapIndicator(point){
+            hideCopySnapIndicator();if(!point)return;
+            const graphic={geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[50,200,50,0.9],size:14,outline:{color:[255,255,255,1],width:2}}};
+            mapView.graphics.add(graphic);
+            // Retrieve the autocast instance the collection actually stored —
+            // remove() requires this reference, not the original plain object.
+            copySnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);
+        }
         function hideCopySnapIndicator(){if(copySnapGraphic){mapView.graphics.remove(copySnapGraphic);copySnapGraphic=null;}}
 
         async function findCopySnapPoint(screenPoint) {
@@ -402,7 +409,13 @@
             if(copyTemplateInfo)copyTemplateInfo.style.display='block';
             if(clearCopyTemplateBtn)clearCopyTemplateBtn.disabled=false;
             mapView.container.style.cursor='copy';
-            copyMouseMoveHandler=mapView.on('pointer-move',async e=>{if(!copyPlacementMode)return;showCopySnapIndicator(await findCopySnapPoint({x:e.x,y:e.y}));});
+            copyMouseMoveHandler=mapView.on('pointer-move', async e => {
+                if(!copyPlacementMode)return;
+                const gen = ++copySnapGeneration;   // capture this call's generation
+                const snap = await findCopySnapPoint({x:e.x,y:e.y});
+                if(gen !== copySnapGeneration)return; // discard if a newer call already fired
+                showCopySnapIndicator(snap);
+            });
             updateStatus(`📋 Template set (${cfg.name} · ${fullFeature.geometry?.type}). Click the map to place copies. ESC to clear.`);
         }
 
@@ -452,47 +465,107 @@
 
         // ── Snap-to-Point ─────────────────────────────────────────────────────
 
-        async function findLinesNearPoint(sp,polePt) {
-            const buf=CUT_TOLERANCE_M,found=[],seenOids=new Set();
-            if(lockedFeature?.featureType==='line'){await refreshLockedFeature();found.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig});return found;}
-            if(mapView.hitTest&&sp){try{const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});for(const r of hit.results){if(r.graphic?.geometry?.type!=='polyline')continue;const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);found.push({feature:r.graphic,layer:r.layer,layerConfig:cfg});}}catch(e){console.error('findLinesNearPoint hitTest error:',e);}}
-            const bufGeom={type:'polygon',spatialReference:mapView.spatialReference,rings:[[[polePt.x-buf,polePt.y-buf],[polePt.x+buf,polePt.y-buf],[polePt.x+buf,polePt.y+buf],[polePt.x-buf,polePt.y+buf],[polePt.x-buf,polePt.y-buf]]]};
-            for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:50});for(const f of res.features){const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);found.push({feature:f,layer:cfg.layer,layerConfig:cfg});}}catch(e){console.error(`findLinesNearPoint buffer error on ${cfg.name}:`,e);}}
-            return found;
-        }
-
         async function handleSnapToPointClick(event) {
-            const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);
-            updateStatus('🧲 Finding nearest point feature...');
-            const poleResult=await findNearestPointFeature(mp);
-            if(!poleResult){updateStatus('❌ No point feature found within snap tolerance. Click closer to a pole or point.');return;}
-            const polePt={x:poleResult.geometry.x,y:poleResult.geometry.y};
-            updateStatus(`📍 Found ${poleResult.layerConfig.name}. Snapping nearby lines...`);
-            const lines=await findLinesNearPoint(sp,polePt);
-            if(!lines.length){updateStatus(`❌ No lines found near this point. Try clicking directly on a line or closer to one.`);return;}
-            const updates=[]; let alreadySnapped=0;
-            const alreadyThreshold=mapView.resolution||1;
-            for(const li of lines){
-                try{
-                    const seg=findClosestSeg(li.feature.geometry,polePt);if(!seg)continue;
-                    const existing=findAbsoluteClosestVertex(li.feature.geometry,polePt);
-                    if(existing&&existing.distance<alreadyThreshold){alreadySnapped++;continue;}
-                    const newPaths=clonePaths(li.feature.geometry);
-                    newPaths[seg.pathIndex].splice(seg.insertIndex,0,[polePt.x,polePt.y]);
-                    const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);
-                    updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name});
-                }catch(e){console.error(`handleSnapToPointClick prep error on ${li.layerConfig.name}:`,e);}
+            const sp = {x:event.x, y:event.y}, mp = mapView.toMap(sp);
+
+            // ── Phase 1: no pole selected yet — find the nearest point feature ──
+            if (!snapToPointSelectedPole) {
+                updateStatus('🧲 Finding nearest point feature...');
+                const poleResult = await findNearestPointFeature(mp);
+                if (!poleResult) {
+                    updateStatus('❌ No point feature found within snap tolerance. Click closer to a pole or point.');
+                    return;
+                }
+                snapToPointSelectedPole = poleResult;
+                updateStatus(`📍 ${poleResult.layerConfig.name} selected. Now click the line you want to snap to it.`);
+                return;
             }
-            if(!updates.length){updateStatus(alreadySnapped>0?`✅ Line(s) already snapped to ${poleResult.layerConfig.name}.`:'❌ Could not snap any lines to this point.');return;}
-            for(const u of updates)if(u.layer.applyEdits)await u.layer.applyEdits({updateFeatures:[u.feature]});
-            const skipMsg=alreadySnapped>0?` · ${alreadySnapped} already snapped`:'';
-            updateStatus(`✅ Snapped ${updates.length} line(s) to ${poleResult.layerConfig.name}${skipMsg}!`);
-            if(lockedFeature)await refreshLockedFeature();if(vertexHighlightActive)scheduleHighlightRefresh();
-            setTimeout(()=>updateStatus('🧲 Snap to Point active. Click near a point feature to snap lines to it.'),3000);
+
+            // ── Phase 2: pole already selected — find the line the user clicked ──
+            const polePt = { x:snapToPointSelectedPole.geometry.x, y:snapToPointSelectedPole.geometry.y };
+            updateStatus('🧲 Finding clicked line...');
+
+            let targetLine = null;
+
+            // Prefer a direct hitTest on the click so the user gets exactly what they clicked
+            if (mapView.hitTest) {
+                try {
+                    const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === 'feature') });
+                    for (const r of hit.results) {
+                        if (r.graphic?.geometry?.type !== 'polyline') continue;
+                        const cfg = lineLayers.find(l => l.id === r.layer.layerId);
+                        if (cfg) { targetLine = { feature:r.graphic, layer:r.layer, layerConfig:cfg }; break; }
+                    }
+                } catch(e) { console.error('handleSnapToPointClick hitTest error:', e); }
+            }
+
+            // Fallback: spatial query around click if hitTest missed
+            if (!targetLine) {
+                const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
+                for (const cfg of lineLayers) {
+                    if (!cfg.layer.visible) continue;
+                    try {
+                        const res = await cfg.layer.queryFeatures({ geometry:ext, spatialRelationship:'intersects', returnGeometry:true, outFields:['*'], maxRecordCount:5 });
+                        if (res.features.length > 0) {
+                            // Pick the closest line to the click
+                            let best = null, bestD = Infinity;
+                            for (const f of res.features) {
+                                const seg = findClosestSeg(f.geometry, mp);
+                                if (seg && seg.distance < bestD) { bestD = seg.distance; best = { feature:f, layer:cfg.layer, layerConfig:cfg }; }
+                            }
+                            if (best) { targetLine = best; break; }
+                        }
+                    } catch(e) { console.error(`handleSnapToPointClick fallback error on ${cfg.name}:`, e); }
+                }
+            }
+
+            if (!targetLine) {
+                updateStatus('❌ No line found at click location. Click directly on a line, or press ESC to cancel.');
+                return;
+            }
+
+            // Check if already snapped
+            const alreadyThreshold = mapView.resolution || 1;
+            const existing = findAbsoluteClosestVertex(targetLine.feature.geometry, polePt);
+            if (existing && existing.distance < alreadyThreshold) {
+                updateStatus(`✅ Line already snapped to ${snapToPointSelectedPole.layerConfig.name}.`);
+                snapToPointSelectedPole = null;
+                setTimeout(() => updateStatus('🧲 Snap to Point active. Click a point feature to begin.'), 2000);
+                return;
+            }
+
+            // Insert vertex at the pole's exact coordinates
+            const seg = findClosestSeg(targetLine.feature.geometry, polePt);
+            if (!seg) {
+                updateStatus('❌ Could not find a valid segment on this line.');
+                return;
+            }
+
+            const newPaths = clonePaths(targetLine.feature.geometry);
+            newPaths[seg.pathIndex].splice(seg.insertIndex, 0, [polePt.x, polePt.y]);
+            const newGeom = buildPolyline(targetLine.feature.geometry, newPaths);
+            const upd = targetLine.feature.clone(); upd.geometry = newGeom;
+            upd.attributes.calculated_length = geodeticLength(newGeom);
+
+            try {
+                await targetLine.layer.applyEdits({ updateFeatures:[upd] });
+                updateStatus(`✅ ${targetLine.layerConfig.name} snapped to ${snapToPointSelectedPole.layerConfig.name}! Click another line or a new point feature.`);
+            } catch(e) {
+                console.error('handleSnapToPointClick applyEdits error:', e);
+                updateStatus('❌ Error saving snap. See console for details.');
+            }
+
+            // Reset pole so the user can either click another line (same pole)
+            // or click a new pole — we keep snap mode active
+            snapToPointSelectedPole = null;
+            if (lockedFeature) await refreshLockedFeature();
+            if (vertexHighlightActive) scheduleHighlightRefresh();
+            setTimeout(() => updateStatus('🧲 Snap to Point active. Click a point feature to begin.'), 3000);
         }
 
-        function enableSnapToPointMode(){if(cutMode)disableCutMode();if(copyMode)disableCopyMode();snapToPointMode=true;if(snapToPointModeBtn){snapToPointModeBtn.style.background='#7b2d8b';snapToPointModeBtn.textContent='🧲 Snap to Point [S] — Active';}[pointModeBtn,lineModeBtn,addVertexBtn,deleteVertexBtn].forEach(b=>{if(b)b.style.opacity='0.45';});if(toolActive)updateStatus('🧲 Snap to Point active. Click near any point feature to snap all lines within 15 ft to it.');}
-        function disableSnapToPointMode(){snapToPointMode=false;if(snapToPointModeBtn){snapToPointModeBtn.style.background='#666';snapToPointModeBtn.textContent='🧲 Snap to Point [S]';}[pointModeBtn,lineModeBtn,addVertexBtn,deleteVertexBtn].forEach(b=>{if(b)b.style.opacity='1';});if(toolActive)updateStatus(`Ready. Click a ${currentMode==='point'?'point feature':'line vertex'}.`);}
+        function enableSnapToPointMode(){if(cutMode)disableCutMode();if(copyMode)disableCopyMode();snapToPointMode=true;snapToPointSelectedPole=null;if(snapToPointModeBtn){snapToPointModeBtn.style.background='#7b2d8b';snapToPointModeBtn.textContent='🧲 Snap to Point [S] — Active';}[pointModeBtn,lineModeBtn,addVertexBtn,deleteVertexBtn].forEach(b=>{if(b)b.style.opacity='0.45';});if(toolActive)updateStatus('🧲 Snap to Point active. Click a point feature to begin.');}
+        function disableSnapToPointMode(){snapToPointMode=false;snapToPointSelectedPole=null;if(snapToPointModeBtn){snapToPointModeBtn.style.background='#666';snapToPointModeBtn.textContent='🧲 Snap to Point [S]';}[pointModeBtn,lineModeBtn,addVertexBtn,deleteVertexBtn].forEach(b=>{if(b)b.style.opacity='1';});if(toolActive)updateStatus(`Ready. Click a ${currentMode==='point'?'point feature':'line vertex'}.`);}
 
         // ── Hotkeys ───────────────────────────────────────────────────────────
 
@@ -510,10 +583,11 @@
                 case 's': case 'S': e.preventDefault(); snapToPointMode ? disableSnapToPointMode() : enableSnapToPointMode(); break;
                 case 'Escape':
                     e.preventDefault();
-                    if(copyPlacementMode)    clearCopyTemplate();
-                    else if(cutPreviewMode)  resetCutSelection();
-                    else if(snapToPointMode) disableSnapToPointMode();
-                    else if(selectedFeature) cancelMove();
+                    if(copyPlacementMode)       clearCopyTemplate();
+                    else if(cutPreviewMode)     resetCutSelection();
+                    else if(snapToPointSelectedPole){ snapToPointSelectedPole=null; updateStatus('🧲 Pole deselected. Click a point feature to begin.'); }
+                    else if(snapToPointMode)    disableSnapToPointMode();
+                    else if(selectedFeature)    cancelMove();
                     break;
             }
         }
