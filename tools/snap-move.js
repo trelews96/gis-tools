@@ -1133,10 +1133,20 @@
 
         function cancelMove(){selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();isProcessingClick=false;if(cancelBtn)cancelBtn.disabled=true;if(lockedFeature)updateStatus(lockedReadyStatus());else if(vertexMode==="add")updateStatus("Add Vertex mode · click a line segment.");else if(vertexMode==="delete")updateStatus("Delete Vertex mode · click a vertex.");else updateStatus(`Move cancelled · click a ${currentMode==="point"?"point feature":"line vertex"}.`);}
 
-        function setPointMode(){currentMode="point";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode&&!deleteMode){setActiveModeBtn('pointMode');showCtxPanel('default');}if(toolActive)updateStatus("Point mode · click a point feature to select it.");if(selectedFeature)cancelMove();}
-        function setLineMode(){currentMode="line";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode&&!deleteMode){setActiveModeBtn('lineMode');showCtxPanel('default');}if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
-        function setAddVertexMode(){const wasAdd=vertexMode==="add";vertexMode=wasAdd?"none":"add";if(vertexMode==="add"){setActiveModeBtn('addVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="add"?"Add Vertex · click a line segment to insert a vertex.":"Add Vertex off.");}
-        function setDeleteVertexMode(){const wasDel=vertexMode==="delete";vertexMode=wasDel?"none":"delete";if(vertexMode==="delete"){setActiveModeBtn('deleteVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="delete"?"Delete Vertex · click any vertex to remove it.":"Delete Vertex off.");}
+        // Exit whichever special mode is currently active, if any.
+        // Called by every basic mode button so clicking Point/Line/etc.
+        // always works regardless of what was active before.
+        function exitSpecialMode() {
+            if (cutMode)    disableCutMode();
+            if (copyMode)   disableCopyMode();
+            if (flipMode)   disableFlipMode();
+            if (deleteMode) disableDeleteMode();
+        }
+
+        function setPointMode(){exitSpecialMode();currentMode="point";vertexMode="none";setActiveModeBtn('pointMode');showCtxPanel('default');if(toolActive)updateStatus("Point mode · click a point feature to select it.");if(selectedFeature)cancelMove();}
+        function setLineMode(){exitSpecialMode();currentMode="line";vertexMode="none";setActiveModeBtn('lineMode');showCtxPanel('default');if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
+        function setAddVertexMode(){exitSpecialMode();const wasAdd=vertexMode==="add";vertexMode=wasAdd?"none":"add";if(vertexMode==="add"){setActiveModeBtn('addVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="add"?"Add Vertex · click a line segment to insert a vertex.":"Add Vertex off.");}
+        function setDeleteVertexMode(){exitSpecialMode();const wasDel=vertexMode==="delete";vertexMode=wasDel?"none":"delete";if(vertexMode==="delete"){setActiveModeBtn('deleteVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="delete"?"Delete Vertex · click any vertex to remove it.":"Delete Vertex off.");}
 
         function enableTool(){
             toolActive=true;clickHandler=mapView.on("click",handleClick);
@@ -1169,17 +1179,17 @@
         lineModeBtn.onclick          = setLineMode;
         addVertexBtn.onclick         = setAddVertexMode;
         deleteVertexBtn.onclick      = setDeleteVertexMode;
-        flipModeBtn.onclick          = ()=>flipMode?disableFlipMode():enableFlipMode();
+        flipModeBtn.onclick          = enableFlipMode;
         showVerticesToggleBtn.onclick = toggleVertexHighlight;
         directionToggleBtn.onclick   = toggleDirectionArrows;
         refreshVerticesBtn.onclick   = ()=>renderVertexHighlights();
         releaseFeatureBtn.onclick    = releaseLockedFeature;
         cancelBtn.onclick            = cancelMove;
-        cutModeBtn.onclick           = ()=>cutMode?disableCutMode():enableCutMode();
+        cutModeBtn.onclick           = enableCutMode;
         cutUndoBtn.onclick           = undoLastCut;
-        copyModeBtn.onclick          = ()=>copyMode?disableCopyMode():enableCopyMode();
+        copyModeBtn.onclick          = enableCopyMode;
         clearCopyTemplateBtn.onclick = clearCopyTemplate;
-        deleteModeBtn.onclick        = ()=>deleteMode?disableDeleteMode():enableDeleteMode();
+        deleteModeBtn.onclick        = enableDeleteMode;
         deleteUndoBtn.onclick        = undoLastDelete;
 
         lockFeatureBtn.onclick=()=>{
