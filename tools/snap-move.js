@@ -1,5 +1,5 @@
 // tools/snap-move-tool.js
-// Click-to-Move + Cut & Split + Click & Copy + Flip Direction Tool
+// Click-to-Move + Cut & Split + Click & Copy + Flip Direction + Soft Delete Tool
 
 (function() {
     try {
@@ -27,11 +27,10 @@
         const CUT_TOLERANCE_M = 15 / 3.28084;
         const MIN_SEGMENT_LEN_FT = 1;
         const COLOC_BUF_M = 1 / 3.28084;
-        // Arrow placement: one per 200 map units, min 1, max 5 per path
         const ARROW_SPACING = 200, ARROW_MIN = 1, ARROW_MAX = 5;
-        // Pixels to shift the arrow perpendicular to the line (left of travel direction)
-        // so it clears the midspan footage label. Tune if needed.
         const ARROW_LABEL_OFFSET_PX = 18;
+        // Case-insensitive field name for soft delete
+        const DELETE_FIELD = 'delete_feature';
 
         function makeExt(cx, cy, half, sr) {
             return { type:'extent', xmin:cx-half, ymin:cy-half, xmax:cx+half, ymax:cy+half, spatialReference:sr };
@@ -72,7 +71,7 @@
         toolBox.style.cssText = `
             position:fixed;top:120px;right:40px;z-index:${z};
             background:#0f0d1a;border:1px solid #2d2550;
-            padding:12px;width:290px;font:12px/1.4 Arial,sans-serif;
+            padding:12px;width:300px;font:12px/1.4 Arial,sans-serif;
             box-shadow:0 6px 24px rgba(0,0,0,.6);border-radius:6px;
             max-height:calc(100vh - 140px);overflow-y:auto;overflow-x:hidden;
             color:#e2d9f3;`;
@@ -88,10 +87,9 @@
             #smtHeader { display:flex;align-items:center;justify-content:space-between;margin-bottom:8px; }
             #smtTitle  { font-weight:bold;font-size:13px;color:#d4bbff; }
 
-            #toggleTool  { padding:4px 12px;font-size:11px;font-weight:bold;color:#fff; }
-            #toggleTool.smt-off { background:#1a6b3a; }
+            #toggleTool.smt-off { padding:4px 12px;font-size:11px;font-weight:bold;color:#fff;background:#1a6b3a; }
             #toggleTool.smt-off:hover { background:#15803d; }
-            #toggleTool.smt-on  { background:#7f1d1d; }
+            #toggleTool.smt-on  { padding:4px 12px;font-size:11px;font-weight:bold;color:#fff;background:#7f1d1d; }
             #toggleTool.smt-on:hover  { background:#991b1b; }
             #closeTool { padding:3px 8px;background:#2d2550;color:#9b8ec4;font-size:12px; }
             #closeTool:hover { background:#dc2626;color:#fff; }
@@ -100,10 +98,11 @@
             #refreshLayers { padding:2px 8px;font-size:10px;background:#1e3a5f;color:#93c5fd;border-radius:3px; }
             #refreshLayers:hover { background:#1e40af; }
 
-            #smtModeStrip { display:flex;gap:3px;margin-bottom:8px; }
-            #snapMoveToolbox .smt-mb { flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;background:#1a1535;border:1px solid #2d2550;border-radius:4px;color:#7a6d96;font-family:inherit;transition:all 0.13s;min-width:0; }
+            #smtModeStrip { display:flex;gap:2px;margin-bottom:8px;flex-wrap:wrap; }
+            #snapMoveToolbox .smt-mb { flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;background:#1a1535;border:1px solid #2d2550;border-radius:4px;color:#7a6d96;font-family:inherit;transition:all 0.13s; }
             #snapMoveToolbox .smt-mb:hover { background:#261f47;border-color:#5b4a8a;color:#c4b5fd; }
             #snapMoveToolbox .smt-mb.smt-active { background:#3b0764;border-color:#7c3aed;color:#fff;box-shadow:0 0 10px rgba(124,58,237,0.35); }
+            #snapMoveToolbox .smt-mb.smt-active-delete { background:#4a0a0a;border-color:#dc2626;color:#fca5a5;box-shadow:0 0 10px rgba(220,38,38,0.35); }
             #snapMoveToolbox .smt-mb .mi { font-size:15px;line-height:1.2; }
             #snapMoveToolbox .smt-mb .ml { font-size:8px;font-weight:bold;text-transform:uppercase;letter-spacing:0.3px;opacity:0.9; }
 
@@ -128,6 +127,8 @@
             #clearCopyTemplateBtn:hover:not(:disabled) { background:#2d2550; }
             #copyTemplateInfo { padding:5px 7px;background:#0f2a1e;border:1px solid #14532d;border-radius:3px;font-size:10px;color:#86efac; }
             #copyCountInfo { font-size:10px;color:#22c55e;font-weight:bold;min-height:12px; }
+            #deleteUndoBtn { width:100%;padding:5px;background:#1e2535;color:#fca5a5; }
+            #deleteUndoBtn:hover:not(:disabled) { background:#4a0a0a; }
 
             #toolStatus { padding:6px 10px;background:#14112a;border:1px solid #2d2550;border-left:3px solid #3b82f6;border-radius:4px;color:#c4b5fd;font-size:11px;min-height:20px;line-height:1.4;margin-bottom:8px;transition:border-left-color 0.2s; }
 
@@ -157,13 +158,14 @@
         </div>
 
         <div id="smtModeStrip">
-            <button class="smt-mb" id="pointMode"      data-tip="Move point features [E]&#10;Connected line endpoints + co-located points move automatically."><span class="mi">📍</span><span class="ml">Point</span></button>
-            <button class="smt-mb" id="lineMode"       data-tip="Move line vertices [Q]&#10;Coincident shared vertices move together."><span class="mi">〰️</span><span class="ml">Line</span></button>
-            <button class="smt-mb" id="addVertexMode"  data-tip="Add vertex [Space]&#10;Click a line segment to insert a new vertex."><span class="mi">➕</span><span class="ml">Add Vtx</span></button>
+            <button class="smt-mb" id="pointMode"        data-tip="Move point features [E]&#10;Connected line endpoints + co-located points move automatically."><span class="mi">📍</span><span class="ml">Point</span></button>
+            <button class="smt-mb" id="lineMode"         data-tip="Move line vertices [Q]&#10;Coincident shared vertices move together."><span class="mi">〰️</span><span class="ml">Line</span></button>
+            <button class="smt-mb" id="addVertexMode"    data-tip="Add vertex [Space]&#10;Click a line segment to insert a new vertex."><span class="mi">➕</span><span class="ml">Add Vtx</span></button>
             <button class="smt-mb" id="deleteVertexMode" data-tip="Delete vertex [Shift]&#10;Lines with only 2 vertices cannot be reduced."><span class="mi">✕</span><span class="ml">Del Vtx</span></button>
-            <button class="smt-mb" id="flipModeBtn"    data-tip="Flip line direction [F]&#10;Reverses vertex order of all coincident lines at the clicked location.&#10;If a feature is locked, flips just that line."><span class="mi">🔄</span><span class="ml">Flip</span></button>
-            <button class="smt-mb" id="cutModeBtn"     data-tip="Cut &amp; split lines [C]&#10;Click a point feature near a line. Choose which lines to split, then confirm."><span class="mi">✂️</span><span class="ml">Cut</span></button>
-            <button class="smt-mb" id="copyModeBtn"    data-tip="Click &amp; copy&#10;Click any feature as a template, then click the map to place copies."><span class="mi">📋</span><span class="ml">Copy</span></button>
+            <button class="smt-mb" id="flipModeBtn"      data-tip="Flip line direction [F]&#10;Reverses vertex order of all coincident lines at click.&#10;Locked feature: flips just that line."><span class="mi">🔄</span><span class="ml">Flip</span></button>
+            <button class="smt-mb" id="cutModeBtn"       data-tip="Cut &amp; split lines [C]&#10;Click a point feature near a line. Choose which lines to split, then confirm."><span class="mi">✂️</span><span class="ml">Cut</span></button>
+            <button class="smt-mb" id="copyModeBtn"      data-tip="Click &amp; copy&#10;Click any feature as a template, then click the map to place copies."><span class="mi">📋</span><span class="ml">Copy</span></button>
+            <button class="smt-mb" id="deleteModeBtn"    data-tip="Soft delete features [D]&#10;Click any location to flag features at that point.&#10;Sets delete_feature = YES on the feature's layer.&#10;Undo restores to NO."><span class="mi">🗑️</span><span class="ml">Delete</span></button>
         </div>
 
         <div id="smtLockRow">
@@ -184,30 +186,28 @@
             <div id="copyTemplateInfo" style="display:none;"><div id="copyTemplateDetails"></div></div>
             <div id="copyCountInfo"></div>
         </div>
+        <div id="smtCtxDelete" class="smt-ctx hidden">
+            <button id="deleteUndoBtn" disabled>↩ Undo Last Delete</button>
+        </div>
 
         <div id="toolStatus">Tool disabled — click Enable to start.</div>
 
         <div id="smtFooter">
-            <button id="snappingToggle"      data-tip="Toggle snapping to nearby points and line vertices.">⦿ Snap ON</button>
-            <button id="showVerticesToggle"  data-tip="Overlay vertex markers on all visible line features.&#10;🟠 endpoints  🔵 midpoints">👁 Vertices</button>
-            <button id="directionToggle"     data-tip="Overlay direction arrows on visible line features.&#10;Only offsets arrows when coincident lines conflict.&#10;Requires vertex highlight to be active." disabled>🔺 Direction</button>
-            <button id="refreshVertices"     data-tip="Manually refresh vertex markers and direction arrows." disabled>↺ Vtx</button>
+            <button id="snappingToggle"     data-tip="Toggle snapping to nearby points and line vertices.">⦿ Snap ON</button>
+            <button id="showVerticesToggle" data-tip="Overlay vertex markers on all visible line features.&#10;🟠 endpoints  🔵 midpoints">👁 Vertices</button>
+            <button id="directionToggle"    data-tip="Overlay direction arrows on visible line features.&#10;Only offsets arrows when coincident lines conflict.&#10;Requires vertex highlight to be active." disabled>🔺 Direction</button>
+            <button id="refreshVertices"    data-tip="Manually refresh vertex markers and direction arrows." disabled>↺ Vtx</button>
         </div>`;
 
         document.body.appendChild(toolBox);
 
-        // ── Cut context menu (dark) ───────────────────────────────────────────
+        // ── Cut context menu ──────────────────────────────────────────────────
 
         const cutCtxMenu = document.createElement('div');
         cutCtxMenu.id = 'smtCutContextMenu';
-        cutCtxMenu.style.cssText = `
-            display:none;position:fixed;z-index:${z+1};background:#0f0d1a;
-            border:1px solid #3a3060;border-radius:6px;
-            box-shadow:0 4px 20px rgba(0,0,0,.6);
-            font:12px/1.4 Arial,sans-serif;min-width:210px;overflow:hidden;color:#e2d9f3;`;
+        cutCtxMenu.style.cssText = `display:none;position:fixed;z-index:${z+1};background:#0f0d1a;border:1px solid #3a3060;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.6);font:12px/1.4 Arial,sans-serif;min-width:210px;overflow:hidden;color:#e2d9f3;`;
         cutCtxMenu.innerHTML = `
-            <div style="padding:6px 10px;background:#2d1b69;color:#e2d9f3;font-weight:bold;font-size:11px;
-                        display:flex;align-items:center;justify-content:space-between;">
+            <div style="padding:6px 10px;background:#2d1b69;color:#e2d9f3;font-weight:bold;font-size:11px;display:flex;align-items:center;justify-content:space-between;">
                 <span>✂️ Lines: <span id="cutCtxCount">0</span></span>
                 <button id="cutCtxSelectAll" style="padding:1px 7px;background:rgba(255,255,255,.12);color:#e2d9f3;border:1px solid rgba(255,255,255,.25);border-radius:3px;font-size:10px;cursor:pointer;font-family:inherit;">✓ All</button>
             </div>
@@ -217,6 +217,23 @@
                 <button id="cutCtxCancel"  style="padding:7px 10px;background:#1a1535;color:#9b8ec4;border:none;cursor:pointer;text-align:left;font:12px Arial,sans-serif;">✕ Cancel</button>
             </div>`;
         document.body.appendChild(cutCtxMenu);
+
+        // ── Delete context menu ───────────────────────────────────────────────
+
+        const delCtxMenu = document.createElement('div');
+        delCtxMenu.id = 'smtDeleteContextMenu';
+        delCtxMenu.style.cssText = `display:none;position:fixed;z-index:${z+1};background:#0f0d1a;border:1px solid #7f1d1d;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.6);font:12px/1.4 Arial,sans-serif;min-width:220px;overflow:hidden;color:#e2d9f3;`;
+        delCtxMenu.innerHTML = `
+            <div style="padding:6px 10px;background:#4a0a0a;color:#fca5a5;font-weight:bold;font-size:11px;display:flex;align-items:center;justify-content:space-between;">
+                <span>🗑️ Features: <span id="delCtxCount">0</span></span>
+                <button id="delCtxSelectAll" style="padding:1px 7px;background:rgba(255,255,255,.12);color:#fca5a5;border:1px solid rgba(255,150,150,.35);border-radius:3px;font-size:10px;cursor:pointer;font-family:inherit;">✓ All</button>
+            </div>
+            <div id="delCtxList" style="max-height:200px;overflow-y:auto;border-bottom:1px solid #2d2550;background:#0f0d1a;"></div>
+            <div style="display:flex;flex-direction:column;background:#0f0d1a;">
+                <button id="delCtxExecute" style="padding:7px 10px;background:#991b1b;color:#fff;border:none;border-bottom:1px solid #2d2550;cursor:pointer;text-align:left;font:bold 12px Arial,sans-serif;">🗑️ Mark as Deleted (0)</button>
+                <button id="delCtxCancel"  style="padding:7px 10px;background:#1a1535;color:#9b8ec4;border:none;cursor:pointer;text-align:left;font:12px Arial,sans-serif;">✕ Cancel</button>
+            </div>`;
+        document.body.appendChild(delCtxMenu);
 
         // ── Drag to move ──────────────────────────────────────────────────────
 
@@ -256,8 +273,6 @@
         let connectedFeatures = [], colocatedPoints = [], originalGeometries = new Map(), clickHandler = null;
         let isProcessingClick = false, snappingEnabled = true;
         let lockedFeature = null, pickingFeatureMode = false;
-        // vertexHighlightActive  — vertex dots + (optionally) direction arrows
-        // directionArrowsActive  — direction arrows only; requires vertexHighlightActive
         let vertexHighlightActive = false, directionArrowsActive = false, vertexHighlightLayer = null;
         let extentWatchHandle = null, highlightDebounceTimer = null;
         let pickerPopup = null, pickerHoverGraphic = null;
@@ -268,7 +283,13 @@
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
         let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
         let cutSelectedIndices = new Set(), cutGraphicMap = new Map();
-        let undoStack = [], cutGraphicsLayer = null;
+        let cutUndoStack = [], cutGraphicsLayer = null;
+
+        // Delete state
+        let deleteMode = false, deleteProcessing = false;
+        let deleteCandidates = [];       // features found at click location
+        let deleteSelectedIndices = new Set();
+        let deleteUndoStack = [];        // [{layer, oid, layerName}]
 
         let copySnapGeneration = 0;
         let copyTemplateFeature = null, copyTemplateLayer = null;
@@ -302,6 +323,8 @@
         const copyTemplateInfo      = $("#copyTemplateInfo");
         const copyTemplateDetails   = $("#copyTemplateDetails");
         const copyCountInfo         = $("#copyCountInfo");
+        const deleteModeBtn         = $("#deleteModeBtn");
+        const deleteUndoBtn         = $("#deleteUndoBtn");
 
         // ── Status bar ────────────────────────────────────────────────────────
 
@@ -313,19 +336,23 @@
             else if (msg.startsWith('❌'))                                                           c = '#dc2626';
             else if (msg.includes('🎯') || msg.includes('Click destination'))                       c = '#f97316';
             else if (msg.startsWith('↩'))                                                           c = '#8b5cf6';
+            else if (msg.includes('🗑️'))                                                            c = '#ef4444';
             else if (msg.includes('✂️')||msg.includes('📋')||msg.includes('🔄')||msg.includes('🔒')) c = '#a78bfa';
             status.style.borderLeftColor = c;
         };
 
         // ── UI helpers ────────────────────────────────────────────────────────
 
-        function setActiveModeBtn(id) {
-            toolBox.querySelectorAll('.smt-mb').forEach(b => b.classList.remove('smt-active'));
-            if (id) { const b = toolBox.querySelector('#'+id); if (b) b.classList.add('smt-active'); }
+        function setActiveModeBtn(id, isDelete = false) {
+            toolBox.querySelectorAll('.smt-mb').forEach(b => { b.classList.remove('smt-active'); b.classList.remove('smt-active-delete'); });
+            if (id) {
+                const b = toolBox.querySelector('#'+id);
+                if (b) b.classList.add(isDelete ? 'smt-active-delete' : 'smt-active');
+            }
         }
 
         function showCtxPanel(name) {
-            ['Default','Cut','Copy'].forEach(n => {
+            ['Default','Cut','Copy','Delete'].forEach(n => {
                 const el = toolBox.querySelector(`#smtCtx${n}`);
                 if (el) el.classList.toggle('hidden', n.toLowerCase() !== (name||'').toLowerCase());
             });
@@ -347,6 +374,18 @@
         function clonePaths(geom) { return geom.paths.map(p=>p.map(c=>c.slice())); }
         function calcPolygonCentroid(ring) { let x=0,y=0; for(const pt of ring){x+=pt[0];y+=pt[1];} return{x:x/ring.length,y:y/ring.length}; }
         function toTypedPoint(g,fallbackSr) { if(!g)return g; if(g.type)return g; return{type:'point',x:g.x,y:g.y,spatialReference:g.spatialReference||fallbackSr}; }
+
+        // ── Helpers: delete field detection ───────────────────────────────────
+
+        /**
+         * Returns the actual field name on a layer that matches DELETE_FIELD
+         * (case-insensitive). Returns null if the field doesn't exist.
+         */
+        function getDeleteFieldName(layer) {
+            if (!layer?.fields) return null;
+            const match = layer.fields.find(f => f.name.toLowerCase() === DELETE_FIELD.toLowerCase());
+            return match ? match.name : null;
+        }
 
         // ── Cut geometry helpers ──────────────────────────────────────────────
 
@@ -467,7 +506,7 @@
         function clearCopyTemplate(){copyTemplateFeature=null;copyTemplateLayer=null;copyPlacementMode=false;copiedCount=0;if(copyMouseMoveHandler){copyMouseMoveHandler.remove();copyMouseMoveHandler=null;}hideCopySnapIndicator();if(copyTemplateInfo)copyTemplateInfo.style.display='none';if(copyCountInfo)copyCountInfo.textContent='';if(clearCopyTemplateBtn)clearCopyTemplateBtn.disabled=true;mapView.container.style.cursor='crosshair';if(copyMode)updateStatus('📋 Copy mode active. Click any feature on the map as a template.');}
 
         function enableCopyMode(){
-            if(cutMode)disableCutMode();if(flipMode)disableFlipMode();
+            if(cutMode)disableCutMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();
             copyMode=true;setActiveModeBtn('copyModeBtn');showCtxPanel('copy');
             copyKeyHandler=e=>{if(e.key==='Escape'&&copyPlacementMode)clearCopyTemplate();};
             document.addEventListener('keydown',copyKeyHandler);
@@ -505,7 +544,7 @@
         }
 
         function enableFlipMode(){
-            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();
+            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();
             flipMode=true;setActiveModeBtn('flipModeBtn');showCtxPanel(null);
             if(toolActive){const lockHint=lockedFeature?.featureType==='line'?` (locked to ${lockedFeature.layerConfig.name} — click anywhere to flip)`:'';updateStatus(`🔄 Flip mode active. Click any line to reverse its direction${lockHint}.`);}
         }
@@ -514,22 +553,257 @@
             if(toolActive)updateStatus(`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`);
         }
 
+        // ── Soft Delete ───────────────────────────────────────────────────────
+
+        /**
+         * Find all features at a clicked location across all visible feature layers.
+         * Used by delete mode — covers points, lines, and polygons.
+         */
+        async function findAllFeaturesAtClick(sp, mp) {
+            const candidates = [], seenOids = new Set();
+            // Polygons excluded — delete tool targets points and lines only
+            const allCfgs = [...pointLayers, ...lineLayers].sort((a,b) => a.name.localeCompare(b.name));
+
+            // hitTest first for precision
+            if (mapView.hitTest) {
+                try {
+                    const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === 'feature') });
+                    for (const r of hit.results) {
+                        if (!r.graphic?.geometry) continue;
+                        const cfg = allCfgs.find(c => c.id === r.layer.layerId);
+                        if (!cfg) continue;
+                        const oid = getOid(r.graphic);
+                        if (oid != null && seenOids.has(oid)) continue;
+                        if (oid != null) seenOids.add(oid);
+                        candidates.push({ feature: r.graphic, layer: r.layer, layerConfig: cfg });
+                    }
+                } catch(e) { console.error('findAllFeaturesAtClick hitTest error:', e); }
+            }
+
+            // Spatial fallback for anything hitTest missed
+            const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+            const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
+            for (const cfg of allCfgs) {
+                if (!cfg.layer.visible) continue;
+                try {
+                    const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['*'], maxRecordCount: 20 });
+                    for (const f of res.features) {
+                        if (!f.geometry) continue;
+                        const oid = getOid(f);
+                        if (oid != null && seenOids.has(oid)) continue;
+                        if (oid != null) seenOids.add(oid);
+                        candidates.push({ feature: f, layer: cfg.layer, layerConfig: cfg });
+                    }
+                } catch(e) { console.error(`findAllFeaturesAtClick fallback error on ${cfg.name}:`, e); }
+            }
+            return candidates;
+        }
+
+        function showDelContextMenu(mapPoint) {
+            const screen = mapView.toScreen(mapPoint), rect = mapView.container.getBoundingClientRect();
+            let left = rect.left + screen.x + 14, top = rect.top + screen.y - 10;
+            if (left + 240 > window.innerWidth) left = rect.left + screen.x - 240;
+            if (top + 320 > window.innerHeight) top = window.innerHeight - 320;
+            delCtxMenu.style.left = left + 'px'; delCtxMenu.style.top = top + 'px';
+            delCtxMenu.style.display = 'block';
+        }
+        function hideDelContextMenu() { delCtxMenu.style.display = 'none'; }
+
+        function updateDelExecuteBtn() {
+            const btn = delCtxMenu.querySelector('#delCtxExecute');
+            if (!btn || deleteProcessing) return;
+            const n = deleteSelectedIndices.size;
+            btn.textContent = `🗑️ Mark as Deleted (${n})`;
+            btn.disabled = n === 0;
+        }
+
+        async function handleDeleteClick(event) {
+            if (deleteProcessing) return;
+            hideDelContextMenu();
+            updateStatus('🗑️ Finding features at click location…');
+            const sp = { x: event.x, y: event.y }, mp = mapView.toMap(sp);
+            deleteCandidates = await findAllFeaturesAtClick(sp, mp);
+
+            if (!deleteCandidates.length) { updateStatus('❌ No features found at this location.'); return; }
+
+            // Filter to only features whose layer has the delete field
+            const eligible = deleteCandidates.filter(c => getDeleteFieldName(c.layer) !== null);
+            const ineligible = deleteCandidates.length - eligible.length;
+
+            if (!eligible.length) {
+                updateStatus(`❌ None of the ${deleteCandidates.length} feature(s) found have a "${DELETE_FIELD}" field.`);
+                return;
+            }
+
+            deleteCandidates = eligible;
+            deleteSelectedIndices = new Set(deleteCandidates.map((_, i) => i));
+
+            // Build checklist
+            const listEl = delCtxMenu.querySelector('#delCtxList');
+            listEl.innerHTML = '';
+            const typeIcon = t => t === 'point' ? '📍' : t === 'polyline' ? '〰️' : '⬡';
+
+            for (let i = 0; i < deleteCandidates.length; i++) {
+                const c = deleteCandidates[i];
+                const oid = getOid(c.feature) ?? '?';
+                const gtype = c.feature.geometry?.type ?? 'unknown';
+                const fieldName = getDeleteFieldName(c.layer);
+                const curVal = c.feature.attributes?.[fieldName] ?? 'null';
+                const alreadyDeleted = String(curVal).toUpperCase() === 'YES';
+
+                const row = document.createElement('label');
+                row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.checked = true; cb.dataset.idx = String(i);
+                cb.style.cssText = 'margin-top:2px;cursor:pointer;flex-shrink:0;';
+
+                const info = document.createElement('div');
+                info.style.cssText = 'flex:1;font-size:11px;line-height:1.5;';
+                info.innerHTML = `<strong style="color:${alreadyDeleted?'#fca5a5':'#e2d9f3'};">${typeIcon(gtype)} ${c.layerConfig.name}</strong>`
+                    + `<div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${DELETE_FIELD}: ${curVal}${alreadyDeleted?' ⚠️ already flagged':''}</div>`;
+
+                const dot = document.createElement('span');
+                dot.textContent = '●'; dot.style.cssText = 'color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';
+
+                cb.addEventListener('change', () => {
+                    const idx = parseInt(cb.dataset.idx);
+                    if (cb.checked) { deleteSelectedIndices.add(idx); dot.style.color = '#ef4444'; }
+                    else { deleteSelectedIndices.delete(idx); dot.style.color = '#3d3268'; }
+                    updateDelExecuteBtn();
+                });
+
+                row.addEventListener('mouseenter', () => { row.style.background = '#2d1b0a'; showPickerHoverHighlight(c.feature.geometry); });
+                row.addEventListener('mouseleave', () => { row.style.background = ''; clearPickerHoverHighlight(); });
+
+                row.appendChild(cb); row.appendChild(info); row.appendChild(dot);
+                listEl.appendChild(row);
+            }
+
+            delCtxMenu.querySelector('#delCtxCount').textContent = deleteCandidates.length;
+
+            // Select all toggle
+            const selAllBtn = delCtxMenu.querySelector('#delCtxSelectAll');
+            if (selAllBtn) {
+                selAllBtn.textContent = '✓ All';
+                selAllBtn.onclick = () => {
+                    const allOn = deleteSelectedIndices.size === deleteCandidates.length;
+                    [...listEl.querySelectorAll('label')].forEach((row, i) => {
+                        const cb = row.querySelector('input'), dot = row.querySelector('span');
+                        cb.checked = !allOn;
+                        if (!allOn) { deleteSelectedIndices.add(i); if (dot) dot.style.color = '#ef4444'; }
+                        else { deleteSelectedIndices.delete(i); if (dot) dot.style.color = '#3d3268'; }
+                    });
+                    selAllBtn.textContent = allOn ? '✓ All' : '✗ None';
+                    updateDelExecuteBtn();
+                };
+            }
+
+            updateDelExecuteBtn();
+            // Position near the click on the map
+            showDelContextMenu(mp);
+            const ineligMsg = ineligible > 0 ? ` · ${ineligible} skipped (no ${DELETE_FIELD} field)` : '';
+            updateStatus(`🗑️ ${deleteCandidates.length} eligible feature(s) found${ineligMsg}. Select and confirm.`);
+        }
+
+        async function executeDelete() {
+            const toDelete = deleteCandidates.filter((_, i) => deleteSelectedIndices.has(i));
+            if (!toDelete.length || deleteProcessing) return;
+            deleteProcessing = true;
+            delCtxMenu.querySelector('#delCtxExecute').disabled = true;
+            delCtxMenu.querySelector('#delCtxCancel').disabled = true;
+            updateStatus('🗑️ Flagging features…');
+
+            const batch = []; let ok = 0, fail = 0;
+            for (const c of toDelete) {
+                const fieldName = getDeleteFieldName(c.layer);
+                if (!fieldName) { fail++; continue; }
+                try {
+                    const upd = c.feature.clone();
+                    upd.attributes[fieldName] = 'YES';
+                    await c.layer.applyEdits({ updateFeatures: [upd] });
+                    batch.push({ layer: c.layer, layerName: c.layerConfig.name, oid: getOid(c.feature), fieldName });
+                    ok++;
+                } catch(e) { console.error(`executeDelete error on ${c.layerConfig.name}:`, e); fail++; }
+            }
+
+            if (batch.length) {
+                deleteUndoStack.push(batch);
+                if (deleteUndoBtn) deleteUndoBtn.disabled = false;
+            }
+
+            const names = [...new Set(batch.map(b => b.layerName))];
+            updateStatus(ok
+                ? `✅ Flagged ${ok} feature(s) as deleted: ${names.join(', ')}${fail ? ` · ${fail} failed` : ''}.`
+                : `❌ All ${fail} flag(s) failed.`);
+
+            deleteProcessing = false;
+            delCtxMenu.querySelector('#delCtxExecute').disabled = false;
+            delCtxMenu.querySelector('#delCtxCancel').disabled = false;
+            hideDelContextMenu();
+            clearPickerHoverHighlight();
+            deleteCandidates = []; deleteSelectedIndices.clear();
+            setTimeout(() => updateStatus('🗑️ Delete mode active. Click any feature to flag it.'), 3000);
+        }
+
+        async function undoLastDelete() {
+            if (!deleteUndoStack.length || deleteProcessing) return;
+            deleteProcessing = true;
+            updateStatus('↩ Restoring last delete batch…');
+            const batch = deleteUndoStack.pop();
+            let ok = 0, fail = 0;
+            for (const op of batch) {
+                try {
+                    // Query fresh to get the full feature then set field to NO
+                    const res = await op.layer.queryFeatures({ where: `objectid=${op.oid}`, returnGeometry: true, outFields: ['*'] });
+                    if (!res.features.length) { fail++; continue; }
+                    const upd = res.features[0].clone();
+                    upd.attributes[op.fieldName] = 'NO';
+                    await op.layer.applyEdits({ updateFeatures: [upd] });
+                    ok++;
+                } catch(e) { console.error(`undoLastDelete error on ${op.layerName}:`, e); fail++; }
+            }
+            if (!deleteUndoStack.length && deleteUndoBtn) deleteUndoBtn.disabled = true;
+            updateStatus(`↩ Restored ${ok} feature(s) to NO${fail ? ` · ${fail} failed` : ''}.`);
+            deleteProcessing = false;
+            setTimeout(() => { if (deleteMode) updateStatus('🗑️ Delete mode active. Click any feature to flag it.'); }, 3000);
+        }
+
+        function enableDeleteMode() {
+            if (cutMode) disableCutMode();
+            if (copyMode) disableCopyMode();
+            if (flipMode) disableFlipMode();
+            deleteMode = true;
+            setActiveModeBtn('deleteModeBtn', true);
+            showCtxPanel('delete');
+            if (toolActive) updateStatus('🗑️ Delete mode active. Click any feature to flag it.');
+        }
+        function disableDeleteMode() {
+            deleteMode = false; deleteProcessing = false;
+            hideDelContextMenu(); clearPickerHoverHighlight();
+            deleteCandidates = []; deleteSelectedIndices.clear();
+            setActiveModeBtn(currentMode === 'point' ? 'pointMode' : 'lineMode');
+            showCtxPanel('default');
+            if (toolActive) updateStatus(`Ready · click a ${currentMode === 'point' ? 'point feature' : 'line vertex'}.`);
+        }
+
         // ── Hotkeys ───────────────────────────────────────────────────────────
 
         function handleHotkey(e) {
-            if(!toolActive)return;
-            const tag=e.target?.tagName;
-            if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable)return;
-            switch(e.key){
-                case 'e':case 'E': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode)setPointMode();break;
-                case 'q':case 'Q': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode)setLineMode();break;
-                case ' ':          e.preventDefault();if(!cutMode&&!copyMode&&!flipMode)setAddVertexMode();break;
+            if (!toolActive) return;
+            const tag = e.target?.tagName;
+            if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable) return;
+            switch(e.key) {
+                case 'e':case 'E': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setPointMode();break;
+                case 'q':case 'Q': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setLineMode();break;
+                case ' ':          e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setAddVertexMode();break;
                 case 'c':case 'C': e.preventDefault();cutMode?disableCutMode():enableCutMode();break;
-                case 'Shift':      e.preventDefault();if(!cutMode&&!copyMode&&!flipMode)setDeleteVertexMode();break;
+                case 'Shift':      e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setDeleteVertexMode();break;
                 case 'f':case 'F': e.preventDefault();flipMode?disableFlipMode():enableFlipMode();break;
+                case 'd':case 'D': e.preventDefault();deleteMode?disableDeleteMode():enableDeleteMode();break;
                 case 'z':case 'Z':
                     e.preventDefault();
-                    if(!cutMode&&!copyMode){
+                    if(!cutMode&&!copyMode&&!deleteMode){
                         if(pickingFeatureMode){pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled.");}
                         else{pickingFeatureMode=true;if(selectedFeature)cancelMove();lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.classList.add('smt-picking');lockFeatureBtn.textContent='⏳ Click feature…';updateStatus("🖱 Click any point or line feature on the map to lock all edits to it.");}
                     }
@@ -539,6 +813,8 @@
                     e.preventDefault();
                     if(copyPlacementMode)    clearCopyTemplate();
                     else if(cutPreviewMode)  resetCutSelection();
+                    else if(deleteMode&&delCtxMenu.style.display!=='none') { hideDelContextMenu(); clearPickerHoverHighlight(); updateStatus('🗑️ Delete mode active. Click any feature to flag it.'); }
+                    else if(deleteMode)      disableDeleteMode();
                     else if(flipMode)        disableFlipMode();
                     else if(selectedFeature) cancelMove();
                     break;
@@ -581,13 +857,13 @@
                 try{const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);if(!split){fail++;continue;}const{seg1,seg2}=split;const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);const newAttrs={...li.feature.attributes};['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);newAttrs.calculated_length=geodeticLength(seg2);const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;if(!updErr&&!addErr){undoBatch.ops.push({layer:li.layer,layerName:li.layerConfig.name,originalFeat:li.feature.clone(),addedOID:res.addFeatureResults[0].objectId});ok++;}else{console.error('executeCut error – update:',updErr,'add:',addErr);fail++;}}
                 catch(e){console.error(`executeCut error (${li.layerConfig.name}):`,e);fail++;}
             }
-            if(undoBatch.ops.length){undoStack.push(undoBatch);if(cutUndoBtn)cutUndoBtn.disabled=false;}
+            if(undoBatch.ops.length){cutUndoStack.push(undoBatch);if(cutUndoBtn)cutUndoBtn.disabled=false;}
             updateStatus(ok?`✅ ${ok} line(s) cut${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} cut(s) failed.`);
             cutProcessing=false;cutCtxMenu.querySelector('#cutCtxExecute').disabled=false;cutCtxMenu.querySelector('#cutCtxCancel').disabled=false;
             hideCutContextMenu();setTimeout(resetCutSelection,3000);
         }
 
-        async function undoLastCut(){if(!undoStack.length||cutProcessing)return;cutProcessing=true;updateStatus('Undoing last cut…');const batch=undoStack.pop();let ok=0,fail=0;for(const op of batch.ops){try{const res=await op.layer.applyEdits({updateFeatures:[op.originalFeat],deleteFeatures:[{objectId:op.addedOID}]});const updErr=res.updateFeatureResults?.[0]?.error,delErr=res.deleteFeatureResults?.[0]?.error;if(!updErr&&!delErr)ok++;else{console.error('undoLastCut error:',updErr,delErr);fail++;}}catch(e){console.error(`undoLastCut error (${op.layerName}):`,e);fail++;}}if(!undoStack.length&&cutUndoBtn)cutUndoBtn.disabled=true;updateStatus(`↩ Undo: ${ok} line(s) restored${fail?`, ${fail} failed`:''}.`);cutProcessing=false;setTimeout(()=>{if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature.');},3000);}
+        async function undoLastCut(){if(!cutUndoStack.length||cutProcessing)return;cutProcessing=true;updateStatus('Undoing last cut…');const batch=cutUndoStack.pop();let ok=0,fail=0;for(const op of batch.ops){try{const res=await op.layer.applyEdits({updateFeatures:[op.originalFeat],deleteFeatures:[{objectId:op.addedOID}]});const updErr=res.updateFeatureResults?.[0]?.error,delErr=res.deleteFeatureResults?.[0]?.error;if(!updErr&&!delErr)ok++;else{console.error('undoLastCut error:',updErr,delErr);fail++;}}catch(e){console.error(`undoLastCut error (${op.layerName}):`,e);fail++;}}if(!cutUndoStack.length&&cutUndoBtn)cutUndoBtn.disabled=true;updateStatus(`↩ Undo: ${ok} line(s) restored${fail?`, ${fail} failed`:''}.`);cutProcessing=false;setTimeout(()=>{if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature.');},3000);}
 
         async function handleCutClick(event){
             if(cutPreviewMode||cutProcessing)return;clearCutHighlights();hideCutContextMenu();updateStatus('Searching for point feature…');
@@ -603,10 +879,10 @@
         }
 
         function resetCutSelection(){cutSelectedPoint=null;cutSelectedPointLayer=null;cutLinesToCut=[];cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();clearCutHighlights();hideCutContextMenu();if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');}
-        function enableCutMode(){if(flipMode)disableFlipMode();if(copyMode)disableCopyMode();cutMode=true;setActiveModeBtn('cutModeBtn');showCtxPanel('cut');if(cutModeInfo)cutModeInfo.textContent='';updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');}
+        function enableCutMode(){if(flipMode)disableFlipMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();cutMode=true;setActiveModeBtn('cutModeBtn');showCtxPanel('cut');if(cutModeInfo)cutModeInfo.textContent='';updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');}
         function disableCutMode(){cutMode=false;cutPreviewMode=false;cutProcessing=false;resetCutSelection();setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(cutModeInfo)cutModeInfo.textContent='';updateStatus(toolActive?`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`:'Tool disabled.');}
 
-        // ── Feature picker popup (dark) ───────────────────────────────────────
+        // ── Feature picker popup ──────────────────────────────────────────────
 
         function dismissPickerPopup(){if(pickerPopup){pickerPopup.remove();pickerPopup=null;}clearPickerHoverHighlight();}
         function showFeaturePickerPopup(candidates,pageX,pageY){
@@ -617,7 +893,7 @@
             const closeX=document.createElement("span");closeX.textContent="✕";closeX.style.cssText="cursor:pointer;color:#9b8ec4;font-size:13px;padding:0 2px;";closeX.onclick=()=>{dismissPickerPopup();pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}.`:"Pick cancelled.");};header.appendChild(closeX);popup.appendChild(header);
             candidates.forEach(c=>{const row=document.createElement("div");row.style.cssText="padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;";row.onmouseenter=()=>{row.style.background="#2d1b69";showPickerHoverHighlight(c.feature.geometry);};row.onmouseleave=()=>{row.style.background="";clearPickerHoverHighlight();};const oid=getOid(c.feature)??"?",typeIcon=c.featureType==='point'?'📍':'〰️',title=document.createElement("div"),meta=document.createElement("div");title.style.cssText="font-weight:bold;color:#e2d9f3;font-size:11px;";title.textContent=`${typeIcon} ${c.layerConfig.name}`;meta.style.cssText="color:#7a6d96;font-size:10px;";if(c.featureType==='line'){const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),paths=(c.feature.geometry?.paths??[]).length;meta.textContent=`OID: ${oid}  ·  ${vtxCount} vertices  ·  ${paths} path(s)`;}else meta.textContent=`OID: ${oid}  ·  Point feature`;row.appendChild(title);row.appendChild(meta);row.onclick=()=>{dismissPickerPopup();applyLock(c.feature,c.layer,c.layerConfig,c.featureType);};popup.appendChild(row);});
             document.body.appendChild(popup);
-            setTimeout(()=>{document.addEventListener("click",function outsideClick(e){if(!popup.contains(e.target)){dismissPickerPopup();document.removeEventListener("click",outsideClick);}});},0);
+            setTimeout(()=>{document.addEventListener("click",function outsideClick(e){if(!popup.contains(e.target)&&!delCtxMenu.contains(e.target)){dismissPickerPopup();document.removeEventListener("click",outsideClick);}});},0);
         }
 
         // ── Locked feature helpers ────────────────────────────────────────────
@@ -738,6 +1014,7 @@
                 if(cutMode)                    await handleCutClick(event);
                 else if(copyMode)              await handleCopyClick(event);
                 else if(flipMode)              await handleFlipClick(event);
+                else if(deleteMode)            await handleDeleteClick(event);
                 else if(pickingFeatureMode)    await pickFeature(event);
                 else if(vertexMode==="add")    await addVertexToLine(event);
                 else if(vertexMode==="delete") await deleteVertexFromLine(event);
@@ -751,20 +1028,13 @@
         function loadGraphicClasses(){return new Promise((resolve,reject)=>{if(typeof require!=="undefined")require(["esri/Graphic","esri/layers/GraphicsLayer"],(G,GL)=>resolve({Graphic:G,GraphicsLayer:GL}),reject);else reject(new Error("ArcGIS require() not found"));});}
         function makeVertexGraphic(Graphic,x,y,sr,endpoint){return new Graphic({geometry:{type:"point",x,y,spatialReference:sr},symbol:{type:"simple-marker",style:endpoint?"circle":"square",color:endpoint?[255,120,0,220]:[30,130,255,200],size:endpoint?10:7,outline:{color:[255,255,255,230],width:1.5}}});}
 
-        /**
-         * Compute direction arrow positions along a single path.
-         * Count = clamp(floor(totalLen / ARROW_SPACING), ARROW_MIN, ARROW_MAX).
-         * Each arrow is shifted ARROW_LABEL_OFFSET_PX pixels left of the travel
-         * direction so it clears the midspan footage label.
-         */
         function computePathArrows(path, sr) {
             if (!path || path.length < 2) return [];
             let totalLen = 0;
             const segLens = [];
             for (let i = 0; i < path.length - 1; i++) {
                 const dx=path[i+1][0]-path[i][0], dy=path[i+1][1]-path[i][1];
-                const l=Math.sqrt(dx*dx+dy*dy);
-                segLens.push(l); totalLen+=l;
+                segLens.push(Math.sqrt(dx*dx+dy*dy)); totalLen+=segLens[segLens.length-1];
             }
             if (totalLen === 0) return [];
             const n = Math.max(ARROW_MIN, Math.min(ARROW_MAX, Math.floor(totalLen / ARROW_SPACING)));
@@ -779,12 +1049,9 @@
                         const dx=path[i+1][0]-path[i][0], dy=path[i+1][1]-path[i][1];
                         const bearing = Math.atan2(dx, dy) * 180 / Math.PI;
                         const bRad = bearing * Math.PI / 180;
-                        let x = path[i][0] + t * dx;
-                        let y = path[i][1] + t * dy;
-                        // Shift forward along travel direction to clear the midspan footage label.
-                        // Stays on the line centerline — direction vector = (sin B, cos B).
-                        x += Math.sin(bRad) * labelShift;
-                        y += Math.cos(bRad) * labelShift;
+                        // Shift forward along travel direction to clear the span label
+                        let x = path[i][0] + t * dx + Math.sin(bRad) * labelShift;
+                        let y = path[i][1] + t * dy + Math.cos(bRad) * labelShift;
                         arrows.push({ x, y, bearing, spatialReference: sr });
                         break;
                     }
@@ -794,20 +1061,13 @@
             return arrows;
         }
 
-        /**
-         * Fan out coincident arrows ONLY when their bearings conflict.
-         * Arrows within 30° of each other are considered same-direction — no offset.
-         * Any directional conflict in a group fans all members out perpendicularly.
-         */
         function applyCoincidentOffset(arrows) {
-            const offsetDist  = (mapView.resolution || 1) * 10;
-            const groupThresh = offsetDist * 2;
-            const SAME_DIR_DEG = 30;
+            const offsetDist = (mapView.resolution||1)*10, groupThresh = offsetDist*2, SAME_DIR_DEG = 30;
             const processed = new Set();
             for (let i = 0; i < arrows.length; i++) {
                 if (processed.has(i)) continue;
                 const group = [i];
-                for (let j = i + 1; j < arrows.length; j++) {
+                for (let j = i+1; j < arrows.length; j++) {
                     if (processed.has(j)) continue;
                     const dx=arrows[i].x-arrows[j].x, dy=arrows[i].y-arrows[j].y;
                     if (Math.sqrt(dx*dx+dy*dy) < groupThresh) { group.push(j); processed.add(j); }
@@ -815,19 +1075,13 @@
                 processed.add(i);
                 if (group.length < 2) continue;
                 const refBearing = arrows[group[0]].bearing;
-                const allSameDir = group.every(idx => {
-                    let diff = Math.abs(refBearing - arrows[idx].bearing) % 360;
-                    if (diff > 180) diff = 360 - diff;
-                    return diff < SAME_DIR_DEG;
-                });
-                if (allSameDir) continue;   // identical flow — stacking is fine
-                // Directional conflict — fan out symmetrically perpendicular to reference bearing
-                const bRad = refBearing * Math.PI / 180;
-                const perpX = Math.cos(bRad), perpY = -Math.sin(bRad);
-                for (let k = 0; k < group.length; k++) {
-                    const slot = k - (group.length - 1) / 2;
-                    arrows[group[k]].x += perpX * slot * offsetDist;
-                    arrows[group[k]].y += perpY * slot * offsetDist;
+                const allSameDir = group.every(idx => { let d=Math.abs(refBearing-arrows[idx].bearing)%360; if(d>180)d=360-d; return d<SAME_DIR_DEG; });
+                if (allSameDir) continue;
+                const bRad=refBearing*Math.PI/180, perpX=Math.cos(bRad), perpY=-Math.sin(bRad);
+                for (let k=0; k<group.length; k++) {
+                    const slot=k-(group.length-1)/2;
+                    arrows[group[k]].x+=perpX*slot*offsetDist;
+                    arrows[group[k]].y+=perpY*slot*offsetDist;
                 }
             }
         }
@@ -836,114 +1090,51 @@
             if (!vertexHighlightActive) return;
             updateStatus("Loading vertex highlights…");
             try {
-                const {Graphic, GraphicsLayer} = await loadGraphicClasses();
-                if (!vertexHighlightLayer) {
-                    vertexHighlightLayer = new GraphicsLayer({listMode:"hide"});
-                    mapView.map.add(vertexHighlightLayer);
-                }
+                const {Graphic,GraphicsLayer} = await loadGraphicClasses();
+                if (!vertexHighlightLayer) { vertexHighlightLayer=new GraphicsLayer({listMode:"hide"}); mapView.map.add(vertexHighlightLayer); }
                 vertexHighlightLayer.removeAll();
-
-                let totalVtx = 0;
-                const allArrows = [];
-                const sr = mapView.spatialReference;
-
-                const processGeom = (geom) => {
+                let totalVtx=0;
+                const allArrows=[], sr=mapView.spatialReference;
+                const processGeom = geom => {
                     if (!geom?.paths) return;
                     for (const path of geom.paths) {
-                        for (let i = 0; i < path.length; i++) {
-                            vertexHighlightLayer.add(makeVertexGraphic(Graphic, path[i][0], path[i][1], geom.spatialReference, i===0||i===path.length-1));
-                            totalVtx++;
-                        }
-                        // Only collect arrows if direction toggle is on
-                        if (directionArrowsActive)
-                            for (const a of computePathArrows(path, geom.spatialReference || sr))
-                                allArrows.push(a);
+                        for (let i=0; i<path.length; i++) { vertexHighlightLayer.add(makeVertexGraphic(Graphic,path[i][0],path[i][1],geom.spatialReference,i===0||i===path.length-1)); totalVtx++; }
+                        if (directionArrowsActive) for (const a of computePathArrows(path, geom.spatialReference||sr)) allArrows.push(a);
                     }
                 };
-
-                if (lockedFeature?.featureType === 'line') {
-                    processGeom(lockedFeature.feature.geometry);
-                } else {
-                    for (const cfg of lineLayers) {
-                        if (!cfg.layer.visible) continue;
-                        try {
-                            const res = await cfg.layer.queryFeatures({
-                                geometry: mapView.extent, spatialRelationship: "intersects",
-                                returnGeometry: true, outFields: ["objectid"], maxRecordCount: 500
-                            });
-                            for (const f of res.features) processGeom(f.geometry);
-                        } catch(e) { console.error(`renderVertexHighlights error on ${cfg.name}:`, e); }
-                    }
-                }
-
-                // Render direction arrows if active
-                if (directionArrowsActive && allArrows.length > 0) {
+                if (lockedFeature?.featureType==='line') { processGeom(lockedFeature.feature.geometry); }
+                else { for (const cfg of lineLayers) { if(!cfg.layer.visible)continue; try { const res=await cfg.layer.queryFeatures({geometry:mapView.extent,spatialRelationship:"intersects",returnGeometry:true,outFields:["objectid"],maxRecordCount:500}); for(const f of res.features)processGeom(f.geometry); } catch(e){console.error(`renderVertexHighlights error on ${cfg.name}:`,e);} } }
+                if (directionArrowsActive && allArrows.length) {
                     applyCoincidentOffset(allArrows);
-                    for (const a of allArrows) {
-                        vertexHighlightLayer.add(new Graphic({
-                            geometry: { type:'point', x:a.x, y:a.y, spatialReference: a.spatialReference || sr },
-                            symbol: {
-                                type: 'simple-marker', style: 'triangle',
-                                color: [167, 139, 250, 210],   // soft violet
-                                size: 11,
-                                outline: { color:[255,255,255,160], width:1 },
-                                angle: a.bearing   // CW from north — matches our bearing convention
-                            }
-                        }));
-                    }
+                    for (const a of allArrows) vertexHighlightLayer.add(new Graphic({geometry:{type:'point',x:a.x,y:a.y,spatialReference:a.spatialReference||sr},symbol:{type:'simple-marker',style:'triangle',color:[167,139,250,210],size:11,outline:{color:[255,255,255,160],width:1},angle:a.bearing}}));
                 }
-
-                const scope = lockedFeature?.featureType === 'line'
-                    ? `locked (${lockedFeature.layerConfig.name})`
-                    : `${lineLayers.filter(l=>l.layer.visible).length} line layer(s)`;
-                const arrowNote = directionArrowsActive ? ` · ${allArrows.length} arrows` : '';
-                updateStatus(`👁 ${totalVtx} vertices${arrowNote} — ${scope}.`);
-
-            } catch(e) { console.error("renderVertexHighlights error:", e); updateStatus("❌ Error loading vertex highlights."); }
+                const scope=lockedFeature?.featureType==='line'?`locked (${lockedFeature.layerConfig.name})`:`${lineLayers.filter(l=>l.layer.visible).length} line layer(s)`;
+                updateStatus(`👁 ${totalVtx} vertices${directionArrowsActive?` · ${allArrows.length} arrows`:''} — ${scope}.`);
+            } catch(e) { console.error("renderVertexHighlights error:",e); updateStatus("❌ Error loading vertex highlights."); }
         }
 
         function clearVertexHighlights(){if(vertexHighlightLayer){vertexHighlightLayer.removeAll();mapView.map.remove(vertexHighlightLayer);vertexHighlightLayer=null;}}
         function scheduleHighlightRefresh(){clearTimeout(highlightDebounceTimer);highlightDebounceTimer=setTimeout(()=>renderVertexHighlights(),600);}
 
-        function toggleVertexHighlight() {
-            vertexHighlightActive = !vertexHighlightActive;
-            if (vertexHighlightActive) {
-                showVerticesToggleBtn.classList.add('smt-footer-on');
-                showVerticesToggleBtn.textContent = '👁 Hide Vtx';
-                if (refreshVerticesBtn) refreshVerticesBtn.disabled = false;
-                // Enable the direction toggle now that vertices are on
-                if (directionToggleBtn) directionToggleBtn.disabled = false;
-                renderVertexHighlights();
-                extentWatchHandle = mapView.watch("extent", () => {
-                    if (vertexHighlightActive && lockedFeature?.featureType !== 'line') scheduleHighlightRefresh();
-                });
-            } else {
-                showVerticesToggleBtn.classList.remove('smt-footer-on');
-                showVerticesToggleBtn.textContent = '👁 Vertices';
-                if (refreshVerticesBtn) refreshVerticesBtn.disabled = true;
-                // Disable (but don't reset) the direction toggle when vertices go off
-                if (directionToggleBtn) directionToggleBtn.disabled = true;
-                clearVertexHighlights();
-                if (extentWatchHandle) { extentWatchHandle.remove(); extentWatchHandle = null; }
-                clearTimeout(highlightDebounceTimer);
-                updateStatus(toolActive ? `Ready · click a ${currentMode==="point"?"point feature":"line vertex"}.` : "Tool disabled.");
-            }
+        function toggleVertexHighlight(){
+            vertexHighlightActive=!vertexHighlightActive;
+            if(vertexHighlightActive){showVerticesToggleBtn.classList.add('smt-footer-on');showVerticesToggleBtn.textContent='👁 Hide Vtx';if(refreshVerticesBtn)refreshVerticesBtn.disabled=false;if(directionToggleBtn)directionToggleBtn.disabled=false;renderVertexHighlights();extentWatchHandle=mapView.watch("extent",()=>{if(vertexHighlightActive&&lockedFeature?.featureType!=='line')scheduleHighlightRefresh();});}
+            else{showVerticesToggleBtn.classList.remove('smt-footer-on');showVerticesToggleBtn.textContent='👁 Vertices';if(refreshVerticesBtn)refreshVerticesBtn.disabled=true;if(directionToggleBtn)directionToggleBtn.disabled=true;clearVertexHighlights();if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}clearTimeout(highlightDebounceTimer);updateStatus(toolActive?`Ready · click a ${currentMode==="point"?"point feature":"line vertex"}.`:"Tool disabled.");}
         }
 
-        function toggleDirectionArrows() {
-            directionArrowsActive = !directionArrowsActive;
-            directionToggleBtn.classList.toggle('smt-footer-on', directionArrowsActive);
-            directionToggleBtn.textContent = directionArrowsActive ? '🔺 Dir ON' : '🔺 Direction';
-            // Re-render immediately so the user sees the change without a manual refresh
-            if (vertexHighlightActive) scheduleHighlightRefresh();
+        function toggleDirectionArrows(){
+            directionArrowsActive=!directionArrowsActive;
+            directionToggleBtn.classList.toggle('smt-footer-on',directionArrowsActive);
+            directionToggleBtn.textContent=directionArrowsActive?'🔺 Dir ON':'🔺 Direction';
+            if(vertexHighlightActive)scheduleHighlightRefresh();
         }
 
         // ── Mode setters ──────────────────────────────────────────────────────
 
         function cancelMove(){selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();isProcessingClick=false;if(cancelBtn)cancelBtn.disabled=true;if(lockedFeature)updateStatus(lockedReadyStatus());else if(vertexMode==="add")updateStatus("Add Vertex mode · click a line segment.");else if(vertexMode==="delete")updateStatus("Delete Vertex mode · click a vertex.");else updateStatus(`Move cancelled · click a ${currentMode==="point"?"point feature":"line vertex"}.`);}
 
-        function setPointMode(){currentMode="point";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode){setActiveModeBtn('pointMode');showCtxPanel('default');}if(toolActive)updateStatus("Point mode · click a point feature to select it.");if(selectedFeature)cancelMove();}
-        function setLineMode(){currentMode="line";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode){setActiveModeBtn('lineMode');showCtxPanel('default');}if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
+        function setPointMode(){currentMode="point";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode&&!deleteMode){setActiveModeBtn('pointMode');showCtxPanel('default');}if(toolActive)updateStatus("Point mode · click a point feature to select it.");if(selectedFeature)cancelMove();}
+        function setLineMode(){currentMode="line";vertexMode="none";if(!cutMode&&!copyMode&&!flipMode&&!deleteMode){setActiveModeBtn('lineMode');showCtxPanel('default');}if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
         function setAddVertexMode(){const wasAdd=vertexMode==="add";vertexMode=wasAdd?"none":"add";if(vertexMode==="add"){setActiveModeBtn('addVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="add"?"Add Vertex · click a line segment to insert a vertex.":"Add Vertex off.");}
         function setDeleteVertexMode(){const wasDel=vertexMode==="delete";vertexMode=wasDel?"none":"delete";if(vertexMode==="delete"){setActiveModeBtn('deleteVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==="delete"?"Delete Vertex · click any vertex to remove it.":"Delete Vertex off.");}
 
@@ -960,7 +1151,7 @@
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;
             selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];
             originalGeometries.clear();vertexMode="none";
-            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();
+            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();
             if(hotkeyHandler){document.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}
             setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');
             if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');else lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';}
@@ -973,21 +1164,23 @@
 
         // ── Wire up buttons ───────────────────────────────────────────────────
 
-        toggleToolBtn.onclick       = enableTool;
-        pointModeBtn.onclick        = setPointMode;
-        lineModeBtn.onclick         = setLineMode;
-        addVertexBtn.onclick        = setAddVertexMode;
-        deleteVertexBtn.onclick     = setDeleteVertexMode;
-        flipModeBtn.onclick         = ()=>flipMode?disableFlipMode():enableFlipMode();
-        showVerticesToggleBtn.onclick= toggleVertexHighlight;
-        directionToggleBtn.onclick  = toggleDirectionArrows;
-        refreshVerticesBtn.onclick  = ()=>renderVertexHighlights();
-        releaseFeatureBtn.onclick   = releaseLockedFeature;
-        cancelBtn.onclick           = cancelMove;
-        cutModeBtn.onclick          = ()=>cutMode?disableCutMode():enableCutMode();
-        cutUndoBtn.onclick          = undoLastCut;
-        copyModeBtn.onclick         = ()=>copyMode?disableCopyMode():enableCopyMode();
-        clearCopyTemplateBtn.onclick= clearCopyTemplate;
+        toggleToolBtn.onclick        = enableTool;
+        pointModeBtn.onclick         = setPointMode;
+        lineModeBtn.onclick          = setLineMode;
+        addVertexBtn.onclick         = setAddVertexMode;
+        deleteVertexBtn.onclick      = setDeleteVertexMode;
+        flipModeBtn.onclick          = ()=>flipMode?disableFlipMode():enableFlipMode();
+        showVerticesToggleBtn.onclick = toggleVertexHighlight;
+        directionToggleBtn.onclick   = toggleDirectionArrows;
+        refreshVerticesBtn.onclick   = ()=>renderVertexHighlights();
+        releaseFeatureBtn.onclick    = releaseLockedFeature;
+        cancelBtn.onclick            = cancelMove;
+        cutModeBtn.onclick           = ()=>cutMode?disableCutMode():enableCutMode();
+        cutUndoBtn.onclick           = undoLastCut;
+        copyModeBtn.onclick          = ()=>copyMode?disableCopyMode():enableCopyMode();
+        clearCopyTemplateBtn.onclick = clearCopyTemplate;
+        deleteModeBtn.onclick        = ()=>deleteMode?disableDeleteMode():enableDeleteMode();
+        deleteUndoBtn.onclick        = undoLastDelete;
 
         lockFeatureBtn.onclick=()=>{
             if(pickingFeatureMode){pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled.");}
@@ -999,11 +1192,13 @@
 
         cutCtxMenu.querySelector('#cutCtxExecute').onclick=executeCut;
         cutCtxMenu.querySelector('#cutCtxCancel').onclick=resetCutSelection;
+        delCtxMenu.querySelector('#delCtxExecute').onclick=executeDelete;
+        delCtxMenu.querySelector('#delCtxCancel').onclick=()=>{hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();updateStatus('🗑️ Delete mode active. Click any feature to flag it.');};
 
         const refreshLayersBtn=toolBox.querySelector("#refreshLayers");
-        if(refreshLayersBtn){refreshLayersBtn.onclick=async()=>{refreshLayersBtn.disabled=true;refreshLayersBtn.textContent="…";if(lockedFeature)releaseLockedFeature();if(selectedFeature)cancelMove();if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();updateStatus("Refreshing layers...");await loadLayers();updateLayerBadge();refreshLayersBtn.disabled=false;refreshLayersBtn.textContent="↺ Refresh";updateStatus(`Layers refreshed: ${pointLayers.length} point, ${lineLayers.length} line, ${polygonLayers.length} polygon.`);};}
+        if(refreshLayersBtn){refreshLayersBtn.onclick=async()=>{refreshLayersBtn.disabled=true;refreshLayersBtn.textContent="…";if(lockedFeature)releaseLockedFeature();if(selectedFeature)cancelMove();if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();updateStatus("Refreshing layers...");await loadLayers();updateLayerBadge();refreshLayersBtn.disabled=false;refreshLayersBtn.textContent="↺ Refresh";updateStatus(`Layers refreshed: ${pointLayers.length} point, ${lineLayers.length} line, ${polygonLayers.length} polygon.`);};}
 
-        if(closeBtn){closeBtn.onclick=()=>{dismissPickerPopup();dismissCopyPickerPopup();disableTool();clearVertexHighlights();clearTimeout(highlightDebounceTimer);if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}hideCopySnapIndicator();if(smtTip)smtTip.remove();cutCtxMenu.remove();toolBox.remove();if(window.gisToolHost?.activeTools instanceof Set)window.gisToolHost.activeTools.delete('snap-move-tool');};}
+        if(closeBtn){closeBtn.onclick=()=>{dismissPickerPopup();dismissCopyPickerPopup();disableTool();clearVertexHighlights();clearTimeout(highlightDebounceTimer);if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}hideCopySnapIndicator();hideDelContextMenu();if(smtTip)smtTip.remove();cutCtxMenu.remove();delCtxMenu.remove();toolBox.remove();if(window.gisToolHost?.activeTools instanceof Set)window.gisToolHost.activeTools.delete('snap-move-tool');};}
 
         // ── Init ──────────────────────────────────────────────────────────────
 
