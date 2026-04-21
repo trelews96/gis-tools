@@ -691,13 +691,21 @@
                 function makeInput(placeholder,currentVal,isSecond){
                     if(field.domain?.type==='coded-value'){
                         const wrap=document.createElement('div');wrap.style.marginBottom='4px';
-                        const srch=document.createElement('input');srch.type='text';srch.placeholder='Search values…';srch.style.cssText='width:100%;padding:6px 8px;background:#313244;border:1px solid #45475a;border-bottom:none;border-radius:6px 6px 0 0;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
-                        const list=document.createElement('div');list.style.cssText='max-height:130px;overflow-y:auto;background:#0f0f17;border:1px solid #45475a;border-radius:0 0 6px 6px;';
                         let selCode=(currentVal!==''&&currentVal!==undefined)?currentVal:'';
                         if(isSecond)cond.value2=selCode;else cond.value=selCode;
-                        function renderOpts(ft=''){list.innerHTML='';[{code:'',name:'— Select —'},...field.domain.codedValues].filter(cv=>!ft||String(cv.name).toLowerCase().includes(ft.toLowerCase())||String(cv.code).toLowerCase().includes(ft.toLowerCase())).forEach(cv=>{const row=document.createElement('div');const isSel=String(cv.code)===String(selCode);row.style.cssText=`padding:6px 10px;cursor:pointer;font-size:11px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #1e1e2e;`;row.textContent=cv.name;row.addEventListener('mouseenter',()=>{if(String(cv.code)!==String(selCode))row.style.background='#313244';});row.addEventListener('mouseleave',()=>{row.style.background=String(cv.code)===String(selCode)?'#2a1f3d':'transparent';});row.addEventListener('click',()=>{selCode=cv.code;if(isSecond)cond.value2=cv.code;else cond.value=cv.code;renderOpts(srch.value);});list.appendChild(row);});}
-                        srch.addEventListener('input',()=>renderOpts(srch.value));renderOpts();
-                        wrap.appendChild(srch);wrap.appendChild(list);return wrap;
+                        const currentOpt=field.domain.codedValues.find(cv=>String(cv.code)===String(selCode));
+                        const btn=document.createElement('button');btn.type='button';btn.className='domain-btn';
+                        const btnTxt=document.createElement('span');btnTxt.textContent=currentOpt?currentOpt.name:'— Select —';
+                        const btnArr=document.createElement('span');btnArr.textContent='▼';btnArr.style.fontSize='10px';
+                        btn.appendChild(btnTxt);btn.appendChild(btnArr);
+                        const panel=document.createElement('div');panel.style.cssText='display:none;margin-top:2px;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+                        const srch=document.createElement('input');srch.type='text';srch.placeholder='Search values…';srch.style.cssText='width:100%;padding:7px 10px;background:#313244;border:none;border-bottom:1px solid #45475a;color:#cdd6f4;font-size:12px;outline:none;box-sizing:border-box;';
+                        const list=document.createElement('div');list.style.cssText='max-height:160px;overflow-y:auto;';
+                        function renderOpts(ft=''){list.innerHTML='';[{code:'',name:'— Select —'},...field.domain.codedValues].filter(cv=>!ft||String(cv.name).toLowerCase().includes(ft.toLowerCase())||String(cv.code).toLowerCase().includes(ft.toLowerCase())).forEach(cv=>{const row=document.createElement('div');const isSel=String(cv.code)===String(selCode);row.style.cssText=`padding:6px 10px;cursor:pointer;font-size:11px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #1e1e2e;`;row.textContent=cv.name;row.addEventListener('mouseenter',()=>{if(String(cv.code)!==String(selCode))row.style.background='#313244';});row.addEventListener('mouseleave',()=>{row.style.background=String(cv.code)===String(selCode)?'#2a1f3d':'transparent';});row.addEventListener('mousedown',e=>{e.preventDefault();selCode=cv.code;if(isSecond)cond.value2=cv.code;else cond.value=cv.code;btnTxt.textContent=cv.name||'— Select —';panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';});list.appendChild(row);});}
+                        btn.addEventListener('click',()=>{const isOpen=panel.style.display==='block';if(!isOpen){panel.style.display='block';btn.classList.add('open');btnArr.textContent='▲';srch.value='';renderOpts('');setTimeout(()=>{srch.focus();panel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}else{panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';}});
+                        srch.addEventListener('input',()=>renderOpts(srch.value));
+                        panel.appendChild(srch);panel.appendChild(list);
+                        wrap.appendChild(btn);wrap.appendChild(panel);return wrap;
                     }
                     let inp;
                     if(field.type==='date'){inp=document.createElement('input');inp.type='date';inp.className='input-ctrl';if(currentVal)inp.value=currentVal;}
@@ -1111,8 +1119,12 @@
                 const card=$('#layerConfigContainer')?.querySelector(`[data-layer-id="${lid}"]`);
                 const where=card?.getFilterClause?.()|| '';
                 let features;
-                if(where||selectionGraphic?.geometry){const qp={returnGeometry:false,outFields:['*']};if(where)qp.where=where;if(selectionGraphic?.geometry){qp.geometry=selectionGraphic.geometry;qp.spatialRelationship='intersects';}const res=await layer.queryFeatures(qp);features=res.features;}
-                else{features=data.features;}
+                if(where){
+                    const oidField=layer.objectIdField||'OBJECTID';
+                    const objectIds=data.features.map(f=>f.attributes[oidField]).filter(id=>id!=null);
+                    const res=await layer.queryFeatures({where,objectIds,returnGeometry:false,outFields:['*']});
+                    features=res.features;
+                }else{features=data.features;}
                 if(!features.length){updateStatus('No features to download after applying filter.');return;}
                 await layer.load();
                 const fields=layer.fields.filter(f=>f.type!=='geometry'&&f.type!=='blob');
