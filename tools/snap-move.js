@@ -29,8 +29,8 @@
         const COLOC_BUF_M = 1 / 3.28084;
         const ARROW_SPACING = 200, ARROW_MIN = 1, ARROW_MAX = 5;
         const ARROW_LABEL_OFFSET_PX = 18;
-        // Case-insensitive field name for soft delete
         const DELETE_FIELD = 'delete_feature';
+        const MAX_QUERIED_EXTENTS = 10;
 
         function makeExt(cx, cy, half, sr) {
             return { type:'extent', xmin:cx-half, ymin:cy-half, xmax:cx+half, ymax:cy+half, spatialReference:sr };
@@ -42,6 +42,7 @@
 
         async function loadLayers() {
             pointLayers = []; lineLayers = []; polygonLayers = [];
+            clearVertexCache(); // stale on reload
             const all = mapView.map.allLayers.filter(l => l.type === "feature" && l.visible !== false);
             await Promise.all(all.map(l => l.load().catch(() => null)));
             for (const l of all) {
@@ -64,6 +65,60 @@
             if (badge) badge.textContent = `${pointLayers.length}pt · ${lineLayers.length}ln · ${polygonLayers.length}poly`;
         }
 
+        // ── Cached ArcGIS graphic classes ─────────────────────────────────────
+        // Loaded once at init — eliminates repeated require() calls per operation.
+
+        let _Graphic = null, _GraphicsLayer = null;
+
+        async function ensureGraphicClasses() {
+            if (_Graphic && _GraphicsLayer) return;
+            try {
+                await new Promise((res, rej) => {
+                    if (typeof require !== 'undefined')
+                        require(['esri/Graphic', 'esri/layers/GraphicsLayer'], (G, GL) => { _Graphic = G; _GraphicsLayer = GL; res(); }, rej);
+                    else rej(new Error('require not found'));
+                });
+            } catch(e) { console.error('ensureGraphicClasses error:', e); }
+        }
+
+        // ── Vertex geometry cache ─────────────────────────────────────────────
+        // Caches polyline geometries keyed by "layerId:oid".
+        // Tracks which map extents have been queried so pan/zoom within a
+        // previously-covered area renders from memory with zero service calls.
+
+        let vertexGeomCache = new Map();  // `${layerId}:${oid}` → esri geometry
+        let queriedExtentList = [];       // [{xmin,xmax,ymin,ymax}, …]
+
+        const vtxKey = (layerId, oid) => `${layerId}:${oid}`;
+
+        function isExtentCovered(ext) {
+            return queriedExtentList.some(qe =>
+                qe.xmin <= ext.xmin && qe.xmax >= ext.xmax &&
+                qe.ymin <= ext.ymin && qe.ymax >= ext.ymax
+            );
+        }
+
+        function recordQueriedExtent(ext) {
+            if (isExtentCovered(ext)) return;
+            queriedExtentList.push({ xmin:ext.xmin, xmax:ext.xmax, ymin:ext.ymin, ymax:ext.ymax });
+            if (queriedExtentList.length > MAX_QUERIED_EXTENTS) queriedExtentList.shift();
+        }
+
+        function updateVertexCacheGeom(layerId, oid, geom) {
+            if (!geom?.paths || oid == null || layerId == null) return;
+            vertexGeomCache.set(vtxKey(layerId, oid), geom);
+        }
+
+        function clearVertexCache() { vertexGeomCache.clear(); queriedExtentList = []; }
+
+        function geomIntersectsExtent(geom, ext) {
+            if (!geom?.paths) return false;
+            for (const path of geom.paths)
+                for (const [x, y] of path)
+                    if (x >= ext.xmin && x <= ext.xmax && y >= ext.ymin && y <= ext.ymax) return true;
+            return false;
+        }
+
         // ── Toolbox UI ────────────────────────────────────────────────────────
 
         const toolBox = document.createElement("div");
@@ -81,23 +136,19 @@
             #snapMoveToolbox * { box-sizing:border-box; }
             #snapMoveToolbox button { font-family:inherit; cursor:pointer; border:none; border-radius:3px; transition:background 0.13s,opacity 0.13s; }
             #snapMoveToolbox button:disabled { opacity:0.35; cursor:default; }
-
             #smtDragHandle { margin:-12px -12px 10px;padding:5px 10px;background:#0a0814;border-bottom:1px solid #1e1935;border-radius:6px 6px 0 0;cursor:grab;display:flex;align-items:center;gap:6px;user-select:none; }
             #smtDragHandle:active { cursor:grabbing; }
             #smtHeader { display:flex;align-items:center;justify-content:space-between;margin-bottom:8px; }
             #smtTitle  { font-weight:bold;font-size:13px;color:#d4bbff; }
-
             #toggleTool.smt-off { padding:4px 12px;font-size:11px;font-weight:bold;color:#fff;background:#1a6b3a; }
             #toggleTool.smt-off:hover { background:#15803d; }
             #toggleTool.smt-on  { padding:4px 12px;font-size:11px;font-weight:bold;color:#fff;background:#7f1d1d; }
-            #toggleTool.smt-on:hover  { background:#991b1b; }
+            #toggleTool.smt-on:hover { background:#991b1b; }
             #closeTool { padding:3px 8px;background:#2d2550;color:#9b8ec4;font-size:12px; }
             #closeTool:hover { background:#dc2626;color:#fff; }
-
             #smtLayerBar { display:flex;align-items:center;gap:6px;padding:4px 8px;background:#14112a;border:1px solid #2d2550;border-radius:4px;font-size:10px;color:#7a6d96;margin-bottom:8px; }
             #refreshLayers { padding:2px 8px;font-size:10px;background:#1e3a5f;color:#93c5fd;border-radius:3px; }
             #refreshLayers:hover { background:#1e40af; }
-
             #smtModeStrip { display:flex;gap:2px;margin-bottom:8px;flex-wrap:wrap; }
             #snapMoveToolbox .smt-mb { flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;background:#1a1535;border:1px solid #2d2550;border-radius:4px;color:#7a6d96;font-family:inherit;transition:all 0.13s; }
             #snapMoveToolbox .smt-mb:hover { background:#261f47;border-color:#5b4a8a;color:#c4b5fd; }
@@ -105,7 +156,6 @@
             #snapMoveToolbox .smt-mb.smt-active-delete { background:#4a0a0a;border-color:#dc2626;color:#fca5a5;box-shadow:0 0 10px rgba(220,38,38,0.35); }
             #snapMoveToolbox .smt-mb .mi { font-size:15px;line-height:1.2; }
             #snapMoveToolbox .smt-mb .ml { font-size:8px;font-weight:bold;text-transform:uppercase;letter-spacing:0.3px;opacity:0.9; }
-
             #smtLockRow { display:flex;align-items:center;gap:4px;padding:5px 8px;background:#14112a;border:1px solid #2d2550;border-radius:4px;margin-bottom:8px; }
             #smtLockInfo { flex:1;font-size:10px;color:#5c5070;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
             #smtLockInfo.smt-locked { color:#a78bfa;font-weight:bold; }
@@ -115,7 +165,6 @@
             #lockFeatureBtn.smt-locked-btn { background:#3b0764;color:#c4b5fd; }
             #releaseFeatureBtn { padding:3px 8px;font-size:10px;background:#261f47;color:#9b8ec4; }
             #releaseFeatureBtn:hover:not(:disabled) { background:#7f1d1d;color:#fca5a5; }
-
             .smt-ctx { display:flex;flex-direction:column;gap:5px;padding:8px;background:#14112a;border:1px solid #2d2550;border-radius:4px;margin-bottom:8px; }
             .smt-ctx.hidden { display:none; }
             #cancelMove { width:100%;padding:5px;background:#451a03;color:#fed7aa; }
@@ -129,9 +178,7 @@
             #copyCountInfo { font-size:10px;color:#22c55e;font-weight:bold;min-height:12px; }
             #deleteUndoBtn { width:100%;padding:5px;background:#1e2535;color:#fca5a5; }
             #deleteUndoBtn:hover:not(:disabled) { background:#4a0a0a; }
-
             #toolStatus { padding:6px 10px;background:#14112a;border:1px solid #2d2550;border-left:3px solid #3b82f6;border-radius:4px;color:#c4b5fd;font-size:11px;min-height:20px;line-height:1.4;margin-bottom:8px;transition:border-left-color 0.2s; }
-
             #smtFooter { display:flex;gap:3px; }
             #smtFooter button { flex:1;padding:4px 2px;font-size:10px;background:#1a1535;border:1px solid #2d2550;color:#7a6d96;border-radius:3px;font-family:inherit;transition:all 0.13s; }
             #smtFooter button:hover:not(:disabled) { background:#261f47;color:#c4b5fd;border-color:#5b4a8a; }
@@ -143,7 +190,6 @@
             <span style="color:#2d2550;font-size:14px;letter-spacing:2px;">⠿</span>
             <span style="font-size:10px;color:#3d3268;">GIS Edit Tools</span>
         </div>
-
         <div id="smtHeader">
             <span id="smtTitle">🔧 GIS Edit Tools</span>
             <div style="display:flex;gap:4px;align-items:center;">
@@ -151,29 +197,25 @@
                 <button id="closeTool">✕</button>
             </div>
         </div>
-
         <div id="smtLayerBar">
             <span style="flex:1;" id="layerBadge">Detecting…</span>
             <button id="refreshLayers">↺ Refresh</button>
         </div>
-
         <div id="smtModeStrip">
-            <button class="smt-mb" id="pointMode"        data-tip="Move point features [E]&#10;Connected line endpoints + co-located points move automatically."><span class="mi">📍</span><span class="ml">Point</span></button>
+            <button class="smt-mb" id="pointMode"        data-tip="Move point features [E]&#10;Connected line endpoints + co-located points move automatically.&#10;Queries fire on destination click, not selection."><span class="mi">📍</span><span class="ml">Point</span></button>
             <button class="smt-mb" id="lineMode"         data-tip="Move line vertices [Q]&#10;Coincident shared vertices move together."><span class="mi">〰️</span><span class="ml">Line</span></button>
             <button class="smt-mb" id="addVertexMode"    data-tip="Add vertex [Space]&#10;Click a line segment to insert a new vertex."><span class="mi">➕</span><span class="ml">Add Vtx</span></button>
             <button class="smt-mb" id="deleteVertexMode" data-tip="Delete vertex [Shift]&#10;Lines with only 2 vertices cannot be reduced."><span class="mi">✕</span><span class="ml">Del Vtx</span></button>
             <button class="smt-mb" id="flipModeBtn"      data-tip="Flip line direction [F]&#10;Reverses vertex order of all coincident lines at click.&#10;Locked feature: flips just that line."><span class="mi">🔄</span><span class="ml">Flip</span></button>
             <button class="smt-mb" id="cutModeBtn"       data-tip="Cut &amp; split lines [C]&#10;Click a point feature near a line. Choose which lines to split, then confirm."><span class="mi">✂️</span><span class="ml">Cut</span></button>
             <button class="smt-mb" id="copyModeBtn"      data-tip="Click &amp; copy&#10;Click any feature as a template, then click the map to place copies."><span class="mi">📋</span><span class="ml">Copy</span></button>
-            <button class="smt-mb" id="deleteModeBtn"    data-tip="Soft delete features [D]&#10;Click any location to flag features at that point.&#10;Sets delete_feature = YES on the feature's layer.&#10;Undo restores to NO."><span class="mi">🗑️</span><span class="ml">Delete</span></button>
+            <button class="smt-mb" id="deleteModeBtn"    data-tip="Soft delete features [D]&#10;Sets delete_feature = YES. Undo restores to NO."><span class="mi">🗑️</span><span class="ml">Delete</span></button>
         </div>
-
         <div id="smtLockRow">
             <span id="smtLockInfo">No lock active</span>
             <button id="lockFeatureBtn" data-tip="Lock all edits to one specific feature. [Z]">🎯 Pick [Z]</button>
             <button id="releaseFeatureBtn" data-tip="Release the locked feature. [X]" disabled>🔓 [X]</button>
         </div>
-
         <div id="smtCtxDefault" class="smt-ctx">
             <button id="cancelMove" disabled>⊘ Cancel Current Move</button>
         </div>
@@ -189,14 +231,12 @@
         <div id="smtCtxDelete" class="smt-ctx hidden">
             <button id="deleteUndoBtn" disabled>↩ Undo Last Delete</button>
         </div>
-
         <div id="toolStatus">Tool disabled — click Enable to start.</div>
-
         <div id="smtFooter">
             <button id="snappingToggle"     data-tip="Toggle snapping to nearby points and line vertices.">⦿ Snap ON</button>
-            <button id="showVerticesToggle" data-tip="Overlay vertex markers on all visible line features.&#10;🟠 endpoints  🔵 midpoints">👁 Vertices</button>
-            <button id="directionToggle"    data-tip="Overlay direction arrows on visible line features.&#10;Only offsets arrows when coincident lines conflict.&#10;Requires vertex highlight to be active." disabled>🔺 Direction</button>
-            <button id="refreshVertices"    data-tip="Manually refresh vertex markers and direction arrows." disabled>↺ Vtx</button>
+            <button id="showVerticesToggle" data-tip="Overlay vertex markers on all visible line features.&#10;🟠 endpoints  🔵 midpoints&#10;Cached after first load — pan/zoom reuses memory.">👁 Vertices</button>
+            <button id="directionToggle"    data-tip="Overlay direction arrows on visible line features.&#10;Only offsets coincident arrows when directions conflict.&#10;Requires vertex highlight to be active." disabled>🔺 Direction</button>
+            <button id="refreshVertices"    data-tip="Clear vertex cache and re-query from service." disabled>↺ Vtx</button>
         </div>`;
 
         document.body.appendChild(toolBox);
@@ -250,7 +290,7 @@
         let smtTip = null;
         (function initTooltips() {
             smtTip = document.createElement('div');
-            smtTip.style.cssText = `position:fixed;z-index:${z+2};background:#0a0814;color:#e2d9f3;padding:6px 10px;border-radius:4px;border:1px solid #3a3060;font:11px/1.5 Arial,sans-serif;max-width:210px;white-space:pre-wrap;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 4px 14px rgba(0,0,0,0.6);display:none;`;
+            smtTip.style.cssText = `position:fixed;z-index:${z+2};background:#0a0814;color:#e2d9f3;padding:6px 10px;border-radius:4px;border:1px solid #3a3060;font:11px/1.5 Arial,sans-serif;max-width:220px;white-space:pre-wrap;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 4px 14px rgba(0,0,0,0.6);display:none;`;
             document.body.appendChild(smtTip);
             function pos(el) {
                 const r=el.getBoundingClientRect(),tw=smtTip.offsetWidth||200,th=smtTip.offsetHeight||40;
@@ -276,8 +316,7 @@
         let vertexHighlightActive = false, directionArrowsActive = false, vertexHighlightLayer = null;
         let extentWatchHandle = null, highlightDebounceTimer = null;
         let pickerPopup = null, pickerHoverGraphic = null;
-        let hotkeyHandler = null;
-        let flipMode = false;
+        let hotkeyHandler = null, flipMode = false;
 
         let copyMode = false, copyPlacementMode = false;
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
@@ -285,15 +324,11 @@
         let cutSelectedIndices = new Set(), cutGraphicMap = new Map();
         let cutUndoStack = [], cutGraphicsLayer = null;
 
-        // Delete state
         let deleteMode = false, deleteProcessing = false;
-        let deleteCandidates = [];       // features found at click location
-        let deleteSelectedIndices = new Set();
-        let deleteUndoStack = [];        // [{layer, oid, layerName}]
+        let deleteCandidates = [], deleteSelectedIndices = new Set(), deleteUndoStack = [];
 
         let copySnapGeneration = 0;
-        let copyTemplateFeature = null, copyTemplateLayer = null;
-        let copiedCount = 0;
+        let copyTemplateFeature = null, copyTemplateLayer = null, copiedCount = 0;
         let copyMouseMoveHandler = null, copyKeyHandler = null, copySnapGraphic = null;
 
         // ── DOM refs ──────────────────────────────────────────────────────────
@@ -344,11 +379,8 @@
         // ── UI helpers ────────────────────────────────────────────────────────
 
         function setActiveModeBtn(id, isDelete = false) {
-            toolBox.querySelectorAll('.smt-mb').forEach(b => { b.classList.remove('smt-active'); b.classList.remove('smt-active-delete'); });
-            if (id) {
-                const b = toolBox.querySelector('#'+id);
-                if (b) b.classList.add(isDelete ? 'smt-active-delete' : 'smt-active');
-            }
+            toolBox.querySelectorAll('.smt-mb').forEach(b => { b.classList.remove('smt-active','smt-active-delete'); });
+            if (id) { const b = toolBox.querySelector('#'+id); if (b) b.classList.add(isDelete ? 'smt-active-delete' : 'smt-active'); }
         }
 
         function showCtxPanel(name) {
@@ -356,6 +388,13 @@
                 const el = toolBox.querySelector(`#smtCtx${n}`);
                 if (el) el.classList.toggle('hidden', n.toLowerCase() !== (name||'').toLowerCase());
             });
+        }
+
+        function exitSpecialMode() {
+            if (cutMode)    disableCutMode();
+            if (copyMode)   disableCopyMode();
+            if (flipMode)   disableFlipMode();
+            if (deleteMode) disableDeleteMode();
         }
 
         // ── Geometry helpers ──────────────────────────────────────────────────
@@ -369,22 +408,26 @@
         function closestPtOnSeg(pt,s,e) { const A=pt.x-s.x,B=pt.y-s.y,C=e.x-s.x,D=e.y-s.y,dot=A*C+B*D,lenSq=C*C+D*D,param=lenSq?dot/lenSq:-1,cp=param<0?{x:s.x,y:s.y}:param>1?{x:e.x,y:e.y}:{x:s.x+param*C,y:s.y+param*D}; return{point:cp,distance:calcDist(pt,cp)}; }
         function findClosestSeg(geom,mp) { if(!geom?.paths)return null; let cl=null,mn=Infinity; for(let pi=0;pi<geom.paths.length;pi++){const path=geom.paths[pi];for(let si=0;si<path.length-1;si++){const p1={x:path[si][0],y:path[si][1]},p2={x:path[si+1][0],y:path[si+1][1]},inf=closestPtOnSeg(mp,p1,p2);if(inf.distance<mn){mn=inf.distance;cl={pathIndex:pi,segmentIndex:si,insertIndex:si+1,distance:inf.distance,point:inf.point};}}} return(cl&&cl.distance<50)?cl:null; }
         function findClosestVertex(geom,mp) { if(!geom?.paths)return null; let cl=null,mn=Infinity; for(let pi=0;pi<geom.paths.length;pi++){const path=geom.paths[pi];for(let vi=0;vi<path.length;vi++){const v={x:path[vi][0],y:path[vi][1]},d=calcDist(mp,v);if(d<mn){mn=d;cl={pathIndex:pi,pointIndex:vi,distance:d,coordinates:v,isEndpoint:isEndpoint(geom,pi,vi)};}}} return(cl&&cl.distance<POINT_SNAP_TOLERANCE*(mapView.resolution||1))?cl:null; }
-        function findAbsoluteClosestVertex(geom,pt) { if(!geom?.paths)return null; let cl=null,mn=Infinity; for(const path of geom.paths)for(const v of path){const d=calcDist(pt,{x:v[0],y:v[1]});if(d<mn){mn=d;cl={distance:d};}} return cl; }
         function buildPolyline(srcGeom,newPaths) { return{type:"polyline",paths:newPaths,spatialReference:srcGeom.spatialReference}; }
         function clonePaths(geom) { return geom.paths.map(p=>p.map(c=>c.slice())); }
         function calcPolygonCentroid(ring) { let x=0,y=0; for(const pt of ring){x+=pt[0];y+=pt[1];} return{x:x/ring.length,y:y/ring.length}; }
         function toTypedPoint(g,fallbackSr) { if(!g)return g; if(g.type)return g; return{type:'point',x:g.x,y:g.y,spatialReference:g.spatialReference||fallbackSr}; }
+        function layerKey(layer, cfg) { return layer?.layerId ?? layer?.id ?? cfg?.id ?? Math.random(); }
+        const getOid = f => f?.attributes?.objectid ?? f?.attributes?.OBJECTID ?? null;
 
-        // ── Helpers: delete field detection ───────────────────────────────────
+        // ── Locked feature: in-memory sync ────────────────────────────────────
 
-        /**
-         * Returns the actual field name on a layer that matches DELETE_FIELD
-         * (case-insensitive). Returns null if the field doesn't exist.
-         */
-        function getDeleteFieldName(layer) {
-            if (!layer?.fields) return null;
-            const match = layer.fields.find(f => f.name.toLowerCase() === DELETE_FIELD.toLowerCase());
-            return match ? match.name : null;
+        function syncLockedFeature(newGeom) {
+            if (!lockedFeature || !newGeom) return;
+            try {
+                if (lockedFeature.feature?.clone) {
+                    const cloned = lockedFeature.feature.clone();
+                    cloned.geometry = newGeom;
+                    lockedFeature.feature = cloned;
+                } else if (lockedFeature.feature) {
+                    lockedFeature.feature.geometry = newGeom;
+                }
+            } catch(e) { console.warn('syncLockedFeature:', e); }
         }
 
         // ── Cut geometry helpers ──────────────────────────────────────────────
@@ -406,15 +449,19 @@
         // ── Shared graphics helpers ───────────────────────────────────────────
 
         async function ensureCutGraphicsLayer() {
-            if(cutGraphicsLayer)return;
-            try{await new Promise((res,rej)=>{if(typeof require!=='undefined')require(['esri/layers/GraphicsLayer'],GL=>{cutGraphicsLayer=new GL({listMode:'hide'});mapView.map.add(cutGraphicsLayer);res();},rej);else rej(new Error('require not found'));});}
-            catch(e){console.error('ensureCutGraphicsLayer error:',e);}
+            if (cutGraphicsLayer) return;
+            await ensureGraphicClasses();
+            if (!_GraphicsLayer) return;
+            cutGraphicsLayer = new _GraphicsLayer({ listMode: 'hide' });
+            mapView.map.add(cutGraphicsLayer);
         }
         function clearCutHighlights(){if(cutGraphicsLayer)cutGraphicsLayer.removeAll();}
-        async function highlightCutGeometry(geometry,isPoint) {
-            await ensureCutGraphicsLayer();if(!cutGraphicsLayer)return;
-            try{await new Promise((res,rej)=>{require(['esri/Graphic'],G=>{cutGraphicsLayer.add(new G({geometry,symbol:isPoint?{type:'simple-marker',style:'circle',color:[255,200,0,0.85],size:16,outline:{color:[180,80,0],width:2.5}}:{type:'simple-line',color:[255,80,0,0.9],width:3,style:'dash'}}));res();},rej);});}
-            catch(e){console.error('highlightCutGeometry error:',e);}
+        async function highlightCutGeometry(geometry, isPoint) {
+            await ensureCutGraphicsLayer();
+            if (!cutGraphicsLayer || !_Graphic) return;
+            cutGraphicsLayer.add(new _Graphic({ geometry, symbol: isPoint
+                ? { type:'simple-marker', style:'circle', color:[255,200,0,0.85], size:16, outline:{ color:[180,80,0], width:2.5 } }
+                : { type:'simple-line', color:[255,80,0,0.9], width:3, style:'dash' } }));
         }
 
         // ── Picker hover highlight ────────────────────────────────────────────
@@ -429,11 +476,7 @@
 
         // ── Copy helpers ──────────────────────────────────────────────────────
 
-        function showCopySnapIndicator(point){
-            hideCopySnapIndicator();if(!point)return;
-            mapView.graphics.add({geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[50,200,50,0.9],size:14,outline:{color:[255,255,255,1],width:2}}});
-            copySnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);
-        }
+        function showCopySnapIndicator(point){hideCopySnapIndicator();if(!point)return;mapView.graphics.add({geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[50,200,50,0.9],size:14,outline:{color:[255,255,255,1],width:2}}});copySnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function hideCopySnapIndicator(){if(copySnapGraphic){mapView.graphics.remove(copySnapGraphic);copySnapGraphic=null;}}
 
         async function findCopySnapPoint(screenPoint) {
@@ -454,13 +497,7 @@
             if(copyTemplateInfo)copyTemplateInfo.style.display='block';
             if(clearCopyTemplateBtn)clearCopyTemplateBtn.disabled=false;
             mapView.container.style.cursor='copy';
-            copyMouseMoveHandler=mapView.on('pointer-move',async e=>{
-                if(!copyPlacementMode)return;
-                const gen=++copySnapGeneration;
-                const snap=await findCopySnapPoint({x:e.x,y:e.y});
-                if(gen!==copySnapGeneration)return;
-                showCopySnapIndicator(snap);
-            });
+            copyMouseMoveHandler=mapView.on('pointer-move',async e=>{if(!copyPlacementMode)return;const gen=++copySnapGeneration;const snap=await findCopySnapPoint({x:e.x,y:e.y});if(gen!==copySnapGeneration)return;showCopySnapIndicator(snap);});
             updateStatus(`📋 Template set (${cfg.name} · ${fullFeature.geometry?.type}). Click the map to place copies. ESC to clear.`);
         }
 
@@ -504,20 +541,8 @@
         }
 
         function clearCopyTemplate(){copyTemplateFeature=null;copyTemplateLayer=null;copyPlacementMode=false;copiedCount=0;if(copyMouseMoveHandler){copyMouseMoveHandler.remove();copyMouseMoveHandler=null;}hideCopySnapIndicator();if(copyTemplateInfo)copyTemplateInfo.style.display='none';if(copyCountInfo)copyCountInfo.textContent='';if(clearCopyTemplateBtn)clearCopyTemplateBtn.disabled=true;mapView.container.style.cursor='crosshair';if(copyMode)updateStatus('📋 Copy mode active. Click any feature on the map as a template.');}
-
-        function enableCopyMode(){
-            if(cutMode)disableCutMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();
-            copyMode=true;setActiveModeBtn('copyModeBtn');showCtxPanel('copy');
-            copyKeyHandler=e=>{if(e.key==='Escape'&&copyPlacementMode)clearCopyTemplate();};
-            document.addEventListener('keydown',copyKeyHandler);
-            updateStatus('📋 Copy mode active. Click any feature on the map as a template.');
-        }
-        function disableCopyMode(){
-            copyMode=false;clearCopyTemplate();dismissCopyPickerPopup();
-            if(copyKeyHandler){document.removeEventListener('keydown',copyKeyHandler);copyKeyHandler=null;}
-            setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');
-            updateStatus(toolActive?`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`:'Tool disabled.');
-        }
+        function enableCopyMode(){if(cutMode)disableCutMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();copyMode=true;setActiveModeBtn('copyModeBtn');showCtxPanel('copy');copyKeyHandler=e=>{if(e.key==='Escape'&&copyPlacementMode)clearCopyTemplate();};document.addEventListener('keydown',copyKeyHandler);updateStatus('📋 Copy mode active. Click any feature on the map as a template.');}
+        function disableCopyMode(){copyMode=false;clearCopyTemplate();dismissCopyPickerPopup();if(copyKeyHandler){document.removeEventListener('keydown',copyKeyHandler);copyKeyHandler=null;}setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');updateStatus(toolActive?`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`:'Tool disabled.');}
         async function handleCopyClick(event){if(!copyPlacementMode)await selectCopyTemplate(event);else await placeCopyFeature(event);}
 
         // ── Flip Direction ────────────────────────────────────────────────────
@@ -525,277 +550,48 @@
         async function findLinesAtClick(sp, mp) {
             const candidates=[], seenOids=new Set();
             if(mapView.hitTest){try{const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});for(const r of hit.results){if(r.graphic?.geometry?.type!=='polyline')continue;const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg});}}catch(e){console.error('findLinesAtClick hitTest error:',e);}}
-            if(candidates.length===0){const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mp.x,mp.y,tol,mapView.spatialReference);for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:20});for(const f of res.features){const seg=findClosestSeg(f.geometry,mp);if(!seg||seg.distance>tol)continue;const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg});}}catch(e){console.error(`findLinesAtClick fallback error on ${cfg.name}:`,e);}}}
+            if(candidates.length===0){const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mp.x,mp.y,tol,mapView.spatialReference);await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:20});for(const f of res.features){const seg=findClosestSeg(f.geometry,mp);if(!seg||seg.distance>tol)continue;const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg});}}catch(e){console.error(`findLinesAtClick fallback error on ${cfg.name}:`,e);}}))}
             return candidates;
         }
 
         async function handleFlipClick(event) {
             updateStatus('🔄 Finding line(s) to flip…');
             let linesToFlip=[];
-            if(lockedFeature?.featureType==='line'){await refreshLockedFeature();linesToFlip=[{feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig}];}
+            if(lockedFeature?.featureType==='line'){linesToFlip=[{feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig}];}
             else{const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);linesToFlip=await findLinesAtClick(sp,mp);}
             if(!linesToFlip.length){updateStatus('❌ No line found at click location.');return;}
+            const lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;
             let ok=0,fail=0;
-            for(const li of linesToFlip){try{const newPaths=li.feature.geometry.paths.map(p=>[...p].reverse());const newGeom=buildPolyline(li.feature.geometry,newPaths);const upd=li.feature.clone();upd.geometry=newGeom;await li.layer.applyEdits({updateFeatures:[upd]});ok++;}catch(e){console.error(`handleFlipClick error on ${li.layerConfig.name}:`,e);fail++;}}
+            for(const li of linesToFlip){
+                try{
+                    const newPaths=li.feature.geometry.paths.map(p=>[...p].reverse());
+                    const newGeom=buildPolyline(li.feature.geometry,newPaths);
+                    const upd=li.feature.clone();upd.geometry=newGeom;
+                    await li.layer.applyEdits({updateFeatures:[upd]});
+                    // Update vertex cache with flipped geometry
+                    const oid=getOid(li.feature);
+                    updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),oid,newGeom);
+                    if(lockedOid!=null&&oid===lockedOid)syncLockedFeature(newGeom);
+                    ok++;
+                }catch(e){console.error(`handleFlipClick error on ${li.layerConfig.name}:`,e);fail++;}
+            }
             const names=[...new Set(linesToFlip.slice(0,ok).map(l=>l.layerConfig.name))];
             updateStatus(`✅ Flipped ${ok} line(s): ${names.join(', ')}${fail?` · ${fail} failed`:''}`);
-            if(lockedFeature)await refreshLockedFeature();
             if(vertexHighlightActive)scheduleHighlightRefresh();
         }
 
-        function enableFlipMode(){
-            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();
-            flipMode=true;setActiveModeBtn('flipModeBtn');showCtxPanel(null);
-            if(toolActive){const lockHint=lockedFeature?.featureType==='line'?` (locked to ${lockedFeature.layerConfig.name} — click anywhere to flip)`:'';updateStatus(`🔄 Flip mode active. Click any line to reverse its direction${lockHint}.`);}
-        }
-        function disableFlipMode(){
-            flipMode=false;setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');
-            if(toolActive)updateStatus(`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`);
-        }
-
-        // ── Soft Delete ───────────────────────────────────────────────────────
-
-        /**
-         * Find all features at a clicked location across all visible feature layers.
-         * Used by delete mode — covers points, lines, and polygons.
-         */
-        async function findAllFeaturesAtClick(sp, mp) {
-            const candidates = [], seenOids = new Set();
-            // Polygons excluded — delete tool targets points and lines only
-            const allCfgs = [...pointLayers, ...lineLayers].sort((a,b) => a.name.localeCompare(b.name));
-
-            // hitTest first for precision
-            if (mapView.hitTest) {
-                try {
-                    const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === 'feature') });
-                    for (const r of hit.results) {
-                        if (!r.graphic?.geometry) continue;
-                        const cfg = allCfgs.find(c => c.id === r.layer.layerId);
-                        if (!cfg) continue;
-                        const oid = getOid(r.graphic);
-                        if (oid != null && seenOids.has(oid)) continue;
-                        if (oid != null) seenOids.add(oid);
-                        candidates.push({ feature: r.graphic, layer: r.layer, layerConfig: cfg });
-                    }
-                } catch(e) { console.error('findAllFeaturesAtClick hitTest error:', e); }
-            }
-
-            // Spatial fallback for anything hitTest missed
-            const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
-            const ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
-            for (const cfg of allCfgs) {
-                if (!cfg.layer.visible) continue;
-                try {
-                    const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['*'], maxRecordCount: 20 });
-                    for (const f of res.features) {
-                        if (!f.geometry) continue;
-                        const oid = getOid(f);
-                        if (oid != null && seenOids.has(oid)) continue;
-                        if (oid != null) seenOids.add(oid);
-                        candidates.push({ feature: f, layer: cfg.layer, layerConfig: cfg });
-                    }
-                } catch(e) { console.error(`findAllFeaturesAtClick fallback error on ${cfg.name}:`, e); }
-            }
-            return candidates;
-        }
-
-        function showDelContextMenu(mapPoint) {
-            const screen = mapView.toScreen(mapPoint), rect = mapView.container.getBoundingClientRect();
-            let left = rect.left + screen.x + 14, top = rect.top + screen.y - 10;
-            if (left + 240 > window.innerWidth) left = rect.left + screen.x - 240;
-            if (top + 320 > window.innerHeight) top = window.innerHeight - 320;
-            delCtxMenu.style.left = left + 'px'; delCtxMenu.style.top = top + 'px';
-            delCtxMenu.style.display = 'block';
-        }
-        function hideDelContextMenu() { delCtxMenu.style.display = 'none'; }
-
-        function updateDelExecuteBtn() {
-            const btn = delCtxMenu.querySelector('#delCtxExecute');
-            if (!btn || deleteProcessing) return;
-            const n = deleteSelectedIndices.size;
-            btn.textContent = `🗑️ Mark as Deleted (${n})`;
-            btn.disabled = n === 0;
-        }
-
-        async function handleDeleteClick(event) {
-            if (deleteProcessing) return;
-            hideDelContextMenu();
-            updateStatus('🗑️ Finding features at click location…');
-            const sp = { x: event.x, y: event.y }, mp = mapView.toMap(sp);
-            deleteCandidates = await findAllFeaturesAtClick(sp, mp);
-
-            if (!deleteCandidates.length) { updateStatus('❌ No features found at this location.'); return; }
-
-            // Filter to only features whose layer has the delete field
-            const eligible = deleteCandidates.filter(c => getDeleteFieldName(c.layer) !== null);
-            const ineligible = deleteCandidates.length - eligible.length;
-
-            if (!eligible.length) {
-                updateStatus(`❌ None of the ${deleteCandidates.length} feature(s) found have a "${DELETE_FIELD}" field.`);
-                return;
-            }
-
-            deleteCandidates = eligible;
-            deleteSelectedIndices = new Set(deleteCandidates.map((_, i) => i));
-
-            // Build checklist
-            const listEl = delCtxMenu.querySelector('#delCtxList');
-            listEl.innerHTML = '';
-            const typeIcon = t => t === 'point' ? '📍' : t === 'polyline' ? '〰️' : '⬡';
-
-            for (let i = 0; i < deleteCandidates.length; i++) {
-                const c = deleteCandidates[i];
-                const oid = getOid(c.feature) ?? '?';
-                const gtype = c.feature.geometry?.type ?? 'unknown';
-                const fieldName = getDeleteFieldName(c.layer);
-                const curVal = c.feature.attributes?.[fieldName] ?? 'null';
-                const alreadyDeleted = String(curVal).toUpperCase() === 'YES';
-
-                const row = document.createElement('label');
-                row.style.cssText = 'display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';
-
-                const cb = document.createElement('input');
-                cb.type = 'checkbox'; cb.checked = true; cb.dataset.idx = String(i);
-                cb.style.cssText = 'margin-top:2px;cursor:pointer;flex-shrink:0;';
-
-                const info = document.createElement('div');
-                info.style.cssText = 'flex:1;font-size:11px;line-height:1.5;';
-                info.innerHTML = `<strong style="color:${alreadyDeleted?'#fca5a5':'#e2d9f3'};">${typeIcon(gtype)} ${c.layerConfig.name}</strong>`
-                    + `<div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${DELETE_FIELD}: ${curVal}${alreadyDeleted?' ⚠️ already flagged':''}</div>`;
-
-                const dot = document.createElement('span');
-                dot.textContent = '●'; dot.style.cssText = 'color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';
-
-                cb.addEventListener('change', () => {
-                    const idx = parseInt(cb.dataset.idx);
-                    if (cb.checked) { deleteSelectedIndices.add(idx); dot.style.color = '#ef4444'; }
-                    else { deleteSelectedIndices.delete(idx); dot.style.color = '#3d3268'; }
-                    updateDelExecuteBtn();
-                });
-
-                row.addEventListener('mouseenter', () => { row.style.background = '#2d1b0a'; showPickerHoverHighlight(c.feature.geometry); });
-                row.addEventListener('mouseleave', () => { row.style.background = ''; clearPickerHoverHighlight(); });
-
-                row.appendChild(cb); row.appendChild(info); row.appendChild(dot);
-                listEl.appendChild(row);
-            }
-
-            delCtxMenu.querySelector('#delCtxCount').textContent = deleteCandidates.length;
-
-            // Select all toggle
-            const selAllBtn = delCtxMenu.querySelector('#delCtxSelectAll');
-            if (selAllBtn) {
-                selAllBtn.textContent = '✓ All';
-                selAllBtn.onclick = () => {
-                    const allOn = deleteSelectedIndices.size === deleteCandidates.length;
-                    [...listEl.querySelectorAll('label')].forEach((row, i) => {
-                        const cb = row.querySelector('input'), dot = row.querySelector('span');
-                        cb.checked = !allOn;
-                        if (!allOn) { deleteSelectedIndices.add(i); if (dot) dot.style.color = '#ef4444'; }
-                        else { deleteSelectedIndices.delete(i); if (dot) dot.style.color = '#3d3268'; }
-                    });
-                    selAllBtn.textContent = allOn ? '✓ All' : '✗ None';
-                    updateDelExecuteBtn();
-                };
-            }
-
-            updateDelExecuteBtn();
-            // Position near the click on the map
-            showDelContextMenu(mp);
-            const ineligMsg = ineligible > 0 ? ` · ${ineligible} skipped (no ${DELETE_FIELD} field)` : '';
-            updateStatus(`🗑️ ${deleteCandidates.length} eligible feature(s) found${ineligMsg}. Select and confirm.`);
-        }
-
-        async function executeDelete() {
-            const toDelete = deleteCandidates.filter((_, i) => deleteSelectedIndices.has(i));
-            if (!toDelete.length || deleteProcessing) return;
-            deleteProcessing = true;
-            delCtxMenu.querySelector('#delCtxExecute').disabled = true;
-            delCtxMenu.querySelector('#delCtxCancel').disabled = true;
-            updateStatus('🗑️ Flagging features…');
-
-            const batch = []; let ok = 0, fail = 0;
-            for (const c of toDelete) {
-                const fieldName = getDeleteFieldName(c.layer);
-                if (!fieldName) { fail++; continue; }
-                try {
-                    const upd = c.feature.clone();
-                    upd.attributes[fieldName] = 'YES';
-                    await c.layer.applyEdits({ updateFeatures: [upd] });
-                    batch.push({ layer: c.layer, layerName: c.layerConfig.name, oid: getOid(c.feature), fieldName });
-                    ok++;
-                } catch(e) { console.error(`executeDelete error on ${c.layerConfig.name}:`, e); fail++; }
-            }
-
-            if (batch.length) {
-                deleteUndoStack.push(batch);
-                if (deleteUndoBtn) deleteUndoBtn.disabled = false;
-            }
-
-            const names = [...new Set(batch.map(b => b.layerName))];
-            updateStatus(ok
-                ? `✅ Flagged ${ok} feature(s) as deleted: ${names.join(', ')}${fail ? ` · ${fail} failed` : ''}.`
-                : `❌ All ${fail} flag(s) failed.`);
-
-            deleteProcessing = false;
-            delCtxMenu.querySelector('#delCtxExecute').disabled = false;
-            delCtxMenu.querySelector('#delCtxCancel').disabled = false;
-            hideDelContextMenu();
-            clearPickerHoverHighlight();
-            deleteCandidates = []; deleteSelectedIndices.clear();
-            setTimeout(() => updateStatus('🗑️ Delete mode active. Click any feature to flag it.'), 3000);
-        }
-
-        async function undoLastDelete() {
-            if (!deleteUndoStack.length || deleteProcessing) return;
-            deleteProcessing = true;
-            updateStatus('↩ Restoring last delete batch…');
-            const batch = deleteUndoStack.pop();
-            let ok = 0, fail = 0;
-            for (const op of batch) {
-                try {
-                    // Query fresh to get the full feature then set field to NO
-                    const res = await op.layer.queryFeatures({ where: `objectid=${op.oid}`, returnGeometry: true, outFields: ['*'] });
-                    if (!res.features.length) { fail++; continue; }
-                    const upd = res.features[0].clone();
-                    upd.attributes[op.fieldName] = 'NO';
-                    await op.layer.applyEdits({ updateFeatures: [upd] });
-                    ok++;
-                } catch(e) { console.error(`undoLastDelete error on ${op.layerName}:`, e); fail++; }
-            }
-            if (!deleteUndoStack.length && deleteUndoBtn) deleteUndoBtn.disabled = true;
-            updateStatus(`↩ Restored ${ok} feature(s) to NO${fail ? ` · ${fail} failed` : ''}.`);
-            deleteProcessing = false;
-            setTimeout(() => { if (deleteMode) updateStatus('🗑️ Delete mode active. Click any feature to flag it.'); }, 3000);
-        }
-
-        function enableDeleteMode() {
-            if (cutMode) disableCutMode();
-            if (copyMode) disableCopyMode();
-            if (flipMode) disableFlipMode();
-            deleteMode = true;
-            setActiveModeBtn('deleteModeBtn', true);
-            showCtxPanel('delete');
-            if (toolActive) updateStatus('🗑️ Delete mode active. Click any feature to flag it.');
-        }
-        function disableDeleteMode() {
-            deleteMode = false; deleteProcessing = false;
-            hideDelContextMenu(); clearPickerHoverHighlight();
-            deleteCandidates = []; deleteSelectedIndices.clear();
-            setActiveModeBtn(currentMode === 'point' ? 'pointMode' : 'lineMode');
-            showCtxPanel('default');
-            if (toolActive) updateStatus(`Ready · click a ${currentMode === 'point' ? 'point feature' : 'line vertex'}.`);
-        }
+        function enableFlipMode(){if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();flipMode=true;setActiveModeBtn('flipModeBtn');showCtxPanel(null);if(toolActive){const lockHint=lockedFeature?.featureType==='line'?` (locked to ${lockedFeature.layerConfig.name} — click anywhere to flip)`:'';updateStatus(`🔄 Flip mode active. Click any line to reverse its direction${lockHint}.`);}}
+        function disableFlipMode(){flipMode=false;setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(toolActive)updateStatus(`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`);}
 
         // ── Hotkeys ───────────────────────────────────────────────────────────
 
         function handleHotkey(e) {
-            if (!toolActive) return;
-            const tag = e.target?.tagName;
-            if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable) return;
-            switch(e.key) {
-                case 'e':case 'E': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setPointMode();break;
-                case 'q':case 'Q': e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setLineMode();break;
+            if(!toolActive)return;
+            const tag=e.target?.tagName;
+            if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable)return;
+            switch(e.key){
+                case 'e':case 'E': e.preventDefault();setPointMode();break;
+                case 'q':case 'Q': e.preventDefault();setLineMode();break;
                 case ' ':          e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setAddVertexMode();break;
                 case 'c':case 'C': e.preventDefault();cutMode?disableCutMode():enableCutMode();break;
                 case 'Shift':      e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode)setDeleteVertexMode();break;
@@ -813,7 +609,7 @@
                     e.preventDefault();
                     if(copyPlacementMode)    clearCopyTemplate();
                     else if(cutPreviewMode)  resetCutSelection();
-                    else if(deleteMode&&delCtxMenu.style.display!=='none') { hideDelContextMenu(); clearPickerHoverHighlight(); updateStatus('🗑️ Delete mode active. Click any feature to flag it.'); }
+                    else if(deleteMode&&delCtxMenu.style.display!=='none'){hideDelContextMenu();clearPickerHoverHighlight();updateStatus('🗑️ Delete mode active. Click any feature to flag it.');}
                     else if(deleteMode)      disableDeleteMode();
                     else if(flipMode)        disableFlipMode();
                     else if(selectedFeature) cancelMove();
@@ -826,16 +622,24 @@
         function showCutContextMenu(mapPoint){const screen=mapView.toScreen(mapPoint),rect=mapView.container.getBoundingClientRect();let left=rect.left+screen.x+14,top=rect.top+screen.y-10;if(left+220>window.innerWidth)left=rect.left+screen.x-220;if(top+280>window.innerHeight)top=window.innerHeight-280;cutCtxMenu.style.left=left+'px';cutCtxMenu.style.top=top+'px';cutCtxMenu.style.display='block';}
         function hideCutContextMenu(){cutCtxMenu.style.display='none';}
 
-        async function findNearbyLinesForCut(pointGeom){const buf=CUT_TOLERANCE_M,{x,y}=pointGeom,bufGeom={type:'polygon',spatialReference:pointGeom.spatialReference,rings:[[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]]},found=[];for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:100});for(const f of res.features){const cutInfo=findCutInfo(f.geometry,{x,y});if(cutInfo&&cutInfo.dist<=buf)found.push({feature:f,layer:cfg.layer,layerConfig:cfg,cutInfo});}}catch(e){console.error(`findNearbyLinesForCut error on ${cfg.name}:`,e);}}return found;}
+        async function findNearbyLinesForCut(pointGeom){
+            const buf=CUT_TOLERANCE_M,{x,y}=pointGeom;
+            const bufGeom={type:'polygon',spatialReference:pointGeom.spatialReference,rings:[[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]]};
+            const found=[];
+            await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{
+                try{const res=await cfg.layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:100});for(const f of res.features){const cutInfo=findCutInfo(f.geometry,{x,y});if(cutInfo&&cutInfo.dist<=buf)found.push({feature:f,layer:cfg.layer,layerConfig:cfg,cutInfo});}}
+                catch(e){console.error(`findNearbyLinesForCut error on ${cfg.name}:`,e);}
+            }));
+            return found;
+        }
 
         async function showCutPreview(){
             if(!cutLinesToCut.length){updateStatus(`❌ No lines found within ${Math.round(CUT_TOLERANCE_M*3.28084)} ft of the point.`);resetCutSelection();return;}
             cutPreviewMode=true;cutSelectedIndices=new Set(cutLinesToCut.map((_,i)=>i));
-            let GraphicClass=null;
-            try{GraphicClass=await new Promise((res,rej)=>{if(typeof require!=='undefined')require(['esri/Graphic'],G=>res(G),rej);else rej(new Error('require not found'));});}catch(e){console.error('showCutPreview: could not load esri/Graphic:',e);}
+            await ensureGraphicClasses();
             await ensureCutGraphicsLayer();cutGraphicMap.clear();if(cutGraphicsLayer)cutGraphicsLayer.removeAll();
             const selSym={type:'simple-line',color:[220,53,69,0.95],width:3,style:'dash'},hovSym={type:'simple-line',color:[255,140,0,1],width:4,style:'solid'};
-            for(let i=0;i<cutLinesToCut.length;i++){if(GraphicClass&&cutGraphicsLayer){const g=new GraphicClass({geometry:cutLinesToCut[i].feature.geometry,symbol:selSym});cutGraphicsLayer.add(g);cutGraphicMap.set(i,g);}else await highlightCutGeometry(cutLinesToCut[i].feature.geometry,false);}
+            for(let i=0;i<cutLinesToCut.length;i++){if(_Graphic&&cutGraphicsLayer){const g=new _Graphic({geometry:cutLinesToCut[i].feature.geometry,symbol:selSym});cutGraphicsLayer.add(g);cutGraphicMap.set(i,g);}else await highlightCutGeometry(cutLinesToCut[i].feature.geometry,false);}
             const listEl=cutCtxMenu.querySelector('#cutCtxList');listEl.innerHTML='';
             for(let i=0;i<cutLinesToCut.length;i++){const li=cutLinesToCut[i],oid=getOid(li.feature)??'?',vtx=(li.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),row=document.createElement('label');row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.idx=String(i);cb.style.cssText='margin-top:2px;cursor:pointer;flex-shrink:0;';const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.4;';info.innerHTML=`<strong style="color:#e2d9f3;">${li.layerConfig.name}</strong><div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${vtx} vertices</div>`;const dot=document.createElement('span');dot.textContent='●';dot.style.cssText='color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';cb.addEventListener('change',()=>{const idx=parseInt(cb.dataset.idx),g=cutGraphicMap.get(idx);if(cb.checked){cutSelectedIndices.add(idx);dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else{cutSelectedIndices.delete(idx);dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}updateCutExecuteBtn();});row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=hovSym;row.style.background='#2d1b69';});row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=selSym;row.style.background='';});row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);}
             const selectAllBtn=cutCtxMenu.querySelector('#cutCtxSelectAll');if(selectAllBtn){selectAllBtn.onclick=()=>{const allOn=cutSelectedIndices.size===cutLinesToCut.length;[...listEl.querySelectorAll('label')].forEach((row,i)=>{const cb=row.querySelector('input'),dot=row.querySelector('span'),g=cutGraphicMap.get(i),was=cutSelectedIndices.has(i);cb.checked=!allOn;if(!allOn&&!was){cutSelectedIndices.add(i);if(dot)dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else if(allOn&&was){cutSelectedIndices.delete(i);if(dot)dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}});selectAllBtn.textContent=allOn?'✓ All':'✗ None';updateCutExecuteBtn();};}
@@ -854,7 +658,8 @@
             const snapPt={x:cutSelectedPoint.geometry.x,y:cutSelectedPoint.geometry.y};
             const undoBatch={ts:new Date(),ops:[]};let ok=0,fail=0;
             for(const li of selectedLines){
-                try{const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);if(!split){fail++;continue;}const{seg1,seg2}=split;const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);const newAttrs={...li.feature.attributes};['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);newAttrs.calculated_length=geodeticLength(seg2);const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;if(!updErr&&!addErr){undoBatch.ops.push({layer:li.layer,layerName:li.layerConfig.name,originalFeat:li.feature.clone(),addedOID:res.addFeatureResults[0].objectId});ok++;}else{console.error('executeCut error – update:',updErr,'add:',addErr);fail++;}}
+                try{const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);if(!split){fail++;continue;}const{seg1,seg2}=split;const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);const newAttrs={...li.feature.attributes};['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);newAttrs.calculated_length=geodeticLength(seg2);const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;if(!updErr&&!addErr){undoBatch.ops.push({layer:li.layer,layerName:li.layerConfig.name,originalFeat:li.feature.clone(),addedOID:res.addFeatureResults[0].objectId});// Update vertex cache: original OID gets seg1, new OID not yet in cache
+                const lid=layerKey(li.layer,li.layerConfig);updateVertexCacheGeom(lid,getOid(li.feature),seg1);ok++;}else{console.error('executeCut error:',updErr,addErr);fail++;}}
                 catch(e){console.error(`executeCut error (${li.layerConfig.name}):`,e);fail++;}
             }
             if(undoBatch.ops.length){cutUndoStack.push(undoBatch);if(cutUndoBtn)cutUndoBtn.disabled=false;}
@@ -863,14 +668,15 @@
             hideCutContextMenu();setTimeout(resetCutSelection,3000);
         }
 
-        async function undoLastCut(){if(!cutUndoStack.length||cutProcessing)return;cutProcessing=true;updateStatus('Undoing last cut…');const batch=cutUndoStack.pop();let ok=0,fail=0;for(const op of batch.ops){try{const res=await op.layer.applyEdits({updateFeatures:[op.originalFeat],deleteFeatures:[{objectId:op.addedOID}]});const updErr=res.updateFeatureResults?.[0]?.error,delErr=res.deleteFeatureResults?.[0]?.error;if(!updErr&&!delErr)ok++;else{console.error('undoLastCut error:',updErr,delErr);fail++;}}catch(e){console.error(`undoLastCut error (${op.layerName}):`,e);fail++;}}if(!cutUndoStack.length&&cutUndoBtn)cutUndoBtn.disabled=true;updateStatus(`↩ Undo: ${ok} line(s) restored${fail?`, ${fail} failed`:''}.`);cutProcessing=false;setTimeout(()=>{if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature.');},3000);}
+        async function undoLastCut(){if(!cutUndoStack.length||cutProcessing)return;cutProcessing=true;updateStatus('Undoing last cut…');const batch=cutUndoStack.pop();let ok=0,fail=0;for(const op of batch.ops){try{const res=await op.layer.applyEdits({updateFeatures:[op.originalFeat],deleteFeatures:[{objectId:op.addedOID}]});const updErr=res.updateFeatureResults?.[0]?.error,delErr=res.deleteFeatureResults?.[0]?.error;if(!updErr&&!delErr){// Restore original geometry in cache
+                updateVertexCacheGeom(layerKey(op.layer,null),getOid(op.originalFeat),op.originalFeat.geometry);ok++;}else{console.error('undoLastCut error:',updErr,delErr);fail++;}}catch(e){console.error(`undoLastCut error (${op.layerName}):`,e);fail++;}}if(!cutUndoStack.length&&cutUndoBtn)cutUndoBtn.disabled=true;updateStatus(`↩ Undo: ${ok} line(s) restored${fail?`, ${fail} failed`:''}.`);cutProcessing=false;setTimeout(()=>{if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature.');},3000);}
 
         async function handleCutClick(event){
             if(cutPreviewMode||cutProcessing)return;clearCutHighlights();hideCutContextMenu();updateStatus('Searching for point feature…');
             const sp={x:event.x,y:event.y},mp=mapView.toMap(sp),ext=makeExt(mp.x,mp.y,POINT_SNAP_TOLERANCE*(mapView.resolution||1),mapView.spatialReference);
             let ptResult=null;
             if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});for(const r of hit.results){if(r.graphic?.geometry?.type==='point'){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(cfg){ptResult={feature:r.graphic,layer:r.layer,layerConfig:cfg};break;}}}}
-            if(!ptResult){for(const cfg of pointLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*']});let best=null,bestD=Infinity;for(const f of res.features){if(!f.geometry)continue;const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best=f;}}if(best){ptResult={feature:best,layer:cfg.layer,layerConfig:cfg};break;}}catch(e){console.error(`handleCutClick error on ${cfg.name}:`,e);}}}
+            if(!ptResult){const results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*']});return{cfg,features:res.features};}catch(e){console.error(`handleCutClick error on ${cfg.name}:`,e);return{cfg,features:[]};}}));let best=null,bestD=Infinity;for(const{cfg,features}of results){for(const f of features){if(!f.geometry)continue;const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best={feature:f,layer:cfg.layer,layerConfig:cfg};}}}if(best)ptResult=best;}
             if(!ptResult){updateStatus('❌ No point feature found. Click closer to a point.');return;}
             cutSelectedPoint=ptResult.feature;cutSelectedPointLayer=ptResult.layer;
             await highlightCutGeometry(cutSelectedPoint.geometry,true);
@@ -881,6 +687,98 @@
         function resetCutSelection(){cutSelectedPoint=null;cutSelectedPointLayer=null;cutLinesToCut=[];cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();clearCutHighlights();hideCutContextMenu();if(cutMode)updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');}
         function enableCutMode(){if(flipMode)disableFlipMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();cutMode=true;setActiveModeBtn('cutModeBtn');showCtxPanel('cut');if(cutModeInfo)cutModeInfo.textContent='';updateStatus('✂️ Cut mode active. Click a point feature to cut nearby lines.');}
         function disableCutMode(){cutMode=false;cutPreviewMode=false;cutProcessing=false;resetCutSelection();setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(cutModeInfo)cutModeInfo.textContent='';updateStatus(toolActive?`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`:'Tool disabled.');}
+
+        // ── Delete (soft) ─────────────────────────────────────────────────────
+
+        function getDeleteFieldName(layer){if(!layer?.fields)return null;const m=layer.fields.find(f=>f.name.toLowerCase()===DELETE_FIELD.toLowerCase());return m?m.name:null;}
+
+        async function findAllFeaturesAtClick(sp, mp) {
+            const candidates=[], seenOids=new Set();
+            // Points and lines only — polygons excluded
+            const allCfgs=[...pointLayers,...lineLayers].sort((a,b)=>a.name.localeCompare(b.name));
+            const hitLayerIds = new Set();
+
+            if(mapView.hitTest){
+                try{
+                    const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});
+                    for(const r of hit.results){
+                        if(!r.graphic?.geometry)continue;
+                        const cfg=allCfgs.find(c=>c.id===r.layer.layerId);
+                        if(!cfg)continue;
+                        hitLayerIds.add(cfg.id);
+                        const oid=getOid(r.graphic);
+                        if(oid!=null&&seenOids.has(oid))continue;
+                        if(oid!=null)seenOids.add(oid);
+                        candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg});
+                    }
+                }catch(e){console.error('findAllFeaturesAtClick hitTest error:',e);}
+            }
+
+            // Only spatial-query layers NOT already covered by hitTest
+            const uncoveredCfgs = allCfgs.filter(c => !hitLayerIds.has(c.id) && c.layer.visible);
+            if (uncoveredCfgs.length > 0) {
+                const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1), ext=makeExt(mp.x,mp.y,tol,mapView.spatialReference);
+                await Promise.all(uncoveredCfgs.map(async cfg=>{
+                    try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:20});for(const f of res.features){if(!f.geometry)continue;const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg});}}
+                    catch(e){console.error(`findAllFeaturesAtClick fallback error on ${cfg.name}:`,e);}
+                }));
+            }
+            return candidates;
+        }
+
+        function showDelContextMenu(mapPoint){const screen=mapView.toScreen(mapPoint),rect=mapView.container.getBoundingClientRect();let left=rect.left+screen.x+14,top=rect.top+screen.y-10;if(left+240>window.innerWidth)left=rect.left+screen.x-240;if(top+320>window.innerHeight)top=window.innerHeight-320;delCtxMenu.style.left=left+'px';delCtxMenu.style.top=top+'px';delCtxMenu.style.display='block';}
+        function hideDelContextMenu(){delCtxMenu.style.display='none';}
+        function updateDelExecuteBtn(){const btn=delCtxMenu.querySelector('#delCtxExecute');if(!btn||deleteProcessing)return;const n=deleteSelectedIndices.size;btn.textContent=`🗑️ Mark as Deleted (${n})`;btn.disabled=n===0;}
+
+        async function handleDeleteClick(event) {
+            if(deleteProcessing)return;
+            hideDelContextMenu();updateStatus('🗑️ Finding features at click location…');
+            const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);
+            deleteCandidates=await findAllFeaturesAtClick(sp,mp);
+            if(!deleteCandidates.length){updateStatus('❌ No features found at this location.');return;}
+            const eligible=deleteCandidates.filter(c=>getDeleteFieldName(c.layer)!==null);
+            const ineligible=deleteCandidates.length-eligible.length;
+            if(!eligible.length){updateStatus(`❌ None of the ${deleteCandidates.length} feature(s) found have a "${DELETE_FIELD}" field.`);return;}
+            deleteCandidates=eligible;
+            deleteSelectedIndices=new Set(deleteCandidates.map((_,i)=>i));
+            const listEl=delCtxMenu.querySelector('#delCtxList');listEl.innerHTML='';
+            const typeIcon=t=>t==='point'?'📍':t==='polyline'?'〰️':'⬡';
+            for(let i=0;i<deleteCandidates.length;i++){const c=deleteCandidates[i],oid=getOid(c.feature)??'?',gtype=c.feature.geometry?.type??'unknown',fieldName=getDeleteFieldName(c.layer),curVal=c.feature.attributes?.[fieldName]??'null',alreadyDeleted=String(curVal).toUpperCase()==='YES';const row=document.createElement('label');row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.idx=String(i);cb.style.cssText='margin-top:2px;cursor:pointer;flex-shrink:0;';const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.5;';info.innerHTML=`<strong style="color:${alreadyDeleted?'#fca5a5':'#e2d9f3'};">${typeIcon(gtype)} ${c.layerConfig.name}</strong><div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${DELETE_FIELD}: ${curVal}${alreadyDeleted?' ⚠️ already flagged':''}</div>`;const dot=document.createElement('span');dot.textContent='●';dot.style.cssText='color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';cb.addEventListener('change',()=>{const idx=parseInt(cb.dataset.idx);if(cb.checked){deleteSelectedIndices.add(idx);dot.style.color='#ef4444';}else{deleteSelectedIndices.delete(idx);dot.style.color='#3d3268';}updateDelExecuteBtn();});row.addEventListener('mouseenter',()=>{row.style.background='#2d1b0a';showPickerHoverHighlight(c.feature.geometry);});row.addEventListener('mouseleave',()=>{row.style.background='';clearPickerHoverHighlight();});row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);}
+            delCtxMenu.querySelector('#delCtxCount').textContent=deleteCandidates.length;
+            const selAllBtn=delCtxMenu.querySelector('#delCtxSelectAll');if(selAllBtn){selAllBtn.textContent='✓ All';selAllBtn.onclick=()=>{const rows=[...listEl.querySelectorAll('label')],allOn=deleteSelectedIndices.size===deleteCandidates.length;rows.forEach((_,i)=>{const cb=rows[i].querySelector('input'),dot=rows[i].querySelector('span');cb.checked=!allOn;if(!allOn){deleteSelectedIndices.add(i);if(dot)dot.style.color='#ef4444';}else{deleteSelectedIndices.delete(i);if(dot)dot.style.color='#3d3268';}});selAllBtn.textContent=allOn?'✓ All':'✗ None';updateDelExecuteBtn();};}
+            updateDelExecuteBtn();
+            showDelContextMenu(mp);
+            updateStatus(`🗑️ ${deleteCandidates.length} eligible feature(s)${ineligible>0?` · ${ineligible} skipped (no ${DELETE_FIELD} field)`:''}.`);
+        }
+
+        async function executeDelete() {
+            const toDelete=deleteCandidates.filter((_,i)=>deleteSelectedIndices.has(i));
+            if(!toDelete.length||deleteProcessing)return;
+            deleteProcessing=true;delCtxMenu.querySelector('#delCtxExecute').disabled=true;delCtxMenu.querySelector('#delCtxCancel').disabled=true;
+            updateStatus('🗑️ Flagging features…');
+            const batch=[];let ok=0,fail=0;
+            for(const c of toDelete){const fieldName=getDeleteFieldName(c.layer);if(!fieldName){fail++;continue;}try{const upd=c.feature.clone();upd.attributes[fieldName]='YES';await c.layer.applyEdits({updateFeatures:[upd]});batch.push({layer:c.layer,layerName:c.layerConfig.name,oid:getOid(c.feature),fieldName});ok++;}catch(e){console.error(`executeDelete error on ${c.layerConfig.name}:`,e);fail++;}}
+            if(batch.length){deleteUndoStack.push(batch);if(deleteUndoBtn)deleteUndoBtn.disabled=false;}
+            const names=[...new Set(batch.map(b=>b.layerName))];
+            updateStatus(ok?`✅ Flagged ${ok} feature(s) as deleted: ${names.join(', ')}${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} flag(s) failed.`);
+            deleteProcessing=false;delCtxMenu.querySelector('#delCtxExecute').disabled=false;delCtxMenu.querySelector('#delCtxCancel').disabled=false;
+            hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();
+            setTimeout(()=>{if(deleteMode)updateStatus('🗑️ Delete mode active. Click any feature to flag it.');},3000);
+        }
+
+        async function undoLastDelete(){
+            if(!deleteUndoStack.length||deleteProcessing)return;
+            deleteProcessing=true;updateStatus('↩ Restoring last delete batch…');
+            const batch=deleteUndoStack.pop();let ok=0,fail=0;
+            for(const op of batch){try{const res=await op.layer.queryFeatures({where:`objectid=${op.oid}`,returnGeometry:true,outFields:['*']});if(!res.features.length){fail++;continue;}const upd=res.features[0].clone();upd.attributes[op.fieldName]='NO';await op.layer.applyEdits({updateFeatures:[upd]});ok++;}catch(e){console.error(`undoLastDelete error on ${op.layerName}:`,e);fail++;}}
+            if(!deleteUndoStack.length&&deleteUndoBtn)deleteUndoBtn.disabled=true;
+            updateStatus(`↩ Restored ${ok} feature(s) to NO${fail?` · ${fail} failed`:''}.`);
+            deleteProcessing=false;
+            setTimeout(()=>{if(deleteMode)updateStatus('🗑️ Delete mode active. Click any feature to flag it.');},3000);
+        }
+
+        function enableDeleteMode(){if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();deleteMode=true;setActiveModeBtn('deleteModeBtn',true);showCtxPanel('delete');if(toolActive)updateStatus('🗑️ Delete mode active. Click any feature to flag it.');}
+        function disableDeleteMode(){deleteMode=false;deleteProcessing=false;hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(toolActive)updateStatus(`Ready · click a ${currentMode==='point'?'point feature':'line vertex'}.`);}
 
         // ── Feature picker popup ──────────────────────────────────────────────
 
@@ -898,19 +796,49 @@
 
         // ── Locked feature helpers ────────────────────────────────────────────
 
-        const getOid = f => f?.attributes?.objectid ?? f?.attributes?.OBJECTID ?? null;
+        async function applyLock(feature, layer, cfg, featureType = 'line') {
+            lockedFeature = { feature, layer, layerConfig: cfg, featureType };
+            pickingFeatureMode = false;
+            const typeIcon = featureType === 'point' ? '📍' : '〰️';
+            if (lockedFeatureInfo) { lockedFeatureInfo.textContent = `${typeIcon} ${cfg.name} · OID ${getOid(feature) ?? '?'}`; lockedFeatureInfo.className = 'smt-locked'; }
+            if (lockFeatureBtn) { lockFeatureBtn.classList.remove('smt-picking'); lockFeatureBtn.classList.add('smt-locked-btn'); lockFeatureBtn.textContent = '🎯 Re-Pick'; }
+            if (releaseFeatureBtn) releaseFeatureBtn.disabled = false;
+            if (vertexHighlightActive) scheduleHighlightRefresh();
 
-        async function refreshLockedFeature(){if(!lockedFeature)return;try{const oid=getOid(lockedFeature.feature);if(oid==null)return;const res=await lockedFeature.layer.queryFeatures({where:`objectid=${oid}`,returnGeometry:true,outFields:["*"]});if(res.features.length>0)lockedFeature.feature=res.features[0];}catch(e){console.error("refreshLockedFeature error:",e);}}
+            if (featureType === 'line') {
+                if (flipMode) { updateStatus(`🔒 Locked to ${cfg.name}. Click anywhere to flip its direction.`); return; }
+                setLineMode();
+                updateStatus(`🔒 Locked to ${cfg.name}. Click any vertex to select it, then click the destination.`);
+            } else {
+                setPointMode();
+                if (toolActive) {
+                    // Pre-fetch colocated points and connected lines in parallel.
+                    // Results are cached on lockedFeature.preloaded so re-selections
+                    // don't re-query the service.
+                    updateStatus(`🔒 Locked to ${cfg.name}. Preparing…`);
+                    const [preFetchedConnected, preFetchedColocated] = await Promise.all([
+                        findConnectedLines(feature.geometry),
+                        findColocatedPoints(feature.geometry, getOid(feature))
+                    ]);
+                    lockedFeature.preloaded = { connectedFeatures: preFetchedConnected, colocatedPoints: preFetchedColocated };
 
-        async function applyLock(feature,layer,cfg,featureType='line'){
-            lockedFeature={feature,layer,layerConfig:cfg,featureType};pickingFeatureMode=false;
-            const typeIcon=featureType==='point'?'📍':'〰️';
-            if(lockedFeatureInfo){lockedFeatureInfo.textContent=`${typeIcon} ${cfg.name} · OID ${getOid(feature)??'?'}`;lockedFeatureInfo.className='smt-locked';}
-            if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent='🎯 Re-Pick';}
-            if(releaseFeatureBtn)releaseFeatureBtn.disabled=false;
-            if(vertexHighlightActive)scheduleHighlightRefresh();
-            if(featureType==='line'){if(flipMode){updateStatus(`🔒 Locked to ${cfg.name}. Click anywhere to flip its direction.`);return;}setLineMode();updateStatus(`🔒 Locked to ${cfg.name}. Click any vertex to select it, then click the destination.`);}
-            else{setPointMode();if(toolActive){selectedFeature=feature;selectedLayer=layer;selectedLayerConfig=cfg;selectedVertex=null;waitingForDestination=true;if(feature.geometry?.clone)originalGeometries.set(getOid(feature)?? 'locked',feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;connectedFeatures=await findConnectedLines(feature.geometry);colocatedPoints=await findColocatedPoints(feature.geometry,getOid(feature));updateStatus(`🔒 Locked to ${cfg.name}. Click destination to move (${connectedFeatures.length} line(s)${colocatedPoints.length?` · ${colocatedPoints.length} co-located`:''}).`);}else updateStatus(`🔒 Locked to ${cfg.name}. Enable the tool then click the destination.`);}
+                    // Set up for immediate move (user can click destination directly after locking)
+                    selectedFeature = feature; selectedLayer = layer; selectedLayerConfig = cfg;
+                    selectedVertex = null; waitingForDestination = true;
+                    connectedFeatures = preFetchedConnected;
+                    colocatedPoints = preFetchedColocated;
+                    if (feature.geometry?.clone) originalGeometries.set(getOid(feature) ?? 'locked', feature.geometry.clone());
+                    for (const info of preFetchedConnected)
+                        if (info.feature.geometry?.clone) originalGeometries.set(info.feature.attributes.objectid, info.feature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false;
+
+                    const connNote = preFetchedConnected.length ? ` · ${preFetchedConnected.length} connected (unaffected)` : '';
+                    const colocNote = preFetchedColocated.length ? ` · ${preFetchedColocated.length} co-located will move` : '';
+                    updateStatus(`🔒 Locked to ${cfg.name}${connNote}${colocNote}. Click destination.`);
+                } else {
+                    updateStatus(`🔒 Locked to ${cfg.name}. Enable the tool then click the destination.`);
+                }
+            }
         }
 
         function releaseLockedFeature(){
@@ -925,134 +853,463 @@
         async function pickFeature(event){
             const sp={x:event.x,y:event.y};updateStatus("Looking for feature...");
             try{const candidates=[],seenOids=new Set();if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results){const gtype=r.graphic?.geometry?.type;if(gtype==="polyline"){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'line'});}else if(gtype==="point"||gtype==="multipoint"){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'point'});}}}
-            if(candidates.length===0){const mp=mapView.toMap(sp),ext=makeExt(mp.x,mp.y,30,mapView.spatialReference);for(const cfg of lineLayers){if(!cfg.layer.visible)continue;const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});for(const f of res.features){const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'line'});}}for(const cfg of pointLayers){if(!cfg.layer.visible)continue;const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});for(const f of res.features){const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:'point'});}}}
+            if(candidates.length===0){const mp=mapView.toMap(sp),ext=makeExt(mp.x,mp.y,30,mapView.spatialReference);await Promise.all([...lineLayers,...pointLayers].filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:20});const ft=lineLayers.includes(cfg)?'line':'point';for(const f of res.features){const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:ft});}}catch(e){console.error(`pickFeature fallback on ${cfg.name}:`,e);}}))}
             if(candidates.length===0){updateStatus("❌ No feature found. Click directly on a point or line feature.");return;}
             if(candidates.length===1)applyLock(candidates[0].feature,candidates[0].layer,candidates[0].layerConfig,candidates[0].featureType);
-            else{const rect=mapView.container.getBoundingClientRect();showFeaturePickerPopup(candidates,rect.left+sp.x,rect.top+sp.y);updateStatus(`🗂 ${candidates.length} overlapping features found. Choose one from the menu.`);}
+            else{const rect=mapView.container.getBoundingClientRect();showFeaturePickerPopup(candidates,rect.left+sp.x,rect.top+sp.y);updateStatus(`🗂 ${candidates.length} overlapping features found.`);}
             }catch(e){console.error("pickFeature error:",e);updateStatus("❌ Error picking feature.");}
         }
 
-        // ── Layer query helpers ───────────────────────────────────────────────
+        // ── Layer query helpers — all parallelised internally ─────────────────
 
-        async function findNearestPointFeature(mapPt){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mapPt.x,mapPt.y,tol,mapView.spatialReference);let nearest=null,minD=Infinity;for(const cfg of pointLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"]});for(const f of res.features){if(!f.geometry)continue;const d=calcDist(mapPt,f.geometry);if(d<minD){minD=d;nearest={feature:f,layer:cfg.layer,layerConfig:cfg,distance:d,geometry:f.geometry};}}}catch(e){console.error(`findNearestPointFeature error on ${cfg.name}:`,e);}}return(nearest&&nearest.distance<tol)?nearest:null;}catch(e){console.error("findNearestPointFeature error:",e);return null;}}
-        async function findNearestLineVertex(dst,excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(dst.x,dst.y,tol,mapView.spatialReference);let nearest=null,minD=Infinity,nearestCfg=null;for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["objectid"],outSpatialReference:mapView.spatialReference});for(const f of res.features){if(excludeOids.has(getOid(f)))continue;if(!f.geometry?.paths)continue;for(const path of f.geometry.paths)for(const coord of path){const d=calcDist(dst,{x:coord[0],y:coord[1]});if(d<minD){minD=d;nearest={x:coord[0],y:coord[1],spatialReference:dst.spatialReference};nearestCfg=cfg;}}}}catch(e){console.error(`findNearestLineVertex error on ${cfg.name}:`,e);}}return(nearest&&minD<tol)?{geometry:nearest,layerConfig:nearestCfg,snapType:'lineVertex'}:null;}catch(e){console.error("findNearestLineVertex error:",e);return null;}}
-        async function findSnapTarget(dst,excludeOids=new Set()){const[ps,vs]=await Promise.all([findNearestPointFeature(dst),findNearestLineVertex(dst,excludeOids)]);if(!ps&&!vs)return null;if(ps&&!vs)return{...ps,snapType:'pointFeature'};if(!ps&&vs)return vs;return calcDist(dst,ps.geometry)<=calcDist(dst,vs.geometry)?{...ps,snapType:'pointFeature'}:vs;}
-        async function findPointFeatureAtLocation(sp){try{if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="point"){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(cfg)return{feature:r.graphic,layer:r.layer,layerConfig:cfg};}}const mp=mapView.toMap(sp),tol=SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mp.x,mp.y,tol,mapView.spatialReference);for(const cfg of pointLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"]});if(res.features.length>0){let best=null,bestD=Infinity;for(const f of res.features){if(!f.geometry)continue;const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best=f;}}if(best)return{feature:best,layer:cfg.layer,layerConfig:cfg};}}catch(e){console.error(`findPointFeatureAtLocation error on ${cfg.name}:`,e);}}}catch(e){console.error("findPointFeatureAtLocation error:",e);}return null;}
+        /**
+         * Nearest point feature in any visible point layer.
+         * All layers queried simultaneously via Promise.all.
+         */
+        async function findNearestPointFeature(mapPt) {
+            try {
+                const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                const ext = makeExt(mapPt.x, mapPt.y, tol, mapView.spatialReference);
+                const results = await Promise.all(
+                    pointLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                        try { const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: "intersects", returnGeometry: true, outFields: ["*"] }); return { cfg, features: res.features }; }
+                        catch(e) { console.error(`findNearestPointFeature on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                    })
+                );
+                let nearest = null, minD = Infinity;
+                for (const { cfg, features } of results)
+                    for (const f of features) { if (!f.geometry) continue; const d = calcDist(mapPt, f.geometry); if (d < minD) { minD = d; nearest = { feature: f, layer: cfg.layer, layerConfig: cfg, distance: d, geometry: f.geometry }; } }
+                return (nearest && nearest.distance < tol) ? nearest : null;
+            } catch(e) { console.error("findNearestPointFeature error:", e); return null; }
+        }
 
-        async function findColocatedPoints(ptGeom,primaryOid){const coloc=[],ext=makeExt(ptGeom.x,ptGeom.y,COLOC_BUF_M,ptGeom.spatialReference);for(const cfg of pointLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:50});for(const f of res.features){if(!f.geometry)continue;const oid=getOid(f);if(primaryOid!=null&&oid===primaryOid)continue;if(calcDist(ptGeom,f.geometry)<=COLOC_BUF_M)coloc.push({feature:f,layer:cfg.layer,layerConfig:cfg});}}catch(e){console.error(`findColocatedPoints error on ${cfg.name}:`,e);}}return coloc;}
+        /**
+         * Nearest line vertex in any visible line layer.
+         * All layers queried simultaneously via Promise.all.
+         */
+        async function findNearestLineVertex(dst, excludeOids = new Set()) {
+            try {
+                const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                const ext = makeExt(dst.x, dst.y, tol, mapView.spatialReference);
+                const results = await Promise.all(
+                    lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                        try { const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: "intersects", returnGeometry: true, outFields: ["objectid"], outSpatialReference: mapView.spatialReference }); return { cfg, features: res.features }; }
+                        catch(e) { console.error(`findNearestLineVertex on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                    })
+                );
+                let nearest = null, minD = Infinity, nearestCfg = null;
+                for (const { cfg, features } of results)
+                    for (const f of features) {
+                        if (excludeOids.has(getOid(f)) || !f.geometry?.paths) continue;
+                        for (const path of f.geometry.paths)
+                            for (const coord of path) { const d = calcDist(dst, { x: coord[0], y: coord[1] }); if (d < minD) { minD = d; nearest = { x: coord[0], y: coord[1], spatialReference: dst.spatialReference }; nearestCfg = cfg; } }
+                    }
+                return (nearest && minD < tol) ? { geometry: nearest, layerConfig: nearestCfg, snapType: 'lineVertex' } : null;
+            } catch(e) { console.error("findNearestLineVertex error:", e); return null; }
+        }
 
-        async function findCoincidentLinesForVertexCreation(sp,mp){try{const bufM=10/3.28084,lines=[];if(lockedFeature?.featureType==='line'){await refreshLockedFeature();const seg=findClosestSeg(lockedFeature.feature.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,segmentInfo:seg});return lines;}if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="polyline"){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(cfg){const seg=findClosestSeg(r.graphic.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,segmentInfo:seg});}}}if(lines.length===0){for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const buf={type:"polygon",spatialReference:mp.spatialReference,rings:[[[mp.x-bufM,mp.y-bufM],[mp.x+bufM,mp.y-bufM],[mp.x+bufM,mp.y+bufM],[mp.x-bufM,mp.y+bufM],[mp.x-bufM,mp.y-bufM]]]};const res=await cfg.layer.queryFeatures({geometry:buf,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});for(const f of res.features){const seg=findClosestSeg(f.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,segmentInfo:seg});}}catch(e){console.error(`findCoincidentLines error on ${cfg.name}:`,e);}}}return lines;}catch(e){console.error("findCoincidentLinesForVertexCreation error:",e);return[];}}
-        async function findCoincidentLineVertices(sp){try{const clickPt=mapView.toMap(sp),snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),lines=[];if(lockedFeature?.featureType==='line'){await refreshLockedFeature();const v=findClosestVertex(lockedFeature.feature.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,vertex:v});return lines;}if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="polyline"){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(cfg){const v=findClosestVertex(r.graphic.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,vertex:v});}}}if(lines.length===0){const ext=makeExt(clickPt.x,clickPt.y,snapTol,mapView.spatialReference);for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});for(const f of res.features){const v=findClosestVertex(f.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,vertex:v});}}catch(e){console.error(`findCoincidentLineVertices error on ${cfg.name}:`,e);}}}if(lines.length>0){const ref=lines[0].vertex.coordinates;return lines.filter(li=>calcDist(ref,li.vertex.coordinates)<snapTol);}return[];}catch(e){console.error("findCoincidentLineVertices error:",e);return[];}}
-        async function findConnectedLines(ptGeom){const connected=[],bufM=10/3.28084;for(const cfg of lineLayers){if(!cfg.layer.visible)continue;try{const buf={type:"polygon",spatialReference:ptGeom.spatialReference,rings:[[[ptGeom.x-bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y-bufM]]]};const res=await cfg.layer.queryFeatures({geometry:buf,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:100});for(const f of res.features){if(!f.geometry?.paths)continue;for(let pi=0;pi<f.geometry.paths.length;pi++){const path=f.geometry.paths[pi];if(path.length<2)continue;const start={x:path[0][0],y:path[0][1]},end={x:path[path.length-1][0],y:path[path.length-1][1]},sd=calcDist(ptGeom,start),ed=calcDist(ptGeom,end);let conn=null;if(sd<bufM)conn={pathIndex:pi,pointIndex:0,isStart:true};else if(ed<bufM)conn={pathIndex:pi,pointIndex:path.length-1,isStart:false};if(conn){connected.push({feature:f,layer:cfg.layer,layerConfig:cfg,connection:conn});if(f.geometry.clone)originalGeometries.set(f.attributes.objectid,f.geometry.clone());}}}}catch(e){console.error(`findConnectedLines error on ${cfg.name}:`,e);}}return connected;}
-        async function updateConnectedLines(newPt){for(const info of connectedFeatures){try{const orig=originalGeometries.get(info.feature.attributes.objectid);if(!orig?.clone)continue;const newGeom=orig.clone();newGeom.paths[info.connection.pathIndex][info.connection.pointIndex]=[newPt.x,newPt.y];const upd=info.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);if(info.layer.applyEdits)await info.layer.applyEdits({updateFeatures:[upd]});}catch(e){console.error("updateConnectedLines error:",e);}}}
+        async function findSnapTarget(dst, excludeOids = new Set()) {
+            const [ps, vs] = await Promise.all([findNearestPointFeature(dst), findNearestLineVertex(dst, excludeOids)]);
+            if (!ps && !vs) return null;
+            if (ps && !vs) return { ...ps, snapType: 'pointFeature' };
+            if (!ps && vs) return vs;
+            return calcDist(dst, ps.geometry) <= calcDist(dst, vs.geometry) ? { ...ps, snapType: 'pointFeature' } : vs;
+        }
+
+        async function findPointFeatureAtLocation(sp) {
+            try {
+                if (mapView.hitTest) { const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === "feature") }); for (const r of hit.results) if (r.graphic?.geometry?.type === "point") { const cfg = pointLayers.find(p => p.id === r.layer.layerId); if (cfg) return { feature: r.graphic, layer: r.layer, layerConfig: cfg }; } }
+                const mp = mapView.toMap(sp), tol = SNAP_TOLERANCE * (mapView.resolution || 1), ext = makeExt(mp.x, mp.y, tol, mapView.spatialReference);
+                const results = await Promise.all(pointLayers.filter(cfg => cfg.layer.visible).map(async cfg => { try { const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: "intersects", returnGeometry: true, outFields: ["*"] }); return { cfg, features: res.features }; } catch(e) { return { cfg, features: [] }; } }));
+                let best = null, bestD = Infinity;
+                for (const { cfg, features } of results) for (const f of features) { if (!f.geometry) continue; const d = calcDist(mp, f.geometry); if (d < bestD) { bestD = d; best = { feature: f, layer: cfg.layer, layerConfig: cfg }; } }
+                return best;
+            } catch(e) { console.error("findPointFeatureAtLocation error:", e); return null; }
+        }
+
+        /** All visible point layers queried in parallel. */
+        async function findColocatedPoints(ptGeom, primaryOid) {
+            const ext = makeExt(ptGeom.x, ptGeom.y, COLOC_BUF_M, ptGeom.spatialReference);
+            const results = await Promise.all(
+                pointLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                    try { const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['*'], maxRecordCount: 50 }); return { cfg, features: res.features }; }
+                    catch(e) { console.error(`findColocatedPoints on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                })
+            );
+            const coloc = [];
+            for (const { cfg, features } of results)
+                for (const f of features) { if (!f.geometry) continue; const oid = getOid(f); if (primaryOid != null && oid === primaryOid) continue; if (calcDist(ptGeom, f.geometry) <= COLOC_BUF_M) coloc.push({ feature: f, layer: cfg.layer, layerConfig: cfg }); }
+            return coloc;
+        }
+
+        async function findCoincidentLinesForVertexCreation(sp, mp) {
+            try {
+                const bufM = 10 / 3.28084, lines = [];
+                if (lockedFeature?.featureType === 'line') {
+                    const seg = findClosestSeg(lockedFeature.feature.geometry, mp);
+                    if (seg && seg.distance <= bufM) lines.push({ feature: lockedFeature.feature, layer: lockedFeature.layer, layerConfig: lockedFeature.layerConfig, segmentInfo: seg });
+                    return lines;
+                }
+                if (mapView.hitTest) { const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === "feature") }); for (const r of hit.results) if (r.graphic?.geometry?.type === "polyline") { const cfg = lineLayers.find(l => l.id === r.layer.layerId); if (cfg) { const seg = findClosestSeg(r.graphic.geometry, mp); if (seg && seg.distance <= bufM) lines.push({ feature: r.graphic, layer: r.layer, layerConfig: cfg, segmentInfo: seg }); } } }
+                if (lines.length === 0) {
+                    const buf = { type: "polygon", spatialReference: mp.spatialReference, rings: [[[mp.x-bufM,mp.y-bufM],[mp.x+bufM,mp.y-bufM],[mp.x+bufM,mp.y+bufM],[mp.x-bufM,mp.y+bufM],[mp.x-bufM,mp.y-bufM]]] };
+                    await Promise.all(lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                        try { const res = await cfg.layer.queryFeatures({ geometry: buf, spatialRelationship: "intersects", returnGeometry: true, outFields: ["*"], maxRecordCount: 50 }); for (const f of res.features) { const seg = findClosestSeg(f.geometry, mp); if (seg && seg.distance <= bufM) lines.push({ feature: f, layer: cfg.layer, layerConfig: cfg, segmentInfo: seg }); } }
+                        catch(e) { console.error(`findCoincidentLines on ${cfg.name}:`, e); }
+                    }));
+                }
+                return lines;
+            } catch(e) { console.error("findCoincidentLinesForVertexCreation error:", e); return []; }
+        }
+
+        async function findCoincidentLineVertices(sp) {
+            try {
+                const clickPt = mapView.toMap(sp), snapTol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1), lines = [];
+                if (lockedFeature?.featureType === 'line') {
+                    const v = findClosestVertex(lockedFeature.feature.geometry, clickPt);
+                    if (v && v.distance < snapTol) lines.push({ feature: lockedFeature.feature, layer: lockedFeature.layer, layerConfig: lockedFeature.layerConfig, vertex: v });
+                    return lines;
+                }
+                if (mapView.hitTest) { const hit = await mapView.hitTest(sp, { include: mapView.map.allLayers.filter(l => l.type === "feature") }); for (const r of hit.results) if (r.graphic?.geometry?.type === "polyline") { const cfg = lineLayers.find(l => l.id === r.layer.layerId); if (cfg) { const v = findClosestVertex(r.graphic.geometry, clickPt); if (v && v.distance < snapTol) lines.push({ feature: r.graphic, layer: r.layer, layerConfig: cfg, vertex: v }); } } }
+                if (lines.length === 0) {
+                    const ext = makeExt(clickPt.x, clickPt.y, snapTol, mapView.spatialReference);
+                    await Promise.all(lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                        try { const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: "intersects", returnGeometry: true, outFields: ["*"], maxRecordCount: 50 }); for (const f of res.features) { const v = findClosestVertex(f.geometry, clickPt); if (v && v.distance < snapTol) lines.push({ feature: f, layer: cfg.layer, layerConfig: cfg, vertex: v }); } }
+                        catch(e) { console.error(`findCoincidentLineVertices on ${cfg.name}:`, e); }
+                    }));
+                }
+                if (lines.length > 0) { const ref = lines[0].vertex.coordinates; return lines.filter(li => calcDist(ref, li.vertex.coordinates) < snapTol); }
+                return [];
+            } catch(e) { console.error("findCoincidentLineVertices error:", e); return []; }
+        }
+
+        /** All visible line layers queried in parallel. */
+        async function findConnectedLines(ptGeom) {
+            const connected = [], bufM = 10 / 3.28084;
+            const buf = { type: "polygon", spatialReference: ptGeom.spatialReference, rings: [[[ptGeom.x-bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y-bufM]]] };
+            const results = await Promise.all(
+                lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                    try { const res = await cfg.layer.queryFeatures({ geometry: buf, spatialRelationship: "intersects", returnGeometry: true, outFields: ["*"], maxRecordCount: 100 }); return { cfg, features: res.features }; }
+                    catch(e) { console.error(`findConnectedLines on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                })
+            );
+            for (const { cfg, features } of results) {
+                for (const f of features) {
+                    if (!f.geometry?.paths) continue;
+                    for (let pi = 0; pi < f.geometry.paths.length; pi++) {
+                        const path = f.geometry.paths[pi];
+                        if (path.length < 2) continue;
+                        const start = { x: path[0][0], y: path[0][1] }, end = { x: path[path.length-1][0], y: path[path.length-1][1] };
+                        const sd = calcDist(ptGeom, start), ed = calcDist(ptGeom, end);
+                        let conn = null;
+                        if (sd < bufM) conn = { pathIndex: pi, pointIndex: 0, isStart: true };
+                        else if (ed < bufM) conn = { pathIndex: pi, pointIndex: path.length - 1, isStart: false };
+                        if (conn) {
+                            connected.push({ feature: f, layer: cfg.layer, layerConfig: cfg, connection: conn });
+                            if (f.geometry.clone) originalGeometries.set(f.attributes.objectid, f.geometry.clone());
+                        }
+                    }
+                }
+            }
+            return connected;
+        }
+
+        /** Batch connected line updates by layer + update vertex cache. */
+        async function updateConnectedLines(newPt) {
+            const byLayer = new Map();
+            const cacheUpdates = [];
+            for (const info of connectedFeatures) {
+                const orig = originalGeometries.get(info.feature.attributes.objectid);
+                if (!orig?.clone) continue;
+                const newGeom = orig.clone();
+                newGeom.paths[info.connection.pathIndex][info.connection.pointIndex] = [newPt.x, newPt.y];
+                const upd = info.feature.clone(); upd.geometry = newGeom;
+                upd.attributes.calculated_length = geodeticLength(newGeom);
+                const lid = layerKey(info.layer, info.layerConfig);
+                if (!byLayer.has(lid)) byLayer.set(lid, { layer: info.layer, features: [] });
+                byLayer.get(lid).features.push(upd);
+                cacheUpdates.push({ lid, oid: getOid(info.feature), geom: newGeom });
+            }
+            for (const { layer, features } of byLayer.values()) {
+                try { if (layer.applyEdits) await layer.applyEdits({ updateFeatures: features }); }
+                catch(e) { console.error('updateConnectedLines batch error:', e); }
+            }
+            for (const { lid, oid, geom } of cacheUpdates) updateVertexCacheGeom(lid, oid, geom);
+        }
 
         // ── Vertex operations ─────────────────────────────────────────────────
 
         function lockedReadyStatus(){if(!lockedFeature)return currentMode==='point'?"Click on a point feature to select it.":"Line mode · click a vertex to select it.";if(lockedFeature.featureType==='point')return `🔒 Locked: ${lockedFeature.layerConfig.name} (point). Click the locked point to move it.`;return `🔒 Locked: ${lockedFeature.layerConfig.name}. Click a vertex to move it.`;}
 
-        async function addVertexToLine(event){const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);updateStatus("Adding vertex to line...");try{const lines=await findCoincidentLinesForVertexCreation(sp,mp);if(!lines.length){updateStatus("❌ No lines found to add vertex to.");return;}const updates=[];for(const li of lines){try{const newPaths=clonePaths(li.feature.geometry);newPaths[li.segmentInfo.pathIndex].splice(li.segmentInfo.insertIndex,0,[li.segmentInfo.point.x,li.segmentInfo.point.y]);const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name});}catch(e){console.error(`addVertexToLine error on ${li.layerConfig.name}:`,e);}}if(!updates.length){updateStatus("❌ No vertices could be added.");return;}for(const u of updates)if(u.layer.applyEdits)await u.layer.applyEdits({updateFeatures:[u.feature]});updateStatus(`✅ Added vertex to ${updates.length} line(s): ${updates.map(u=>u.layerName).join(", ")}!`);if(lockedFeature)await refreshLockedFeature();if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}catch(e){console.error("addVertexToLine error:",e);updateStatus("❌ Error adding vertex.");}}
+        async function addVertexToLine(event) {
+            const sp = { x: event.x, y: event.y }, mp = mapView.toMap(sp);
+            updateStatus("Adding vertex to line...");
+            try {
+                const lines = await findCoincidentLinesForVertexCreation(sp, mp);
+                if (!lines.length) { updateStatus("❌ No lines found to add vertex to."); return; }
+                const updates = [];
+                const lockedOid = lockedFeature?.featureType === 'line' ? getOid(lockedFeature.feature) : null;
+                for (const li of lines) {
+                    try {
+                        const newPaths = clonePaths(li.feature.geometry);
+                        newPaths[li.segmentInfo.pathIndex].splice(li.segmentInfo.insertIndex, 0, [li.segmentInfo.point.x, li.segmentInfo.point.y]);
+                        const newGeom = buildPolyline(li.feature.geometry, newPaths), upd = li.feature.clone();
+                        upd.geometry = newGeom; upd.attributes.calculated_length = geodeticLength(newGeom);
+                        updates.push({ layer: li.layer, feature: upd, layerName: li.layerConfig.name, newGeom, oid: getOid(li.feature), lid: layerKey(li.layer, li.layerConfig) });
+                    } catch(e) { console.error(`addVertexToLine on ${li.layerConfig.name}:`, e); }
+                }
+                if (!updates.length) { updateStatus("❌ No vertices could be added."); return; }
+                const byLayer = new Map();
+                for (const u of updates) { if (!byLayer.has(u.lid)) byLayer.set(u.lid, { layer: u.layer, updates: [] }); byLayer.get(u.lid).updates.push(u); }
+                for (const { layer, updates: batch } of byLayer.values())
+                    if (layer.applyEdits) await layer.applyEdits({ updateFeatures: batch.map(u => u.feature) });
+                for (const u of updates) {
+                    updateVertexCacheGeom(u.lid, u.oid, u.newGeom);
+                    if (lockedOid != null && u.oid === lockedOid) syncLockedFeature(u.newGeom);
+                }
+                updateStatus(`✅ Added vertex to ${updates.length} line(s): ${[...new Set(updates.map(u => u.layerName))].join(", ")}!`);
+                if (vertexHighlightActive) scheduleHighlightRefresh();
+                setTimeout(() => updateStatus(lockedReadyStatus()), 3000);
+            } catch(e) { console.error("addVertexToLine error:", e); updateStatus("❌ Error adding vertex."); }
+        }
 
-        async function deleteVertexFromLine(event){
-            const sp={x:event.x,y:event.y};updateStatus("Deleting vertex from line...");
-            try{const results=await findCoincidentLineVertices(sp);if(!results.length){updateStatus("❌ No line vertex found to delete.");return;}const updates=[];
-            for(const li of results){try{const oid=getOid(li.feature);let srcGeom=li.feature.geometry;if(oid!=null){try{const fresh=await li.layer.queryFeatures({where:`objectid=${oid}`,returnGeometry:true,outFields:['objectid']});if(fresh.features.length>0)srcGeom=fresh.features[0].geometry;}catch(e){console.warn('deleteVertexFromLine: fresh query failed:',e);}}if(!srcGeom?.paths)continue;const newPaths=clonePaths(srcGeom),totalVertices=newPaths.reduce((s,p)=>s+p.length,0);if(totalVertices<=2){console.log(`Skipping ${li.layerConfig.name} OID ${oid}: only ${totalVertices} total vertices.`);continue;}const path=newPaths[li.vertex.pathIndex];if(!path||path.length<=2){console.log(`Skipping path: only ${path?.length??0} vertices.`);continue;}path.splice(li.vertex.pointIndex,1);const newGeom=buildPolyline(srcGeom,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name});}catch(e){console.error("deleteVertexFromLine prep error:",e);}}
-            if(!updates.length){updateStatus("❌ No vertices deleted (lines with only 2 vertices cannot be reduced further).");return;}for(const u of updates)if(u.layer.applyEdits)await u.layer.applyEdits({updateFeatures:[u.feature]});updateStatus(`✅ Deleted vertex from ${updates.length} line(s): ${updates.map(u=>u.layerName).join(", ")}!`);if(lockedFeature)await refreshLockedFeature();if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}
-            catch(e){console.error("deleteVertexFromLine error:",e);updateStatus("❌ Error deleting vertex.");}
+        async function deleteVertexFromLine(event) {
+            const sp = { x: event.x, y: event.y };
+            updateStatus("Deleting vertex from line...");
+            try {
+                const results = await findCoincidentLineVertices(sp);
+                if (!results.length) { updateStatus("❌ No line vertex found to delete."); return; }
+                const updates = [];
+                const lockedOid = lockedFeature?.featureType === 'line' ? getOid(lockedFeature.feature) : null;
+                for (const li of results) {
+                    try {
+                        const srcGeom = li.feature.geometry;
+                        if (!srcGeom?.paths) continue;
+                        const newPaths = clonePaths(srcGeom), totalVertices = newPaths.reduce((s, p) => s + p.length, 0);
+                        if (totalVertices <= 2) { console.log(`Skipping ${li.layerConfig.name}: only ${totalVertices} vertices.`); continue; }
+                        const path = newPaths[li.vertex.pathIndex];
+                        if (!path || path.length <= 2) continue;
+                        path.splice(li.vertex.pointIndex, 1);
+                        const newGeom = buildPolyline(srcGeom, newPaths), upd = li.feature.clone();
+                        upd.geometry = newGeom; upd.attributes.calculated_length = geodeticLength(newGeom);
+                        updates.push({ layer: li.layer, feature: upd, layerName: li.layerConfig.name, newGeom, oid: getOid(li.feature), lid: layerKey(li.layer, li.layerConfig) });
+                    } catch(e) { console.error("deleteVertexFromLine prep error:", e); }
+                }
+                if (!updates.length) { updateStatus("❌ No vertices deleted (lines with only 2 vertices cannot be reduced further)."); return; }
+                const byLayer = new Map();
+                for (const u of updates) { if (!byLayer.has(u.lid)) byLayer.set(u.lid, { layer: u.layer, updates: [] }); byLayer.get(u.lid).updates.push(u); }
+                for (const { layer, updates: batch } of byLayer.values())
+                    if (layer.applyEdits) await layer.applyEdits({ updateFeatures: batch.map(u => u.feature) });
+                for (const u of updates) {
+                    updateVertexCacheGeom(u.lid, u.oid, u.newGeom);
+                    if (lockedOid != null && u.oid === lockedOid) syncLockedFeature(u.newGeom);
+                }
+                updateStatus(`✅ Deleted vertex from ${updates.length} line(s): ${[...new Set(updates.map(u => u.layerName))].join(", ")}!`);
+                if (vertexHighlightActive) scheduleHighlightRefresh();
+                setTimeout(() => updateStatus(lockedReadyStatus()), 3000);
+            } catch(e) { console.error("deleteVertexFromLine error:", e); updateStatus("❌ Error deleting vertex."); }
         }
 
         // ── Feature selection & movement ──────────────────────────────────────
 
-        async function handleFeatureSelection(event){
-            const sp={x:event.x,y:event.y};updateStatus("Searching for feature...");
-            if(currentMode==="point"){
-                if(lockedFeature?.featureType==='point'){await refreshLockedFeature();const r=await findPointFeatureAtLocation(sp);if(!r||(getOid(lockedFeature.feature)!=null&&getOid(r.feature)!==getOid(lockedFeature.feature))){updateStatus(`🔒 Locked to ${lockedFeature.layerConfig.name}. Click directly on the locked point.`);return;}selectedFeature=lockedFeature.feature;selectedLayer=lockedFeature.layer;selectedLayerConfig=lockedFeature.layerConfig;selectedVertex=null;connectedFeatures=await findConnectedLines(lockedFeature.feature.geometry);colocatedPoints=await findColocatedPoints(lockedFeature.feature.geometry,getOid(lockedFeature.feature));if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected. Click destination to move${colocatedPoints.length?` · ${colocatedPoints.length} co-located detected`:''}.`);return;}
-                const r=await findPointFeatureAtLocation(sp);
-                if(r){selectedFeature=r.feature;selectedLayer=r.layer;selectedLayerConfig=r.layerConfig;selectedVertex=null;connectedFeatures=await findConnectedLines(r.feature.geometry);colocatedPoints=await findColocatedPoints(r.feature.geometry,getOid(r.feature));if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;const colocDesc=colocatedPoints.length?` + ${colocatedPoints.length} co-located`:'';updateStatus(`🎯 ${r.layerConfig.name}${colocDesc} · ${connectedFeatures.length} connected line(s). Click destination.`);}
-                else updateStatus("❌ No point feature found.");
-            }else{
-                const results=await findCoincidentLineVertices(sp);
-                if(results.length>0){selectedCoincidentLines=results;selectedFeature=results[0].feature;selectedLayer=results[0].layer;selectedLayerConfig=results[0].layerConfig;selectedVertex=results[0].vertex;for(const li of results)if(li.feature.geometry?.clone)originalGeometries.set(li.feature.attributes.objectid,li.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;const vType=results[0].vertex.isEndpoint?"endpoint":"vertex",snap=results[0].vertex.isEndpoint?" (will snap)":"",lockNote=lockedFeature?.featureType==='line'?" [🔒]":"";updateStatus(`🎯 Selected ${vType} on ${results.length} line(s): ${results.map(r=>r.layerConfig.name).join(", ")}${snap}${lockNote}. Click destination.`);}
-                else updateStatus("❌ No line vertex found.");}
-        }
-
-        async function handleMoveToDestination(event){
-            if(!selectedFeature){updateStatus("❌ No feature selected.");return;}
-            let dst=mapView.toMap({x:event.x,y:event.y});updateStatus("Moving feature...");
-            try{
-                if(currentMode==="point"){
-                    const excludeOids=new Set([getOid(selectedFeature),...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean));
-                    const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids):null;
-                    if(snapInfo)dst=toTypedPoint(snapInfo.geometry,mapView.spatialReference);
-                    const isLockedPoint=lockedFeature?.featureType==='point';
-                    if(!isLockedPoint)await updateConnectedLines(dst);
-                    const upd=selectedFeature.clone();upd.geometry=dst;if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});
-                    let colocOk=0,colocFail=0;for(const cp of colocatedPoints){try{const coUpd=cp.feature.clone();coUpd.geometry=dst;await cp.layer.applyEdits({updateFeatures:[coUpd]});colocOk++;}catch(e){console.error(`co-located point error (${cp.layerConfig.name}):`,e);colocFail++;}}
-                    const movedLines=isLockedPoint?0:connectedFeatures.length;
-                    let msg=`✅ Moved ${selectedLayerConfig.name}`;
-                    if(colocOk>0){const names=[...new Set(colocatedPoints.slice(0,colocOk).map(p=>p.layerConfig.name))];msg+=` + ${colocOk} co-located (${names.join(', ')})`;}
-                    if(colocFail>0)msg+=` · ${colocFail} co-located failed`;
-                    if(movedLines>0)msg+=` + ${movedLines} line(s)`;
-                    msg+='!';
-                    if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig.name}`:`point in ${snapInfo.layerConfig.name}`}.`;
-                    updateStatus(msg);
-                }else{
-                    const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));
-                    const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids):null;if(snapInfo)dst=snapInfo.geometry;
-                    const updates=[];for(const li of selectedCoincidentLines){try{const newPaths=clonePaths(li.feature.geometry),path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name});}catch(e){console.error("handleMoveToDestination line prep error:",e);}}
-                    let ok=0;for(const u of updates){try{if(u.layer.applyEdits){await u.layer.applyEdits({updateFeatures:[u.feature]});ok++;}}catch(e){console.error("applyEdits error:",e);}}
-                    let msg=`✅ Moved ${selectedVertex.isEndpoint?"endpoint":"vertex"} on ${ok} line(s)!`;if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig.name}`:`point in ${snapInfo.layerConfig.name}`}.`;updateStatus(msg);
+        async function handleFeatureSelection(event) {
+            const sp = { x: event.x, y: event.y };
+            updateStatus("Searching for feature...");
+            if (currentMode === "point") {
+                if (lockedFeature?.featureType === 'point') {
+                    // Verify the user clicked the locked point
+                    const r = await findPointFeatureAtLocation(sp);
+                    if (!r || (getOid(lockedFeature.feature) != null && getOid(r.feature) !== getOid(lockedFeature.feature))) {
+                        updateStatus(`🔒 Locked to ${lockedFeature.layerConfig.name}. Click directly on the locked point.`);
+                        return;
+                    }
+                    // Reuse preloaded data — no service queries
+                    selectedFeature = lockedFeature.feature;
+                    selectedLayer = lockedFeature.layer;
+                    selectedLayerConfig = lockedFeature.layerConfig;
+                    selectedVertex = null;
+                    connectedFeatures = lockedFeature.preloaded?.connectedFeatures || [];
+                    colocatedPoints = lockedFeature.preloaded?.colocatedPoints || [];
+                    // Re-populate originalGeometries (may have been cleared by cancelMove)
+                    if (selectedFeature.geometry?.clone)
+                        originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
+                    for (const info of connectedFeatures)
+                        if (info.feature.geometry?.clone) originalGeometries.set(info.feature.attributes.objectid, info.feature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false;
+                    waitingForDestination = true;
+                    updateStatus(`🎯 Locked ${lockedFeature.layerConfig.name} selected. Click destination.`);
+                    return;
                 }
-                selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();
-                if(cancelBtn)cancelBtn.disabled=true;if(lockedFeature)await refreshLockedFeature();if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
-            }catch(e){console.error("handleMoveToDestination error:",e);updateStatus("❌ Error moving feature.");}
+                // Non-locked: just find the feature — NO connected/colocated queries here.
+                // Those fire on destination click so exploratory clicks don't hit the service.
+                const r = await findPointFeatureAtLocation(sp);
+                if (r) {
+                    selectedFeature = r.feature;
+                    selectedLayer = r.layer;
+                    selectedLayerConfig = r.layerConfig;
+                    selectedVertex = null;
+                    if (selectedFeature.geometry?.clone)
+                        originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false;
+                    waitingForDestination = true;
+                    updateStatus(`🎯 ${r.layerConfig.name} selected. Click destination to move.`);
+                } else {
+                    updateStatus("❌ No point feature found.");
+                }
+            } else {
+                const results = await findCoincidentLineVertices(sp);
+                if (results.length > 0) {
+                    selectedCoincidentLines = results; selectedFeature = results[0].feature;
+                    selectedLayer = results[0].layer; selectedLayerConfig = results[0].layerConfig;
+                    selectedVertex = results[0].vertex;
+                    for (const li of results) if (li.feature.geometry?.clone) originalGeometries.set(li.feature.attributes.objectid, li.feature.geometry.clone());
+                    if (cancelBtn) cancelBtn.disabled = false; waitingForDestination = true;
+                    const vType = results[0].vertex.isEndpoint ? "endpoint" : "vertex",
+                        snap = results[0].vertex.isEndpoint ? " (will snap)" : "",
+                        lockNote = lockedFeature?.featureType === 'line' ? " [🔒]" : "";
+                    updateStatus(`🎯 Selected ${vType} on ${results.length} line(s): ${results.map(r => r.layerConfig.name).join(", ")}${snap}${lockNote}. Click destination.`);
+                } else {
+                    updateStatus("❌ No line vertex found.");
+                }
+            }
         }
 
-        async function handleClick(event){
-            if(!toolActive)return;if(isProcessingClick)return;
-            isProcessingClick=true;event.stopPropagation();
-            try{
-                if(cutMode)                    await handleCutClick(event);
-                else if(copyMode)              await handleCopyClick(event);
-                else if(flipMode)              await handleFlipClick(event);
-                else if(deleteMode)            await handleDeleteClick(event);
-                else if(pickingFeatureMode)    await pickFeature(event);
-                else if(vertexMode==="add")    await addVertexToLine(event);
-                else if(vertexMode==="delete") await deleteVertexFromLine(event);
-                else if(!selectedFeature)      await handleFeatureSelection(event);
-                else                           await handleMoveToDestination(event);
-            }finally{isProcessingClick=false;}
+        async function handleMoveToDestination(event) {
+            if (!selectedFeature) { updateStatus("❌ No feature selected."); return; }
+            let dst = mapView.toMap({ x: event.x, y: event.y });
+            updateStatus("Moving feature…");
+            try {
+                if (currentMode === "point") {
+                    const isLockedPoint = lockedFeature?.featureType === 'point';
+
+                    if (isLockedPoint) {
+                        // Use preloaded colocated data; connected lines intentionally not moved for locked point
+                        colocatedPoints = lockedFeature.preloaded?.colocatedPoints || colocatedPoints;
+                        connectedFeatures = [];
+                    } else {
+                        // Deferred from selection: query connected + colocated now that user has committed to a move.
+                        // Runs in parallel — faster than sequential per-layer loops.
+                        updateStatus("Moving feature — finding connected features…");
+                        [connectedFeatures, colocatedPoints] = await Promise.all([
+                            findConnectedLines(selectedFeature.geometry),
+                            findColocatedPoints(selectedFeature.geometry, getOid(selectedFeature))
+                        ]);
+                    }
+
+                    const excludeOids = new Set([getOid(selectedFeature), ...colocatedPoints.map(p => getOid(p.feature))].filter(Boolean));
+                    const snapInfo = snappingEnabled ? await findSnapTarget(dst, excludeOids) : null;
+                    if (snapInfo) dst = toTypedPoint(snapInfo.geometry, mapView.spatialReference);
+
+                    if (!isLockedPoint) await updateConnectedLines(dst);
+
+                    // Move primary point
+                    const upd = selectedFeature.clone(); upd.geometry = dst;
+                    if (selectedLayer.applyEdits) await selectedLayer.applyEdits({ updateFeatures: [upd] });
+                    if (isLockedPoint) syncLockedFeature(dst);
+
+                    // Batch co-located points by layer
+                    const colocByLayer = new Map();
+                    for (const cp of colocatedPoints) {
+                        const coUpd = cp.feature.clone(); coUpd.geometry = dst;
+                        const lid = layerKey(cp.layer, cp.layerConfig);
+                        if (!colocByLayer.has(lid)) colocByLayer.set(lid, { layer: cp.layer, features: [], names: new Set() });
+                        colocByLayer.get(lid).features.push(coUpd);
+                        colocByLayer.get(lid).names.add(cp.layerConfig.name);
+                    }
+                    let colocOk = 0, colocFail = 0;
+                    for (const { layer, features } of colocByLayer.values()) {
+                        try { await layer.applyEdits({ updateFeatures: features }); colocOk += features.length; }
+                        catch(e) { console.error('co-located batch error:', e); colocFail += features.length; }
+                    }
+
+                    const movedLines = isLockedPoint ? 0 : connectedFeatures.length;
+                    let msg = `✅ Moved ${selectedLayerConfig.name}`;
+                    if (colocOk > 0) { const allNames = [...new Set([...colocByLayer.values()].flatMap(v => [...v.names]))]; msg += ` + ${colocOk} co-located (${allNames.join(', ')})`; }
+                    if (colocFail > 0) msg += ` · ${colocFail} co-located failed`;
+                    if (movedLines > 0) msg += ` + ${movedLines} line(s)`;
+                    msg += '!';
+                    if (snapInfo) msg += ` Snapped to ${snapInfo.snapType === 'lineVertex' ? `vertex in ${snapInfo.layerConfig.name}` : `point in ${snapInfo.layerConfig.name}`}.`;
+                    updateStatus(msg);
+
+                } else {
+                    const excludeOids = new Set(selectedCoincidentLines.map(li => getOid(li.feature)).filter(Boolean));
+                    const snapInfo = snappingEnabled ? await findSnapTarget(dst, excludeOids) : null;
+                    if (snapInfo) dst = snapInfo.geometry;
+
+                    const updates = [];
+                    const lockedOid = lockedFeature?.featureType === 'line' ? getOid(lockedFeature.feature) : null;
+                    for (const li of selectedCoincidentLines) {
+                        try {
+                            const newPaths = clonePaths(li.feature.geometry), path = newPaths[li.vertex.pathIndex];
+                            if (path?.[li.vertex.pointIndex]) path[li.vertex.pointIndex] = [dst.x, dst.y];
+                            const newGeom = buildPolyline(li.feature.geometry, newPaths), upd = li.feature.clone();
+                            upd.geometry = newGeom; upd.attributes.calculated_length = geodeticLength(newGeom);
+                            updates.push({ layer: li.layer, feature: upd, layerName: li.layerConfig.name, newGeom, oid: getOid(li.feature), lid: layerKey(li.layer, li.layerConfig) });
+                        } catch(e) { console.error("handleMoveToDestination line prep error:", e); }
+                    }
+                    const byLayer = new Map();
+                    for (const u of updates) { if (!byLayer.has(u.lid)) byLayer.set(u.lid, { layer: u.layer, updates: [] }); byLayer.get(u.lid).updates.push(u); }
+                    let ok = 0;
+                    for (const { layer, updates: batch } of byLayer.values()) {
+                        try { if (layer.applyEdits) { await layer.applyEdits({ updateFeatures: batch.map(u => u.feature) }); ok += batch.length; } }
+                        catch(e) { console.error("applyEdits error:", e); }
+                    }
+                    for (const u of updates) {
+                        updateVertexCacheGeom(u.lid, u.oid, u.newGeom);
+                        if (lockedOid != null && u.oid === lockedOid) syncLockedFeature(u.newGeom);
+                    }
+                    let msg = `✅ Moved ${selectedVertex.isEndpoint ? "endpoint" : "vertex"} on ${ok} line(s)!`;
+                    if (snapInfo) msg += ` Snapped to ${snapInfo.snapType === 'lineVertex' ? `vertex in ${snapInfo.layerConfig.name}` : `point in ${snapInfo.layerConfig.name}`}.`;
+                    updateStatus(msg);
+                }
+
+                selectedFeature = null; selectedLayer = null; selectedLayerConfig = null; selectedVertex = null;
+                selectedCoincidentLines = []; waitingForDestination = false; connectedFeatures = []; colocatedPoints = [];
+                originalGeometries.clear();
+                if (cancelBtn) cancelBtn.disabled = true;
+                if (vertexHighlightActive) scheduleHighlightRefresh();
+                setTimeout(() => updateStatus(lockedReadyStatus()), 3000);
+
+            } catch(e) { console.error("handleMoveToDestination error:", e); updateStatus("❌ Error moving feature."); }
+        }
+
+        async function handleClick(event) {
+            if (!toolActive) return; if (isProcessingClick) return;
+            isProcessingClick = true; event.stopPropagation();
+            try {
+                if (cutMode)                    await handleCutClick(event);
+                else if (copyMode)              await handleCopyClick(event);
+                else if (flipMode)              await handleFlipClick(event);
+                else if (deleteMode)            await handleDeleteClick(event);
+                else if (pickingFeatureMode)    await pickFeature(event);
+                else if (vertexMode === "add")    await addVertexToLine(event);
+                else if (vertexMode === "delete") await deleteVertexFromLine(event);
+                else if (!selectedFeature)      await handleFeatureSelection(event);
+                else                            await handleMoveToDestination(event);
+            } finally { isProcessingClick = false; }
         }
 
         // ── Vertex highlight + direction arrows ───────────────────────────────
 
-        function loadGraphicClasses(){return new Promise((resolve,reject)=>{if(typeof require!=="undefined")require(["esri/Graphic","esri/layers/GraphicsLayer"],(G,GL)=>resolve({Graphic:G,GraphicsLayer:GL}),reject);else reject(new Error("ArcGIS require() not found"));});}
-        function makeVertexGraphic(Graphic,x,y,sr,endpoint){return new Graphic({geometry:{type:"point",x,y,spatialReference:sr},symbol:{type:"simple-marker",style:endpoint?"circle":"square",color:endpoint?[255,120,0,220]:[30,130,255,200],size:endpoint?10:7,outline:{color:[255,255,255,230],width:1.5}}});}
+        function makeVertexGraphic(x, y, sr, endpoint) {
+            return new _Graphic({ geometry: { type: "point", x, y, spatialReference: sr }, symbol: { type: "simple-marker", style: endpoint ? "circle" : "square", color: endpoint ? [255,120,0,220] : [30,130,255,200], size: endpoint ? 10 : 7, outline: { color: [255,255,255,230], width: 1.5 } } });
+        }
 
         function computePathArrows(path, sr) {
             if (!path || path.length < 2) return [];
-            let totalLen = 0;
-            const segLens = [];
-            for (let i = 0; i < path.length - 1; i++) {
-                const dx=path[i+1][0]-path[i][0], dy=path[i+1][1]-path[i][1];
-                segLens.push(Math.sqrt(dx*dx+dy*dy)); totalLen+=segLens[segLens.length-1];
-            }
+            let totalLen = 0; const segLens = [];
+            for (let i = 0; i < path.length - 1; i++) { const dx = path[i+1][0]-path[i][0], dy = path[i+1][1]-path[i][1]; segLens.push(Math.sqrt(dx*dx+dy*dy)); totalLen += segLens[segLens.length-1]; }
             if (totalLen === 0) return [];
             const n = Math.max(ARROW_MIN, Math.min(ARROW_MAX, Math.floor(totalLen / ARROW_SPACING)));
-            const labelShift = ARROW_LABEL_OFFSET_PX * (mapView.resolution || 1);
-            const arrows = [];
+            const labelShift = ARROW_LABEL_OFFSET_PX * (mapView.resolution || 1), arrows = [];
             for (let a = 0; a < n; a++) {
-                const target = ((a + 0.5) / n) * totalLen;
-                let dist = 0;
+                const target = ((a + 0.5) / n) * totalLen; let dist = 0;
                 for (let i = 0; i < path.length - 1; i++) {
                     if (dist + segLens[i] >= target || i === path.length - 2) {
                         const t = segLens[i] > 0 ? Math.min(1, (target - dist) / segLens[i]) : 0;
-                        const dx=path[i+1][0]-path[i][0], dy=path[i+1][1]-path[i][1];
-                        const bearing = Math.atan2(dx, dy) * 180 / Math.PI;
-                        const bRad = bearing * Math.PI / 180;
-                        // Shift forward along travel direction to clear the span label
-                        let x = path[i][0] + t * dx + Math.sin(bRad) * labelShift;
-                        let y = path[i][1] + t * dy + Math.cos(bRad) * labelShift;
-                        arrows.push({ x, y, bearing, spatialReference: sr });
+                        const dx = path[i+1][0]-path[i][0], dy = path[i+1][1]-path[i][1];
+                        const bearing = Math.atan2(dx, dy) * 180 / Math.PI, bRad = bearing * Math.PI / 180;
+                        arrows.push({ x: path[i][0]+t*dx+Math.sin(bRad)*labelShift, y: path[i][1]+t*dy+Math.cos(bRad)*labelShift, bearing, spatialReference: sr });
                         break;
                     }
                     dist += segLens[i];
@@ -1067,50 +1324,93 @@
             for (let i = 0; i < arrows.length; i++) {
                 if (processed.has(i)) continue;
                 const group = [i];
-                for (let j = i+1; j < arrows.length; j++) {
-                    if (processed.has(j)) continue;
-                    const dx=arrows[i].x-arrows[j].x, dy=arrows[i].y-arrows[j].y;
-                    if (Math.sqrt(dx*dx+dy*dy) < groupThresh) { group.push(j); processed.add(j); }
-                }
-                processed.add(i);
-                if (group.length < 2) continue;
+                for (let j = i+1; j < arrows.length; j++) { if (processed.has(j)) continue; const dx = arrows[i].x-arrows[j].x, dy = arrows[i].y-arrows[j].y; if (Math.sqrt(dx*dx+dy*dy) < groupThresh) { group.push(j); processed.add(j); } }
+                processed.add(i); if (group.length < 2) continue;
                 const refBearing = arrows[group[0]].bearing;
-                const allSameDir = group.every(idx => { let d=Math.abs(refBearing-arrows[idx].bearing)%360; if(d>180)d=360-d; return d<SAME_DIR_DEG; });
+                const allSameDir = group.every(idx => { let d = Math.abs(refBearing-arrows[idx].bearing)%360; if (d > 180) d = 360-d; return d < SAME_DIR_DEG; });
                 if (allSameDir) continue;
-                const bRad=refBearing*Math.PI/180, perpX=Math.cos(bRad), perpY=-Math.sin(bRad);
-                for (let k=0; k<group.length; k++) {
-                    const slot=k-(group.length-1)/2;
-                    arrows[group[k]].x+=perpX*slot*offsetDist;
-                    arrows[group[k]].y+=perpY*slot*offsetDist;
-                }
+                const bRad = refBearing*Math.PI/180, perpX = Math.cos(bRad), perpY = -Math.sin(bRad);
+                for (let k = 0; k < group.length; k++) { const slot = k-(group.length-1)/2; arrows[group[k]].x += perpX*slot*offsetDist; arrows[group[k]].y += perpY*slot*offsetDist; }
             }
         }
 
+        /**
+         * Render vertex dots and (optionally) direction arrows.
+         * Uses the geometry cache to avoid re-querying on pan/zoom within a
+         * previously-queried extent. Cache is updated after every edit so the
+         * display stays consistent without hitting the service again.
+         */
         async function renderVertexHighlights() {
             if (!vertexHighlightActive) return;
-            updateStatus("Loading vertex highlights…");
-            try {
-                const {Graphic,GraphicsLayer} = await loadGraphicClasses();
-                if (!vertexHighlightLayer) { vertexHighlightLayer=new GraphicsLayer({listMode:"hide"}); mapView.map.add(vertexHighlightLayer); }
-                vertexHighlightLayer.removeAll();
-                let totalVtx=0;
-                const allArrows=[], sr=mapView.spatialReference;
-                const processGeom = geom => {
-                    if (!geom?.paths) return;
-                    for (const path of geom.paths) {
-                        for (let i=0; i<path.length; i++) { vertexHighlightLayer.add(makeVertexGraphic(Graphic,path[i][0],path[i][1],geom.spatialReference,i===0||i===path.length-1)); totalVtx++; }
-                        if (directionArrowsActive) for (const a of computePathArrows(path, geom.spatialReference||sr)) allArrows.push(a);
+            await ensureGraphicClasses();
+            if (!_Graphic || !_GraphicsLayer) { updateStatus('❌ Could not load graphic classes.'); return; }
+            if (!vertexHighlightLayer) { vertexHighlightLayer = new _GraphicsLayer({ listMode: "hide" }); mapView.map.add(vertexHighlightLayer); }
+            vertexHighlightLayer.removeAll();
+
+            let totalVtx = 0;
+            const allArrows = [], sr = mapView.spatialReference;
+
+            const processGeom = geom => {
+                if (!geom?.paths) return;
+                for (const path of geom.paths) {
+                    for (let i = 0; i < path.length; i++) {
+                        vertexHighlightLayer.add(makeVertexGraphic(path[i][0], path[i][1], geom.spatialReference, i === 0 || i === path.length - 1));
+                        totalVtx++;
                     }
-                };
-                if (lockedFeature?.featureType==='line') { processGeom(lockedFeature.feature.geometry); }
-                else { for (const cfg of lineLayers) { if(!cfg.layer.visible)continue; try { const res=await cfg.layer.queryFeatures({geometry:mapView.extent,spatialRelationship:"intersects",returnGeometry:true,outFields:["objectid"],maxRecordCount:500}); for(const f of res.features)processGeom(f.geometry); } catch(e){console.error(`renderVertexHighlights error on ${cfg.name}:`,e);} } }
-                if (directionArrowsActive && allArrows.length) {
-                    applyCoincidentOffset(allArrows);
-                    for (const a of allArrows) vertexHighlightLayer.add(new Graphic({geometry:{type:'point',x:a.x,y:a.y,spatialReference:a.spatialReference||sr},symbol:{type:'simple-marker',style:'triangle',color:[167,139,250,210],size:11,outline:{color:[255,255,255,160],width:1},angle:a.bearing}}));
+                    if (directionArrowsActive)
+                        for (const a of computePathArrows(path, geom.spatialReference || sr)) allArrows.push(a);
                 }
-                const scope=lockedFeature?.featureType==='line'?`locked (${lockedFeature.layerConfig.name})`:`${lineLayers.filter(l=>l.layer.visible).length} line layer(s)`;
-                updateStatus(`👁 ${totalVtx} vertices${directionArrowsActive?` · ${allArrows.length} arrows`:''} — ${scope}.`);
-            } catch(e) { console.error("renderVertexHighlights error:",e); updateStatus("❌ Error loading vertex highlights."); }
+            };
+
+            if (lockedFeature?.featureType === 'line') {
+                // Always render locked feature from in-memory state — no cache needed
+                processGeom(lockedFeature.feature.geometry);
+            } else {
+                const currentExtent = mapView.extent;
+                let geomsToRender = [];
+
+                if (isExtentCovered(currentExtent)) {
+                    // Serve entirely from cache — zero service calls
+                    geomsToRender = [...vertexGeomCache.values()]
+                        .filter(geom => geomIntersectsExtent(geom, currentExtent));
+                } else {
+                    // Query service in parallel across all visible line layers
+                    updateStatus("Loading vertex highlights…");
+                    const queryResults = await Promise.all(
+                        lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                            try {
+                                const res = await cfg.layer.queryFeatures({ geometry: currentExtent, spatialRelationship: "intersects", returnGeometry: true, outFields: ["objectid"], maxRecordCount: 500 });
+                                return { cfg, features: res.features };
+                            } catch(e) { console.error(`renderVertexHighlights on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                        })
+                    );
+                    for (const { cfg, features } of queryResults) {
+                        for (const f of features) {
+                            const oid = getOid(f);
+                            // Prefer cached (already-edited) geometry over what service returned
+                            const cachedGeom = vertexGeomCache.get(vtxKey(cfg.id, oid));
+                            const geom = cachedGeom || f.geometry;
+                            updateVertexCacheGeom(cfg.id, oid, geom);
+                            geomsToRender.push(geom);
+                        }
+                    }
+                    recordQueriedExtent(currentExtent);
+                }
+
+                for (const geom of geomsToRender) processGeom(geom);
+            }
+
+            if (directionArrowsActive && allArrows.length) {
+                applyCoincidentOffset(allArrows);
+                for (const a of allArrows)
+                    vertexHighlightLayer.add(new _Graphic({ geometry: { type: 'point', x: a.x, y: a.y, spatialReference: a.spatialReference || sr }, symbol: { type: 'simple-marker', style: 'triangle', color: [167,139,250,210], size: 11, outline: { color: [255,255,255,160], width: 1 }, angle: a.bearing } }));
+            }
+
+            const scope = lockedFeature?.featureType === 'line'
+                ? `locked (${lockedFeature.layerConfig.name})`
+                : `${lineLayers.filter(l => l.layer.visible).length} line layer(s)`;
+            const cached = isExtentCovered(mapView.extent) && lockedFeature?.featureType !== 'line' ? ' (cached)' : '';
+            updateStatus(`👁 ${totalVtx} vertices${directionArrowsActive ? ` · ${allArrows.length} arrows` : ''}${cached} — ${scope}.`);
         }
 
         function clearVertexHighlights(){if(vertexHighlightLayer){vertexHighlightLayer.removeAll();mapView.map.remove(vertexHighlightLayer);vertexHighlightLayer=null;}}
@@ -1122,26 +1422,11 @@
             else{showVerticesToggleBtn.classList.remove('smt-footer-on');showVerticesToggleBtn.textContent='👁 Vertices';if(refreshVerticesBtn)refreshVerticesBtn.disabled=true;if(directionToggleBtn)directionToggleBtn.disabled=true;clearVertexHighlights();if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}clearTimeout(highlightDebounceTimer);updateStatus(toolActive?`Ready · click a ${currentMode==="point"?"point feature":"line vertex"}.`:"Tool disabled.");}
         }
 
-        function toggleDirectionArrows(){
-            directionArrowsActive=!directionArrowsActive;
-            directionToggleBtn.classList.toggle('smt-footer-on',directionArrowsActive);
-            directionToggleBtn.textContent=directionArrowsActive?'🔺 Dir ON':'🔺 Direction';
-            if(vertexHighlightActive)scheduleHighlightRefresh();
-        }
+        function toggleDirectionArrows(){directionArrowsActive=!directionArrowsActive;directionToggleBtn.classList.toggle('smt-footer-on',directionArrowsActive);directionToggleBtn.textContent=directionArrowsActive?'🔺 Dir ON':'🔺 Direction';if(vertexHighlightActive)scheduleHighlightRefresh();}
 
         // ── Mode setters ──────────────────────────────────────────────────────
 
         function cancelMove(){selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();isProcessingClick=false;if(cancelBtn)cancelBtn.disabled=true;if(lockedFeature)updateStatus(lockedReadyStatus());else if(vertexMode==="add")updateStatus("Add Vertex mode · click a line segment.");else if(vertexMode==="delete")updateStatus("Delete Vertex mode · click a vertex.");else updateStatus(`Move cancelled · click a ${currentMode==="point"?"point feature":"line vertex"}.`);}
-
-        // Exit whichever special mode is currently active, if any.
-        // Called by every basic mode button so clicking Point/Line/etc.
-        // always works regardless of what was active before.
-        function exitSpecialMode() {
-            if (cutMode)    disableCutMode();
-            if (copyMode)   disableCopyMode();
-            if (flipMode)   disableFlipMode();
-            if (deleteMode) disableDeleteMode();
-        }
 
         function setPointMode(){exitSpecialMode();currentMode="point";vertexMode="none";setActiveModeBtn('pointMode');showCtxPanel('default');if(toolActive)updateStatus("Point mode · click a point feature to select it.");if(selectedFeature)cancelMove();}
         function setLineMode(){exitSpecialMode();currentMode="line";vertexMode="none";setActiveModeBtn('lineMode');showCtxPanel('default');if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
@@ -1161,7 +1446,7 @@
             selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;
             selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];
             originalGeometries.clear();vertexMode="none";
-            if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();
+            exitSpecialMode();
             if(hotkeyHandler){document.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}
             setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');
             if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');else lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';}
@@ -1182,7 +1467,7 @@
         flipModeBtn.onclick          = enableFlipMode;
         showVerticesToggleBtn.onclick = toggleVertexHighlight;
         directionToggleBtn.onclick   = toggleDirectionArrows;
-        refreshVerticesBtn.onclick   = ()=>renderVertexHighlights();
+        refreshVerticesBtn.onclick   = ()=>{ clearVertexCache(); renderVertexHighlights(); };
         releaseFeatureBtn.onclick    = releaseLockedFeature;
         cancelBtn.onclick            = cancelMove;
         cutModeBtn.onclick           = enableCutMode;
@@ -1206,16 +1491,20 @@
         delCtxMenu.querySelector('#delCtxCancel').onclick=()=>{hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();updateStatus('🗑️ Delete mode active. Click any feature to flag it.');};
 
         const refreshLayersBtn=toolBox.querySelector("#refreshLayers");
-        if(refreshLayersBtn){refreshLayersBtn.onclick=async()=>{refreshLayersBtn.disabled=true;refreshLayersBtn.textContent="…";if(lockedFeature)releaseLockedFeature();if(selectedFeature)cancelMove();if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();updateStatus("Refreshing layers...");await loadLayers();updateLayerBadge();refreshLayersBtn.disabled=false;refreshLayersBtn.textContent="↺ Refresh";updateStatus(`Layers refreshed: ${pointLayers.length} point, ${lineLayers.length} line, ${polygonLayers.length} polygon.`);};}
+        if(refreshLayersBtn){refreshLayersBtn.onclick=async()=>{refreshLayersBtn.disabled=true;refreshLayersBtn.textContent="…";if(lockedFeature)releaseLockedFeature();if(selectedFeature)cancelMove();exitSpecialMode();updateStatus("Refreshing layers...");await loadLayers();updateLayerBadge();refreshLayersBtn.disabled=false;refreshLayersBtn.textContent="↺ Refresh";updateStatus(`Layers refreshed: ${pointLayers.length} point, ${lineLayers.length} line, ${polygonLayers.length} polygon.`);};}
 
-        if(closeBtn){closeBtn.onclick=()=>{dismissPickerPopup();dismissCopyPickerPopup();disableTool();clearVertexHighlights();clearTimeout(highlightDebounceTimer);if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}hideCopySnapIndicator();hideDelContextMenu();if(smtTip)smtTip.remove();cutCtxMenu.remove();delCtxMenu.remove();toolBox.remove();if(window.gisToolHost?.activeTools instanceof Set)window.gisToolHost.activeTools.delete('snap-move-tool');};}
+        if(closeBtn){closeBtn.onclick=()=>{dismissPickerPopup();dismissCopyPickerPopup();disableTool();clearVertexHighlights();clearVertexCache();clearTimeout(highlightDebounceTimer);if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}hideCopySnapIndicator();hideDelContextMenu();if(smtTip)smtTip.remove();cutCtxMenu.remove();delCtxMenu.remove();toolBox.remove();if(window.gisToolHost?.activeTools instanceof Set)window.gisToolHost.activeTools.delete('snap-move-tool');};}
 
         // ── Init ──────────────────────────────────────────────────────────────
 
         setPointMode();
         window.gisToolHost.activeTools.add('snap-move-tool');
-        updateStatus("Detecting layers…");
 
+        // Pre-load graphic classes in the background so the first cut/vertex
+        // operation doesn't incur the require() delay.
+        ensureGraphicClasses().catch(e => console.warn('ensureGraphicClasses on init:', e));
+
+        updateStatus("Detecting layers…");
         loadLayers().then(()=>{
             updateLayerBadge();
             updateStatus(`Ready: ${pointLayers.length} point, ${lineLayers.length} line, ${polygonLayers.length} polygon layer(s) — click Enable to start.`);
