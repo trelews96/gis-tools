@@ -45,8 +45,25 @@
             clearVertexCache(); // stale on reload
             const all = mapView.map.allLayers.filter(l => l.type === "feature" && l.visible !== false);
             await Promise.all(all.map(l => l.load().catch(() => null)));
+
+            // Deduplicate by service URL + layer ID so that the exact same
+            // layer added to the map twice (e.g. "Cable A" and "Cable B" both
+            // pointing at FeatureServer/3) is only registered once, while
+            // genuinely different layers from the same service are preserved.
+            const seenKeys = new Set();
+
             for (const l of all) {
                 if (!l.loaded) continue;
+                const url = (l.url || '').toLowerCase().replace(/\/+$/, '');
+                // Key = normalised URL + layer index. Two entries are considered
+                // duplicates only when both URL and layer ID match exactly.
+                const dedupKey = url ? `${url}__${l.layerId ?? ''}` : null;
+                if (dedupKey && seenKeys.has(dedupKey)) {
+                    console.log(`GIS Edit Tools: skipping duplicate layer "${l.title}" (${url}, id ${l.layerId})`);
+                    continue;
+                }
+                if (dedupKey) seenKeys.add(dedupKey);
+
                 const entry = { layer: l, name: l.title || `Layer ${l.layerId}`, id: l.layerId };
                 const gt = (l.geometryType || "").toLowerCase();
                 if      (gt === "point" || gt === "multipoint") pointLayers.push(entry);
@@ -220,7 +237,6 @@
             <button id="cancelMove" disabled>⊘ Cancel Current Move</button>
         </div>
         <div id="smtCtxCut" class="smt-ctx hidden">
-            <button id="cutUndoBtn" disabled>↩ Undo Last Cut</button>
             <div id="cutModeInfo"></div>
         </div>
         <div id="smtCtxCopy" class="smt-ctx hidden">
@@ -229,7 +245,6 @@
             <div id="copyCountInfo"></div>
         </div>
         <div id="smtCtxDelete" class="smt-ctx hidden">
-            <button id="deleteUndoBtn" disabled>↩ Undo Last Delete</button>
         </div>
         <div id="toolStatus">Tool disabled — click Enable to start.</div>
         <div id="smtFooter">
@@ -322,14 +337,18 @@
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
         let cutSelectedPoint = null, cutSelectedPointLayer = null, cutLinesToCut = [];
         let cutSelectedIndices = new Set(), cutGraphicMap = new Map();
-        let cutUndoStack = [], cutGraphicsLayer = null;
+        let cutGraphicsLayer = null;
 
         let deleteMode = false, deleteProcessing = false;
-        let deleteCandidates = [], deleteSelectedIndices = new Set(), deleteUndoStack = [];
+        let deleteCandidates = [], deleteSelectedIndices = new Set();
 
         let copySnapGeneration = 0;
         let copyTemplateFeature = null, copyTemplateLayer = null, copiedCount = 0;
         let copyMouseMoveHandler = null, copyKeyHandler = null, copySnapGraphic = null;
+        // Snap preview — cache-only, zero network, fires on pointer-move while waiting for destination
+        let moveSnapGeneration = 0, moveSnapGraphic = null, moveSnapHandler = null;
+        // Optimistic UI — shows destination immediately while applyEdits is in flight
+        let optimisticGraphic = null;
 
         // ── DOM refs ──────────────────────────────────────────────────────────
 
@@ -351,7 +370,6 @@
         const closeBtn              = $("#closeTool");
         const status                = $("#toolStatus");
         const cutModeBtn            = $("#cutModeBtn");
-        const cutUndoBtn            = $("#cutUndoBtn");
         const cutModeInfo           = $("#cutModeInfo");
         const copyModeBtn           = $("#copyModeBtn");
         const clearCopyTemplateBtn  = $("#clearCopyTemplateBtn");
@@ -359,7 +377,6 @@
         const copyTemplateDetails   = $("#copyTemplateDetails");
         const copyCountInfo         = $("#copyCountInfo");
         const deleteModeBtn         = $("#deleteModeBtn");
-        const deleteUndoBtn         = $("#deleteUndoBtn");
 
         // ── Status bar ────────────────────────────────────────────────────────
 
@@ -478,6 +495,65 @@
 
         function showCopySnapIndicator(point){hideCopySnapIndicator();if(!point)return;mapView.graphics.add({geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[50,200,50,0.9],size:14,outline:{color:[255,255,255,1],width:2}}});copySnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function hideCopySnapIndicator(){if(copySnapGraphic){mapView.graphics.remove(copySnapGraphic);copySnapGraphic=null;}}
+
+        // ── Move destination snap preview ─────────────────────────────────────
+        // Synchronous — reads entirely from the in-memory vertex cache.
+        // Zero network calls. Active only when waitingForDestination is true.
+        // Hint is orange for point snaps, violet for line vertex snaps.
+        // Full snap logic (including point feature queries) still runs on click.
+
+        function showMoveSnapIndicator(point, snapType) {
+            hideMoveSnapIndicator();
+            if (!point) return;
+            const color = snapType === 'pointFeature' ? [255,140,0,0.9] : [167,139,250,0.9];
+            mapView.graphics.add({
+                geometry: { type:'point', x:point.x, y:point.y, spatialReference: point.spatialReference || mapView.spatialReference },
+                symbol: { type:'simple-marker', style:'cross', color, size:18, outline:{ color:[255,255,255,0.85], width:2 } }
+            });
+            moveSnapGraphic = mapView.graphics.getItemAt(mapView.graphics.length - 1);
+        }
+
+        function hideMoveSnapIndicator() {
+            if (moveSnapGraphic) { mapView.graphics.remove(moveSnapGraphic); moveSnapGraphic = null; }
+        }
+
+        /**
+         * Nearest line vertex from the in-memory geometry cache.
+         * excludeOids: Set of numeric OIDs to skip (the feature(s) being moved).
+         */
+        function findNearestVertexInCache(mp, excludeOids = new Set()) {
+            const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+            let nearest = null, minD = Infinity;
+            for (const [key, geom] of vertexGeomCache) {
+                if (!geom?.paths) continue;
+                const oid = Number(key.split(':')[1]);
+                if (excludeOids.has(oid) || excludeOids.has(String(oid))) continue;
+                for (const path of geom.paths)
+                    for (const coord of path) {
+                        const d = calcDist(mp, { x: coord[0], y: coord[1] });
+                        if (d < minD && d < tol) { minD = d; nearest = { x: coord[0], y: coord[1], spatialReference: geom.spatialReference }; }
+                    }
+            }
+            return nearest ? { geometry: nearest, snapType: 'lineVertex' } : null;
+        }
+
+        // ── Optimistic UI ─────────────────────────────────────────────────────
+        // Renders a semi-transparent ring at the destination the moment the user
+        // clicks, before the server responds. Cleared on success (the layer
+        // refreshes naturally) or on failure (along with the error message).
+
+        function showOptimisticPoint(dst) {
+            clearOptimisticGraphic();
+            mapView.graphics.add({
+                geometry: { type:'point', x:dst.x, y:dst.y, spatialReference: dst.spatialReference || mapView.spatialReference },
+                symbol: { type:'simple-marker', style:'circle', color:[255,255,255,0.12], size:24, outline:{ color:[50,200,50,0.85], width:2.5 } }
+            });
+            optimisticGraphic = mapView.graphics.getItemAt(mapView.graphics.length - 1);
+        }
+
+        function clearOptimisticGraphic() {
+            if (optimisticGraphic) { mapView.graphics.remove(optimisticGraphic); optimisticGraphic = null; }
+        }
 
         async function findCopySnapPoint(screenPoint) {
             if(!snappingEnabled)return null;
@@ -651,21 +727,35 @@
         function updateCutExecuteBtn(){const btn=cutCtxMenu.querySelector('#cutCtxExecute');if(!btn||cutProcessing)return;const n=cutSelectedIndices.size;btn.textContent=`✂ Execute Cut (${n})`;btn.disabled=n===0;}
 
         async function executeCut(){
-            const selectedLines=cutLinesToCut.filter((_,i)=>cutSelectedIndices.has(i));
-            if(!selectedLines.length||cutProcessing)return;
-            cutProcessing=true;cutCtxMenu.querySelector('#cutCtxExecute').disabled=true;cutCtxMenu.querySelector('#cutCtxCancel').disabled=true;
-            updateStatus('Cutting lines…');
+            const linesToProcess=cutLinesToCut.filter((_,i)=>cutSelectedIndices.has(i));
+            if(!linesToProcess.length||cutProcessing)return;
+            cutProcessing=true;
             const snapPt={x:cutSelectedPoint.geometry.x,y:cutSelectedPoint.geometry.y};
-            const undoBatch={ts:new Date(),ops:[]};let ok=0,fail=0;
-            for(const li of selectedLines){
-                try{const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);if(!split){fail++;continue;}const{seg1,seg2}=split;const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);const newAttrs={...li.feature.attributes};['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);newAttrs.calculated_length=geodeticLength(seg2);const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;if(!updErr&&!addErr){undoBatch.ops.push({layer:li.layer,layerName:li.layerConfig.name,originalFeat:li.feature.clone(),addedOID:res.addFeatureResults[0].objectId});// Update vertex cache: original OID gets seg1, new OID not yet in cache
-                const lid=layerKey(li.layer,li.layerConfig);updateVertexCacheGeom(lid,getOid(li.feature),seg1);ok++;}else{console.error('executeCut error:',updErr,addErr);fail++;}}
-                catch(e){console.error(`executeCut error (${li.layerConfig.name}):`,e);fail++;}
-            }
-            if(undoBatch.ops.length){cutUndoStack.push(undoBatch);if(cutUndoBtn)cutUndoBtn.disabled=false;}
-            updateStatus(ok?`✅ ${ok} line(s) cut${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} cut(s) failed.`);
-            cutProcessing=false;cutCtxMenu.querySelector('#cutCtxExecute').disabled=false;cutCtxMenu.querySelector('#cutCtxCancel').disabled=false;
-            hideCutContextMenu();setTimeout(resetCutSelection,3000);
+            const lineCount=linesToProcess.length;
+            hideCutContextMenu();clearCutHighlights();
+            cutLinesToCut=[];cutSelectedPoint=null;cutSelectedPointLayer=null;
+            cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();
+            updateStatus(`✂️ Cutting ${lineCount} line(s) in background — you can continue working.`);
+            (async()=>{
+                let ok=0,fail=0;
+                for(const li of linesToProcess){
+                    try{
+                        const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);
+                        if(!split){fail++;continue;}
+                        const{seg1,seg2}=split;
+                        const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);
+                        const newAttrs={...li.feature.attributes};
+                        ['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);
+                        newAttrs.calculated_length=geodeticLength(seg2);
+                        const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});
+                        const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;
+                        if(!updErr&&!addErr){updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),getOid(li.feature),seg1);ok++;}
+                        else{console.error('executeCut error:',updErr,addErr);fail++;}
+                    }catch(e){console.error(`executeCut error (${li.layerConfig.name}):`,e);fail++;}
+                }
+                cutProcessing=false;
+                updateStatus(ok?`✅ ${ok} line(s) cut${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} cut(s) failed.`);
+            })();
         }
 
         async function undoLastCut(){if(!cutUndoStack.length||cutProcessing)return;cutProcessing=true;updateStatus('Undoing last cut…');const batch=cutUndoStack.pop();let ok=0,fail=0;for(const op of batch.ops){try{const res=await op.layer.applyEdits({updateFeatures:[op.originalFeat],deleteFeatures:[{objectId:op.addedOID}]});const updErr=res.updateFeatureResults?.[0]?.error,delErr=res.deleteFeatureResults?.[0]?.error;if(!updErr&&!delErr){// Restore original geometry in cache
@@ -756,24 +846,12 @@
             if(!toDelete.length||deleteProcessing)return;
             deleteProcessing=true;delCtxMenu.querySelector('#delCtxExecute').disabled=true;delCtxMenu.querySelector('#delCtxCancel').disabled=true;
             updateStatus('🗑️ Flagging features…');
-            const batch=[];let ok=0,fail=0;
-            for(const c of toDelete){const fieldName=getDeleteFieldName(c.layer);if(!fieldName){fail++;continue;}try{const upd=c.feature.clone();upd.attributes[fieldName]='YES';await c.layer.applyEdits({updateFeatures:[upd]});batch.push({layer:c.layer,layerName:c.layerConfig.name,oid:getOid(c.feature),fieldName});ok++;}catch(e){console.error(`executeDelete error on ${c.layerConfig.name}:`,e);fail++;}}
-            if(batch.length){deleteUndoStack.push(batch);if(deleteUndoBtn)deleteUndoBtn.disabled=false;}
-            const names=[...new Set(batch.map(b=>b.layerName))];
+            let ok=0,fail=0;
+            for(const c of toDelete){const fieldName=getDeleteFieldName(c.layer);if(!fieldName){fail++;continue;}try{const upd=c.feature.clone();upd.attributes[fieldName]='YES';await c.layer.applyEdits({updateFeatures:[upd]});ok++;}catch(e){console.error(`executeDelete error on ${c.layerConfig.name}:`,e);fail++;}}
+            const names=[...new Set(toDelete.slice(0,ok).map(c=>c.layerConfig.name))];
             updateStatus(ok?`✅ Flagged ${ok} feature(s) as deleted: ${names.join(', ')}${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} flag(s) failed.`);
             deleteProcessing=false;delCtxMenu.querySelector('#delCtxExecute').disabled=false;delCtxMenu.querySelector('#delCtxCancel').disabled=false;
             hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();
-            setTimeout(()=>{if(deleteMode)updateStatus('🗑️ Delete mode active. Click any feature to flag it.');},3000);
-        }
-
-        async function undoLastDelete(){
-            if(!deleteUndoStack.length||deleteProcessing)return;
-            deleteProcessing=true;updateStatus('↩ Restoring last delete batch…');
-            const batch=deleteUndoStack.pop();let ok=0,fail=0;
-            for(const op of batch){try{const res=await op.layer.queryFeatures({where:`objectid=${op.oid}`,returnGeometry:true,outFields:['*']});if(!res.features.length){fail++;continue;}const upd=res.features[0].clone();upd.attributes[op.fieldName]='NO';await op.layer.applyEdits({updateFeatures:[upd]});ok++;}catch(e){console.error(`undoLastDelete error on ${op.layerName}:`,e);fail++;}}
-            if(!deleteUndoStack.length&&deleteUndoBtn)deleteUndoBtn.disabled=true;
-            updateStatus(`↩ Restored ${ok} feature(s) to NO${fail?` · ${fail} failed`:''}.`);
-            deleteProcessing=false;
             setTimeout(()=>{if(deleteMode)updateStatus('🗑️ Delete mode active. Click any feature to flag it.');},3000);
         }
 
@@ -1471,11 +1549,9 @@
         releaseFeatureBtn.onclick    = releaseLockedFeature;
         cancelBtn.onclick            = cancelMove;
         cutModeBtn.onclick           = enableCutMode;
-        cutUndoBtn.onclick           = undoLastCut;
         copyModeBtn.onclick          = enableCopyMode;
         clearCopyTemplateBtn.onclick = clearCopyTemplate;
         deleteModeBtn.onclick        = enableDeleteMode;
-        deleteUndoBtn.onclick        = undoLastDelete;
 
         lockFeatureBtn.onclick=()=>{
             if(pickingFeatureMode){pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}. Pick cancelled.`:"Pick cancelled.");}
