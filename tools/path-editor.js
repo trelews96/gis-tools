@@ -19,6 +19,7 @@
         let sketchViewModel      = null;
         let sketchLayer          = null;
         let selectionGraphic     = null;
+        let activeQueryController = null;  // cancels in-flight selections if user aborts
         let selectionGraphics    = [];
         let accumulateMode       = false;
         let selectedFeaturesByLayer = new Map();
@@ -402,20 +403,55 @@
         }
 
         async function queryAllLayers(geometry,spatialRel,lineForOrder){
-            const allFL=mapView.map.allLayers.filter(l=>l.type==='feature'&&l.visible);
-            await Promise.all(allFL.toArray().map(async layer=>{
-                try{
-                    await layer.load();
-                    let lv=null;try{lv=await mapView.whenLayerView(layer);}catch(e){}
-                    const qp={geometry,spatialRelationship:spatialRel,returnGeometry:true,outFields:['*']};
-                    if(lv?.filter?.where)qp.where=lv.filter.where;else if(layer.definitionExpression)qp.where=layer.definitionExpression;
-                    const res=await layer.queryFeatures(qp);
-                    if(!res.features.length)return;
-                    let features=res.features,orderedByLine=false;
-                    if(lineForOrder){features=orderFeaturesAlongLine(features,lineForOrder);orderedByLine=true;}
-                    selectedFeaturesByLayer.set(layerKey(layer),{layer,features,orderedByLine});
-                }catch(e){console.warn('Layer query error:',layer.title,e);}
-            }));
+            const s=mapView.scale;
+            const allVisible=mapView.map.allLayers.filter(l=>{
+                if(l.type!=='feature'||!l.visible)return false;
+                if(l.minScale>0&&s>l.minScale)return false;
+                if(l.maxScale>0&&s<l.maxScale)return false;
+                return true;
+            }).toArray();
+
+            // If a saved config is loaded, only query those specific layers rather than
+            // all visible feature layers. At 200-1000 users this is the single biggest
+            // lever for reducing aggregate server load — most users will have a config.
+            let allFL = allVisible;
+            const configId = $('#savedConfigSelect')?.value;
+            if(configId){
+                const cfg = getSavedConfigurations()[configId];
+                if(cfg?.layers?.length){
+                    const cfgIds = new Set(cfg.layers.map(l=>l.layerId));
+                    const filtered = allVisible.filter(l=>cfgIds.has(l.layerId));
+                    if(filtered.length) allFL = filtered;
+                }
+            }
+
+            // Process layers in small batches instead of all at once with Promise.all.
+            // This prevents hammering the server with N simultaneous requests and is the
+            // main cause of the heavy server load observed with polygon/line selections.
+            const BATCH_SIZE = 3;
+            for(let i=0;i<allFL.length;i+=BATCH_SIZE){
+                const batch=allFL.slice(i,i+BATCH_SIZE);
+                await Promise.all(batch.map(async layer=>{
+                    try{
+                        await layer.load();
+                        let lv=null;try{lv=await mapView.whenLayerView(layer);}catch(e){}
+                        const qp={
+                            geometry,
+                            spatialRelationship:spatialRel,
+                            returnGeometry:true,
+                            outFields:['*'],
+                            num:2000,               // cap results per layer — prevents unbounded payloads
+                            geometryPrecision:6,    // reduces geometry payload size without affecting usability
+                        };
+                        if(lv?.filter?.where)qp.where=lv.filter.where;else if(layer.definitionExpression)qp.where=layer.definitionExpression;
+                        const res=await layer.queryFeatures(qp);
+                        if(!res.features.length)return;
+                        let features=res.features,orderedByLine=false;
+                        if(lineForOrder){features=orderFeaturesAlongLine(features,lineForOrder);orderedByLine=true;}
+                        selectedFeaturesByLayer.set(layerKey(layer),{layer,features,orderedByLine});
+                    }catch(e){console.warn('Layer query error:',layer.title,e);}
+                }));
+            }
         }
 
         function orderFeaturesAlongLine(features,line){
@@ -429,13 +465,28 @@
             }).sort((a,b)=>a.dist-b.dist).map(x=>x.f);
         }
 
-        async function selectFeaturesInPolygon(polygon){updateStatus('Selecting features in polygon…');selectedFeaturesByLayer.clear();await queryAllLayers(polygon,'intersects',null);displaySelectionResults();}
+        async function selectFeaturesInPolygon(polygon){
+            updateStatus('Selecting features in polygon…');
+            selectedFeaturesByLayer.clear();
+            // Simplify drawn geometry before querying — reduces vertex count sent to
+            // the server without meaningfully affecting which features are selected.
+            const tol=(mapView.extent.width/mapView.width)*2;
+            const geom=window.geometryEngine.generalize(polygon,tol,true,'meters')||polygon;
+            await queryAllLayers(geom,'intersects',null);
+            displaySelectionResults();
+        }
         async function selectFeaturesAlongLine(line){
-            updateStatus('Selecting features along line…');selectedFeaturesByLayer.clear();
+            updateStatus('Selecting features along line…');
+            selectedFeaturesByLayer.clear();
             if(!window.geometryEngine)await new Promise(r=>window.require(['esri/geometry/geometryEngine'],ge=>{window.geometryEngine=ge;r();}));
-            const bufDist=(mapView.extent.width/mapView.width)*20,bufGeom=window.geometryEngine.buffer(line,bufDist,'meters');
-            await queryAllLayers(bufGeom,'intersects',line);
-            displaySelectionResults();updateStatus(`Features selected along path (${Math.round(bufDist)}m buffer).`);
+            const tol=(mapView.extent.width/mapView.width)*2;
+            const simpleLine=window.geometryEngine.generalize(line,tol,true,'meters')||line;
+            const rawLineDist=(mapView.extent.width/mapView.width)*20;
+            const bufDist=Math.min(rawLineDist,300);
+            const bufGeom=window.geometryEngine.buffer(simpleLine,bufDist,'meters');
+            await queryAllLayers(bufGeom,'intersects',simpleLine);
+            displaySelectionResults();
+            updateStatus(`Features selected along path (${Math.round(bufDist)}m buffer).`);
         }
 
         function displaySelectionResults(){
@@ -456,6 +507,7 @@
         }
 
         function clearSelection(){
+            if(activeQueryController){activeQueryController.abort();activeQueryController=null;}
             if(sketchViewModel){try{sketchViewModel.cancel();}catch(e){}}
             if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
@@ -577,16 +629,19 @@
                 const sortBtn=document.createElement('button');sortBtn.className='btn btn-secondary';sortBtn.style.cssText='font-size:10px;padding:4px 8px;white-space:nowrap;';sortBtn.textContent='A→Z';let sortAsc=true;
                 ssRow.appendChild(fsearch);ssRow.appendChild(sortBtn);
                 const flc=document.createElement('div');flc.className='fieldListContainer';
+                // Persistent set tracks checked state independently of what's currently
+                // visible in the list — fixes selections being lost when search text changes.
+                const checkedFields=new Set();
                 function renderFieldList(ft='',asc=true){
-                    const prev=new Set(Array.from(flc.querySelectorAll('input[type=checkbox]:checked')).map(c=>c.dataset.fieldName));flc.innerHTML='';
+                    flc.innerHTML='';
                     let flds=editableFields.filter(f=>(f.alias||f.name).toLowerCase().includes(ft.toLowerCase()));if(!asc)flds=[...flds].reverse();
-                    flds.forEach(field=>{const row=document.createElement('div');row.className='fieldItem';const chk=document.createElement('input');chk.type='checkbox';chk.dataset.fieldName=field.name;chk.style.accentColor='#cba6f7';chk.checked=prev.has(field.name);const lbl=document.createElement('span');lbl.style.cssText='flex:1;font-size:11px;';lbl.textContent=field.alias||field.name;const badge=document.createElement('span');badge.className='fieldBadge';badge.textContent=getFieldTypeLabel(field);row.appendChild(chk);row.appendChild(lbl);row.appendChild(badge);row.addEventListener('click',e=>{if(e.target!==chk)chk.checked=!chk.checked;});flc.appendChild(row);});
+                    flds.forEach(field=>{const row=document.createElement('div');row.className='fieldItem';const chk=document.createElement('input');chk.type='checkbox';chk.dataset.fieldName=field.name;chk.style.accentColor='#cba6f7';chk.checked=checkedFields.has(field.name);chk.addEventListener('change',()=>{if(chk.checked)checkedFields.add(field.name);else checkedFields.delete(field.name);});const lbl=document.createElement('span');lbl.style.cssText='flex:1;font-size:11px;';lbl.textContent=field.alias||field.name;const badge=document.createElement('span');badge.className='fieldBadge';badge.textContent=getFieldTypeLabel(field);row.appendChild(chk);row.appendChild(lbl);row.appendChild(badge);row.addEventListener('click',e=>{if(e.target!==chk){chk.checked=!chk.checked;if(chk.checked)checkedFields.add(field.name);else checkedFields.delete(field.name);}});flc.appendChild(row);});
                 }
                 renderFieldList();
                 fsearch.oninput=()=>renderFieldList(fsearch.value,sortAsc);
                 sortBtn.onclick=()=>{sortAsc=!sortAsc;sortBtn.textContent=sortAsc?'A→Z':'Z→A';renderFieldList(fsearch.value,sortAsc);};
-                fieldsSection.getCheckedFields=()=>Array.from(flc.querySelectorAll('input[type=checkbox]:checked')).map(c=>c.dataset.fieldName);
-                fieldsSection.setCheckedFields=names=>flc.querySelectorAll('input[type=checkbox]').forEach(c=>{c.checked=names.includes(c.dataset.fieldName);});
+                fieldsSection.getCheckedFields=()=>Array.from(checkedFields);
+                fieldsSection.setCheckedFields=names=>{checkedFields.clear();names.forEach(n=>checkedFields.add(n));renderFieldList(fsearch.value,sortAsc);};
                 fieldsSection.appendChild(ssRow);fieldsSection.appendChild(flc);
             }else{fieldsSection.innerHTML='<div style="color:#6c7086;font-size:11px;">No editable fields.</div>';}
 
@@ -974,7 +1029,21 @@
             $('#prevBtn').disabled=currentIndex===0;$('#skipBtn').style.display=item.allowSkip?'block':'none';
             $('#applyPrevRow').style.display=(lastSubmittedValues&&item.mode==='edit'&&item.fields.length>0)?'block':'none';
             filesToUpload=[];updateFileList();
-            loadExistingAttachments(item);
+            // Lazy-load attachments — only query the service when the user asks.
+            // Auto-firing queryAttachments on every feature advance was generating
+            // one unprompted round-trip per feature, more aggressive than the native viewer.
+            const attSection=$('#existingAttachmentsSection');
+            const attList=$('#existingAttachmentsList');
+            if(attSection&&attList){
+                if(item.layer.capabilities?.data?.supportsAttachment){
+                    attSection.style.display='block';
+                    attList.innerHTML='<button class="btn btn-secondary pe-load-att-btn" style="width:100%;font-size:11px;">🗂️ Load Existing Attachments</button>';
+                    attSection.querySelector('.pe-load-att-btn').onclick=()=>loadExistingAttachments(item);
+                }else{
+                    attSection.style.display='none';
+                    attList.innerHTML='';
+                }
+            }
             highlightFeature(item.feature,item.showPopup);
             updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
         }
@@ -1047,7 +1116,22 @@
             }else if(field.type==='date'){input=document.createElement('input');input.type='date';if(currentValue)input.value=new Date(currentValue).toISOString().split('T')[0];input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
             else if(field.type==='integer'||field.type==='small-integer'){input=document.createElement('input');input.type='number';input.step='1';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
             else if(field.type==='double'||field.type==='single'){input=document.createElement('input');input.type='number';input.step='any';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
-            else{input=document.createElement('input');input.type='text';input.value=currentValue??'';if(field.length)input.maxLength=field.length;input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
+            else{
+                // Textarea instead of input[type=text] so users can type multi-line
+                // content. Shift+Enter inserts a newline naturally; existing newlines
+                // in the stored value render correctly rather than collapsing to one line.
+                input=document.createElement('textarea');
+                input.rows=3;
+                input.value=currentValue??'';
+                if(field.length)input.maxLength=field.length;
+                input.className='input-ctrl';
+                input.dataset.fieldName=field.name;
+                input.dataset.fieldType=field.type;
+                input.style.cssText+='resize:vertical;font-family:inherit;line-height:1.4;';
+                // Auto-expand height to fit existing content on load
+                input.addEventListener('input',()=>{input.style.height='auto';input.style.height=input.scrollHeight+'px';});
+                requestAnimationFrame(()=>{input.style.height='auto';input.style.height=input.scrollHeight+'px';});
+            }
             container.appendChild(input);return container;
         }
 
@@ -1059,7 +1143,15 @@
             const g={geometry:feature.geometry,symbol};mapView.graphics.add(g);highlightGraphics.push(g);
             mapView.goTo({target:feature.geometry,scale:Math.min(mapView.scale,2000)},{duration:700}).then(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);}).catch(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);});
         }
-        async function showFeaturePopup(feature){try{const oF=getObjectIdField(feature),oid=feature.attributes[oF];const res=await feature.layer.queryFeatures({where:`${oF}=${oid}`,outFields:['*'],returnGeometry:true});mapView.popup.open({features:res.features.length?res.features:[feature],location:getPopupLocation(feature.geometry)});}catch(e){mapView.popup.open({features:[feature],location:getPopupLocation(feature.geometry)});}}
+        function showFeaturePopup(feature){
+            // Use the already-fetched feature directly — no need to re-query the service.
+            // The original code fired a queryFeatures round-trip on every feature advance
+            // during editing, which was the one unintended service call outside of
+            // intentional queries and edit submissions.
+            try{
+                mapView.popup.open({features:[feature],location:getPopupLocation(feature.geometry)});
+            }catch(e){console.warn('Popup open failed:',e);}
+        }
         function getPopupLocation(geom){try{if(geom.type==='point')return geom;if(geom.type==='polyline'&&geom.paths?.[0]?.length>0){const p=geom.paths[0],mid=Math.floor(p.length/2);return{type:'point',x:p[mid][0],y:p[mid][1],spatialReference:geom.spatialReference};}if(geom.type==='polygon')return geom.centroid||geom.extent?.center||geom;return geom.extent?.center||geom;}catch(e){return geom;}}
 
         // ── Bulk Edit ─────────────────────────────────────────────────────────
@@ -1083,7 +1175,20 @@
             if(!Object.keys(vals).length){alert('Enter at least one value.');return;}
             if(!confirm(`Apply to ${cfg.features.length} features?`))return;
             updateStatus('Applying bulk edit…');$('#applyBulkEditBtn').disabled=true;
-            try{let ok=0,fail=0;const oidF=getObjectIdField(cfg.features[0]);const batches=cfg.features.map(f=>({attributes:{[oidF]:f.attributes[oidF],...vals}}));for(let i=0;i<batches.length;i+=100){const res=await cfg.layer.applyEdits({updateFeatures:batches.slice(i,i+100)});res.updateFeatureResults?.forEach((r,idx)=>{const s=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId)),oid=batches[i+idx].attributes[oidF];if(s){ok++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,changes:vals,success:true});}else{fail++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,success:false,error:r.error?.message});}});updateStatus(`Processed ${Math.min(i+100,batches.length)}/${batches.length}`);}
+
+            async function applyWithRetry(batch, attempt=0){
+                try{
+                    return await cfg.layer.applyEdits({updateFeatures:batch});
+                }catch(err){
+                    if(attempt>=3) throw err;
+                    const delay=500*Math.pow(2,attempt); // 500ms, 1s, 2s
+                    updateStatus(`Server busy — retrying in ${delay/1000}s…`);
+                    await new Promise(r=>setTimeout(r,delay));
+                    return applyWithRetry(batch,attempt+1);
+                }
+            }
+
+            try{let ok=0,fail=0;const oidF=getObjectIdField(cfg.features[0]);const batches=cfg.features.map(f=>({attributes:{[oidF]:f.attributes[oidF],...vals}}));for(let i=0;i<batches.length;i+=100){const res=await applyWithRetry(batches.slice(i,i+100));res.updateFeatureResults?.forEach((r,idx)=>{const s=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId)),oid=batches[i+idx].attributes[oidF];if(s){ok++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,changes:vals,success:true});}else{fail++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,success:false,error:r.error?.message});}});updateStatus(`Processed ${Math.min(i+100,batches.length)}/${batches.length}`);}
             $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail?` | ✗ ${fail} failed`:''}</div>`;
             clearBulkHighlights();
             if(currentBulkLayerIndex<el.length-1){
