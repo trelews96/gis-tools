@@ -449,18 +449,87 @@
 
         // ── Cut geometry helpers ──────────────────────────────────────────────
 
-        function findCutInfo(lineGeom,snapPt) { if(!lineGeom?.paths?.length)return null; let best=null; for(let pi=0;pi<lineGeom.paths.length;pi++){const path=lineGeom.paths[pi];for(let si=0;si<path.length-1;si++){const a={x:path[si][0],y:path[si][1]},b={x:path[si+1][0],y:path[si+1][1]},res=closestPtOnSeg(snapPt,a,b);if(!best||res.distance<best.dist)best={pathIdx:pi,segIdx:si,dist:res.distance,t:res.t};}} return best; }
+        /**
+         * Find ALL segments on lineGeom within tolerance of snapPt, sorted by
+         * path index then segment index so they're in order along the line.
+         * Returns [] if none found. Replaces the old single-result findCutInfo.
+         */
+        function findAllCutInfos(lineGeom, snapPt, tolerance) {
+            if (!lineGeom?.paths?.length) return [];
+            const hits = [];
+            for (let pi = 0; pi < lineGeom.paths.length; pi++) {
+                const path = lineGeom.paths[pi];
+                for (let si = 0; si < path.length - 1; si++) {
+                    const a = { x: path[si][0],   y: path[si][1]   };
+                    const b = { x: path[si+1][0], y: path[si+1][1] };
+                    const res = closestPtOnSeg(snapPt, a, b);
+                    if (res.distance <= tolerance) hits.push({ pathIdx: pi, segIdx: si, dist: res.distance });
+                }
+            }
+            return hits.sort((a, b) => a.pathIdx - b.pathIdx || a.segIdx - b.segIdx);
+        }
 
-        function splitLine(lineGeom,cutInfo,snapPt) {
-            try {
-                const allPaths=lineGeom.paths,{pathIdx:pi,segIdx:si}=cutInfo,path=allPaths[pi],snap=[snapPt.x,snapPt.y],cp=p=>p.map(v=>[...v]);
-                const paths1=[...allPaths.slice(0,pi).map(cp),[...path.slice(0,si+1).map(v=>[...v]),snap]];
-                const paths2=[[snap,...path.slice(si+1).map(v=>[...v])],...allPaths.slice(pi+1).map(cp)];
-                if(paths1.some(p=>p.length<2)||paths2.some(p=>p.length<2)){console.warn('splitLine: degenerate path.');return null;}
-                const seg1=lineGeom.clone();seg1.paths=paths1;const seg2=lineGeom.clone();seg2.paths=paths2;
-                if(geodeticLength(seg1)<MIN_SEGMENT_LEN_FT||geodeticLength(seg2)<MIN_SEGMENT_LEN_FT){console.warn('splitLine: segment too short.');return null;}
-                return{seg1,seg2};
-            } catch(e){console.error('splitLine error:',e);return null;}
+        /**
+         * Split lineGeom at every cut point in sortedCutInfos, producing N+1 output
+         * geometries. Works correctly when the line doubles back through the same
+         * point, because every crossing gets its own cut.
+         *
+         * Algorithm: walk each path in order. At each cut segment, close the
+         * current output segment with the snap point and start a new one.
+         */
+        function splitLineMulti(lineGeom, sortedCutInfos, snapPt) {
+            if (!sortedCutInfos.length) return [lineGeom];
+            const snap = [snapPt.x, snapPt.y];
+
+            // Group cut segment indices by path index
+            const cutsByPath = new Map();
+            for (const ci of sortedCutInfos) {
+                if (!cutsByPath.has(ci.pathIdx)) cutsByPath.set(ci.pathIdx, []);
+                cutsByPath.get(ci.pathIdx).push(ci.segIdx);
+            }
+
+            const outputSegments = [];  // each entry = array of paths for one output feature
+            let currentPaths = [];      // paths accumulated for the segment being built
+            let currentVerts = [];      // vertices for the path currently being built
+
+            for (let pi = 0; pi < lineGeom.paths.length; pi++) {
+                const path = lineGeom.paths[pi];
+                const cutsHere = (cutsByPath.get(pi) || []).slice().sort((a, b) => a - b);
+                let vi = 0;
+
+                for (const si of cutsHere) {
+                    // Accumulate up to and including vertex si
+                    for (let i = vi; i <= si && i < path.length; i++) currentVerts.push([...path[i]]);
+                    currentVerts.push([...snap]);                // close at snap point
+
+                    if (currentVerts.length >= 2) currentPaths.push(currentVerts);
+                    if (currentPaths.length)      outputSegments.push(currentPaths);
+
+                    // Begin next segment at snap point
+                    currentPaths = [];
+                    currentVerts = [[...snap]];
+                    vi = si + 1;
+                }
+
+                // Remaining vertices after last cut on this path
+                for (let i = vi; i < path.length; i++) currentVerts.push([...path[i]]);
+
+                // For multi-path geometries: seal current path, open next
+                if (pi < lineGeom.paths.length - 1) {
+                    if (currentVerts.length >= 2) currentPaths.push(currentVerts);
+                    currentVerts = [];
+                }
+            }
+
+            // Finalise last segment
+            if (currentVerts.length >= 2) currentPaths.push(currentVerts);
+            if (currentPaths.length)      outputSegments.push(currentPaths);
+
+            // Convert to geometries and validate minimum length
+            return outputSegments
+                .filter(paths => paths.length > 0 && paths.every(p => p.length >= 2))
+                .map(paths => { const g = lineGeom.clone(); g.paths = paths; return g; })
+                .filter(g => geodeticLength(g) >= MIN_SEGMENT_LEN_FT);
         }
 
         // ── Shared graphics helpers ───────────────────────────────────────────
@@ -518,23 +587,35 @@
         }
 
         /**
-         * Nearest line vertex from the in-memory geometry cache.
-         * excludeOids: Set of numeric OIDs to skip (the feature(s) being moved).
+         * Nearest snap target from the in-memory geometry cache.
+         * Checks both line vertices AND points on segments so the preview
+         * reflects the same snap behaviour as the destination click.
+         * excludeOids: Set of OIDs to skip (the feature(s) being moved).
          */
-        function findNearestVertexInCache(mp, excludeOids = new Set()) {
+        function findNearestSnapInCache(mp, excludeOids = new Set()) {
             const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
-            let nearest = null, minD = Infinity;
+            let nearest = null, minD = Infinity, snapType = 'lineVertex';
             for (const [key, geom] of vertexGeomCache) {
                 if (!geom?.paths) continue;
                 const oid = Number(key.split(':')[1]);
                 if (excludeOids.has(oid) || excludeOids.has(String(oid))) continue;
+
+                // Check vertices
                 for (const path of geom.paths)
                     for (const coord of path) {
                         const d = calcDist(mp, { x: coord[0], y: coord[1] });
-                        if (d < minD && d < tol) { minD = d; nearest = { x: coord[0], y: coord[1], spatialReference: geom.spatialReference }; }
+                        if (d < minD && d < tol) { minD = d; nearest = { x: coord[0], y: coord[1], spatialReference: geom.spatialReference }; snapType = 'lineVertex'; }
                     }
+
+                // Check segment closest points
+                const seg = findClosestSeg(geom, mp);
+                if (seg && seg.distance < minD && seg.distance < tol) {
+                    minD = seg.distance;
+                    nearest = { x: seg.point.x, y: seg.point.y, spatialReference: geom.spatialReference };
+                    snapType = 'lineSegment';
+                }
             }
-            return nearest ? { geometry: nearest, snapType: 'lineVertex' } : null;
+            return nearest ? { geometry: nearest, snapType } : null;
         }
 
         // ── Optimistic UI ─────────────────────────────────────────────────────
@@ -698,13 +779,20 @@
         function showCutContextMenu(mapPoint){const screen=mapView.toScreen(mapPoint),rect=mapView.container.getBoundingClientRect();let left=rect.left+screen.x+14,top=rect.top+screen.y-10;if(left+220>window.innerWidth)left=rect.left+screen.x-220;if(top+280>window.innerHeight)top=window.innerHeight-280;cutCtxMenu.style.left=left+'px';cutCtxMenu.style.top=top+'px';cutCtxMenu.style.display='block';}
         function hideCutContextMenu(){cutCtxMenu.style.display='none';}
 
-        async function findNearbyLinesForCut(pointGeom){
-            const buf=CUT_TOLERANCE_M,{x,y}=pointGeom;
-            const bufGeom={type:'polygon',spatialReference:pointGeom.spatialReference,rings:[[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]]};
-            const found=[];
-            await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{
-                try{const res=await cfg.layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:100});for(const f of res.features){const cutInfo=findCutInfo(f.geometry,{x,y});if(cutInfo&&cutInfo.dist<=buf)found.push({feature:f,layer:cfg.layer,layerConfig:cfg,cutInfo});}}
-                catch(e){console.error(`findNearbyLinesForCut error on ${cfg.name}:`,e);}
+        async function findNearbyLinesForCut(pointGeom) {
+            const buf = CUT_TOLERANCE_M, { x, y } = pointGeom;
+            const bufGeom = { type:'polygon', spatialReference: pointGeom.spatialReference, rings: [[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]] };
+            const found = [];
+            await Promise.all(lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                try {
+                    const res = await cfg.layer.queryFeatures({ geometry: bufGeom, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['*'], maxRecordCount: 100 });
+                    for (const f of res.features) {
+                        // Find ALL crossings of this line through the snap point
+                        const cutInfos = findAllCutInfos(f.geometry, { x, y }, buf);
+                        if (cutInfos.length > 0)
+                            found.push({ feature: f, layer: cfg.layer, layerConfig: cfg, cutInfos });
+                    }
+                } catch(e) { console.error(`findNearbyLinesForCut error on ${cfg.name}:`, e); }
             }));
             return found;
         }
@@ -717,7 +805,17 @@
             const selSym={type:'simple-line',color:[220,53,69,0.95],width:3,style:'dash'},hovSym={type:'simple-line',color:[255,140,0,1],width:4,style:'solid'};
             for(let i=0;i<cutLinesToCut.length;i++){if(_Graphic&&cutGraphicsLayer){const g=new _Graphic({geometry:cutLinesToCut[i].feature.geometry,symbol:selSym});cutGraphicsLayer.add(g);cutGraphicMap.set(i,g);}else await highlightCutGeometry(cutLinesToCut[i].feature.geometry,false);}
             const listEl=cutCtxMenu.querySelector('#cutCtxList');listEl.innerHTML='';
-            for(let i=0;i<cutLinesToCut.length;i++){const li=cutLinesToCut[i],oid=getOid(li.feature)??'?',vtx=(li.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),row=document.createElement('label');row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.idx=String(i);cb.style.cssText='margin-top:2px;cursor:pointer;flex-shrink:0;';const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.4;';info.innerHTML=`<strong style="color:#e2d9f3;">${li.layerConfig.name}</strong><div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${vtx} vertices</div>`;const dot=document.createElement('span');dot.textContent='●';dot.style.cssText='color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';cb.addEventListener('change',()=>{const idx=parseInt(cb.dataset.idx),g=cutGraphicMap.get(idx);if(cb.checked){cutSelectedIndices.add(idx);dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else{cutSelectedIndices.delete(idx);dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}updateCutExecuteBtn();});row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=hovSym;row.style.background='#2d1b69';});row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=selSym;row.style.background='';});row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);}
+            for(let i=0;i<cutLinesToCut.length;i++){
+                const li=cutLinesToCut[i],oid=getOid(li.feature)??'?';
+                const vtx=(li.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0);
+                const crossings=li.cutInfos.length;
+                const row=document.createElement('label');row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';
+                const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.idx=String(i);cb.style.cssText='margin-top:2px;cursor:pointer;flex-shrink:0;';
+                const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.4;';
+                info.innerHTML=`<strong style="color:#e2d9f3;">${li.layerConfig.name}</strong>`
+                    +`<div style="color:#7a6d96;font-size:10px;">OID: ${oid} · ${vtx} vertices`
+                    +(crossings>1?` · <span style="color:#fbbf24;">⚠ ${crossings} crossings → ${crossings+1} segments</span>`:'')+`</div>`;
+                const dot=document.createElement('span');dot.textContent='●';dot.style.cssText='color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';cb.addEventListener('change',()=>{const idx=parseInt(cb.dataset.idx),g=cutGraphicMap.get(idx);if(cb.checked){cutSelectedIndices.add(idx);dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else{cutSelectedIndices.delete(idx);dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}updateCutExecuteBtn();});row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=hovSym;row.style.background='#2d1b69';});row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=selSym;row.style.background='';});row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);}
             const selectAllBtn=cutCtxMenu.querySelector('#cutCtxSelectAll');if(selectAllBtn){selectAllBtn.onclick=()=>{const allOn=cutSelectedIndices.size===cutLinesToCut.length;[...listEl.querySelectorAll('label')].forEach((row,i)=>{const cb=row.querySelector('input'),dot=row.querySelector('span'),g=cutGraphicMap.get(i),was=cutSelectedIndices.has(i);cb.checked=!allOn;if(!allOn&&!was){cutSelectedIndices.add(i);if(dot)dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else if(allOn&&was){cutSelectedIndices.delete(i);if(dot)dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}});selectAllBtn.textContent=allOn?'✓ All':'✗ None';updateCutExecuteBtn();};}
             cutCtxMenu.querySelector('#cutCtxCount').textContent=cutLinesToCut.length;
             updateCutExecuteBtn();showCutContextMenu(cutSelectedPoint.geometry);
@@ -867,7 +965,9 @@
             let left=pageX+12,top=pageY-10;if(left+310>window.innerWidth)left=pageX-310;if(top+340>window.innerHeight)top=window.innerHeight-340-12;if(top<12)top=12;popup.style.left=left+"px";popup.style.top=top+"px";
             const header=document.createElement("div");header.style.cssText="padding:7px 10px 5px;font-weight:bold;font-size:11px;color:#d4bbff;border-bottom:1px solid #2d2550;display:flex;justify-content:space-between;align-items:center;background:#2d1b69;";header.innerHTML=`<span>🗂 ${candidates.length} overlapping features</span>`;
             const closeX=document.createElement("span");closeX.textContent="✕";closeX.style.cssText="cursor:pointer;color:#9b8ec4;font-size:13px;padding:0 2px;";closeX.onclick=()=>{dismissPickerPopup();pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'🎯 Re-Pick':'🎯 Pick [Z]';updateStatus(lockedFeature?`🔒 Locked: ${lockedFeature.layerConfig.name}.`:"Pick cancelled.");};header.appendChild(closeX);popup.appendChild(header);
-            candidates.forEach(c=>{const row=document.createElement("div");row.style.cssText="padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;";row.onmouseenter=()=>{row.style.background="#2d1b69";showPickerHoverHighlight(c.feature.geometry);};row.onmouseleave=()=>{row.style.background="";clearPickerHoverHighlight();};const oid=getOid(c.feature)??"?",typeIcon=c.featureType==='point'?'📍':'〰️',title=document.createElement("div"),meta=document.createElement("div");title.style.cssText="font-weight:bold;color:#e2d9f3;font-size:11px;";title.textContent=`${typeIcon} ${c.layerConfig.name}`;meta.style.cssText="color:#7a6d96;font-size:10px;";if(c.featureType==='line'){const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),paths=(c.feature.geometry?.paths??[]).length;meta.textContent=`OID: ${oid}  ·  ${vtxCount} vertices  ·  ${paths} path(s)`;}else meta.textContent=`OID: ${oid}  ·  Point feature`;row.appendChild(title);row.appendChild(meta);row.onclick=()=>{dismissPickerPopup();applyLock(c.feature,c.layer,c.layerConfig,c.featureType);};popup.appendChild(row);});
+            candidates.forEach(c=>{const row=document.createElement("div");row.style.cssText="padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;";row.onmouseenter=()=>{row.style.background="#2d1b69";showPickerHoverHighlight(c.feature.geometry);};row.onmouseleave=()=>{row.style.background="";clearPickerHoverHighlight();};const oid=getOid(c.feature)??"?",typeIcon=c.featureType==='point'?'📍':'〰️',title=document.createElement("div"),meta=document.createElement("div");title.style.cssText="font-weight:bold;color:#e2d9f3;font-size:11px;";title.textContent=`${typeIcon} ${c.layerConfig.name}`;meta.style.cssText="color:#7a6d96;font-size:10px;";if(c.featureType==='line'){const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),paths=(c.feature.geometry?.paths??[]).length;meta.textContent=`OID: ${oid}  ·  ${vtxCount} vertices  ·  ${paths} path(s)`;}else meta.textContent=`OID: ${oid}  ·  Point feature`;row.appendChild(title);row.appendChild(meta);                // Pass explicitPick=true so the lock knows the user deliberately
+                // chose this one feature — co-located auto-move should not apply.
+                row.onclick=()=>{dismissPickerPopup();applyLock(c.feature,c.layer,c.layerConfig,c.featureType,true);};popup.appendChild(row);});
             document.body.appendChild(popup);
             setTimeout(()=>{document.addEventListener("click",function outsideClick(e){if(!popup.contains(e.target)&&!delCtxMenu.contains(e.target)){dismissPickerPopup();document.removeEventListener("click",outsideClick);}});},0);
         }
@@ -987,11 +1087,57 @@
         }
 
         async function findSnapTarget(dst, excludeOids = new Set()) {
-            const [ps, vs] = await Promise.all([findNearestPointFeature(dst), findNearestLineVertex(dst, excludeOids)]);
-            if (!ps && !vs) return null;
-            if (ps && !vs) return { ...ps, snapType: 'pointFeature' };
-            if (!ps && vs) return vs;
-            return calcDist(dst, ps.geometry) <= calcDist(dst, vs.geometry) ? { ...ps, snapType: 'pointFeature' } : vs;
+            // Run all three snap candidates in parallel:
+            // nearest point feature, nearest line vertex, nearest point on a line segment
+            const [ps, vs, ls] = await Promise.all([
+                findNearestPointFeature(dst),
+                findNearestLineVertex(dst, excludeOids),
+                findNearestPointOnLine(dst, excludeOids)
+            ]);
+
+            // Collect whichever candidates exist and pick the closest
+            const candidates = [
+                ps ? { ...ps, snapType: 'pointFeature', dist: calcDist(dst, ps.geometry) } : null,
+                vs ? { ...vs, dist: calcDist(dst, vs.geometry) } : null,
+                ls ? { ...ls, dist: calcDist(dst, ls.geometry) } : null
+            ].filter(Boolean);
+
+            if (!candidates.length) return null;
+            return candidates.reduce((best, c) => c.dist < best.dist ? c : best);
+        }
+
+        /**
+         * Find the nearest point ON any line segment (not just vertices) within
+         * snap tolerance. Used so that moving a point to the middle of a line
+         * snaps cleanly to the line rather than missing entirely.
+         * All visible line layers queried in parallel.
+         */
+        async function findNearestPointOnLine(dst, excludeOids = new Set()) {
+            try {
+                const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                const ext = makeExt(dst.x, dst.y, tol, mapView.spatialReference);
+                const results = await Promise.all(
+                    lineLayers.filter(cfg => cfg.layer.visible).map(async cfg => {
+                        try {
+                            const res = await cfg.layer.queryFeatures({ geometry: ext, spatialRelationship: 'intersects', returnGeometry: true, outFields: ['objectid'], outSpatialReference: mapView.spatialReference });
+                            return { cfg, features: res.features };
+                        } catch(e) { console.error(`findNearestPointOnLine on ${cfg.name}:`, e); return { cfg, features: [] }; }
+                    })
+                );
+                let nearest = null, minD = Infinity, nearestCfg = null;
+                for (const { cfg, features } of results) {
+                    for (const f of features) {
+                        if (excludeOids.has(getOid(f)) || !f.geometry?.paths) continue;
+                        const seg = findClosestSeg(f.geometry, dst);
+                        if (seg && seg.distance < minD && seg.distance < tol) {
+                            minD = seg.distance;
+                            nearest = { x: seg.point.x, y: seg.point.y, spatialReference: dst.spatialReference };
+                            nearestCfg = cfg;
+                        }
+                    }
+                }
+                return nearest ? { geometry: nearest, layerConfig: nearestCfg, snapType: 'lineSegment' } : null;
+            } catch(e) { console.error('findNearestPointOnLine error:', e); return null; }
         }
 
         async function findPointFeatureAtLocation(sp) {
@@ -1306,7 +1452,7 @@
                     if (colocFail > 0) msg += ` · ${colocFail} co-located failed`;
                     if (movedLines > 0) msg += ` + ${movedLines} line(s)`;
                     msg += '!';
-                    if (snapInfo) msg += ` Snapped to ${snapInfo.snapType === 'lineVertex' ? `vertex in ${snapInfo.layerConfig.name}` : `point in ${snapInfo.layerConfig.name}`}.`;
+                    if (snapInfo) msg += ` Snapped to ${snapInfo.snapType === 'pointFeature' ? `point in ${snapInfo.layerConfig.name}` : snapInfo.snapType === 'lineVertex' ? `vertex in ${snapInfo.layerConfig.name}` : `line in ${snapInfo.layerConfig.name}`}.`;
                     updateStatus(msg);
 
                 } else {
