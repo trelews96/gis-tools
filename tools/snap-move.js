@@ -478,7 +478,7 @@
          * current output segment with the snap point and start a new one.
          */
         function splitLineMulti(lineGeom, sortedCutInfos, snapPt) {
-            if (!sortedCutInfos.length) return [lineGeom];
+            if (!sortedCutInfos.length) return [];
             const snap = [snapPt.x, snapPt.y];
 
             // Group cut segment indices by path index
@@ -488,9 +488,9 @@
                 cutsByPath.get(ci.pathIdx).push(ci.segIdx);
             }
 
-            const outputSegments = [];  // each entry = array of paths for one output feature
-            let currentPaths = [];      // paths accumulated for the segment being built
-            let currentVerts = [];      // vertices for the path currently being built
+            const outputSegments = [];   // each entry = array-of-paths for one output feature
+            let currentPaths = [];
+            let currentVerts = [];
 
             for (let pi = 0; pi < lineGeom.paths.length; pi++) {
                 const path = lineGeom.paths[pi];
@@ -498,14 +498,15 @@
                 let vi = 0;
 
                 for (const si of cutsHere) {
-                    // Accumulate up to and including vertex si
-                    for (let i = vi; i <= si && i < path.length; i++) currentVerts.push([...path[i]]);
-                    currentVerts.push([...snap]);                // close at snap point
+                    // Collect vertices up to and including the cut segment start vertex
+                    for (let i = vi; i <= si && i < path.length; i++)
+                        currentVerts.push([...path[i]]);
+                    currentVerts.push([...snap]);   // close segment at snap point
 
-                    if (currentVerts.length >= 2) currentPaths.push(currentVerts);
-                    if (currentPaths.length)      outputSegments.push(currentPaths);
+                    if (currentVerts.length >= 2) currentPaths.push(currentVerts.slice());
+                    if (currentPaths.length)       outputSegments.push(currentPaths.slice());
 
-                    // Begin next segment at snap point
+                    // Start next segment from snap point
                     currentPaths = [];
                     currentVerts = [[...snap]];
                     vi = si + 1;
@@ -514,21 +515,22 @@
                 // Remaining vertices after last cut on this path
                 for (let i = vi; i < path.length; i++) currentVerts.push([...path[i]]);
 
-                // For multi-path geometries: seal current path, open next
+                // Multi-path lines: seal current path, begin next
                 if (pi < lineGeom.paths.length - 1) {
-                    if (currentVerts.length >= 2) currentPaths.push(currentVerts);
+                    if (currentVerts.length >= 2) currentPaths.push(currentVerts.slice());
                     currentVerts = [];
                 }
             }
 
             // Finalise last segment
-            if (currentVerts.length >= 2) currentPaths.push(currentVerts);
-            if (currentPaths.length)      outputSegments.push(currentPaths);
+            if (currentVerts.length >= 2) currentPaths.push(currentVerts.slice());
+            if (currentPaths.length)      outputSegments.push(currentPaths.slice());
 
-            // Convert to geometries and validate minimum length
+            // Build plain polyline objects using buildPolyline — avoids relying on
+            // lineGeom.clone() which can lose its prototype in some ArcGIS JS versions.
             return outputSegments
                 .filter(paths => paths.length > 0 && paths.every(p => p.length >= 2))
-                .map(paths => { const g = lineGeom.clone(); g.paths = paths; return g; })
+                .map(paths => buildPolyline(lineGeom, paths))
                 .filter(g => geodeticLength(g) >= MIN_SEGMENT_LEN_FT);
         }
 
@@ -838,21 +840,31 @@
                 let ok=0,fail=0;
                 for(const li of linesToProcess){
                     try{
-                        const split=splitLine(li.feature.geometry,li.cutInfo,snapPt);
-                        if(!split){fail++;continue;}
-                        const{seg1,seg2}=split;
-                        const updFeature=li.feature.clone();updFeature.geometry=seg1;updFeature.attributes.calculated_length=geodeticLength(seg1);
-                        const newAttrs={...li.feature.attributes};
-                        ['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete newAttrs[f]);
-                        newAttrs.calculated_length=geodeticLength(seg2);
-                        const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:[{geometry:seg2,attributes:newAttrs}]});
-                        const updErr=res.updateFeatureResults?.[0]?.error,addErr=res.addFeatureResults?.[0]?.error;
-                        if(!updErr&&!addErr){updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),getOid(li.feature),seg1);ok++;}
-                        else{console.error('executeCut error:',updErr,addErr);fail++;}
+                        const snapPtGeom={x:snapPt.x,y:snapPt.y};
+                        const segments=splitLineMulti(li.feature.geometry,li.cutInfos,snapPtGeom);
+                        if(segments.length<2){fail++;continue;}
+                        const updFeature=li.feature.clone();
+                        updFeature.geometry=segments[0];
+                        updFeature.attributes.calculated_length=geodeticLength(segments[0]);
+                        const newFeatures=segments.slice(1).map(seg=>{
+                            const attrs={...li.feature.attributes};
+                            ['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete attrs[f]);
+                            attrs.calculated_length=geodeticLength(seg);
+                            return{geometry:seg,attributes:attrs};
+                        });
+                        const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:newFeatures});
+                        const updErr=res.updateFeatureResults?.[0]?.error;
+                        const addErrs=res.addFeatureResults?.filter(r=>r.error)??[];
+                        if(!updErr&&addErrs.length===0){
+                            updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),getOid(li.feature),segments[0]);
+                            ok++;totalCreated+=newFeatures.length;
+                        }else{console.error('executeCut error:',updErr,addErrs);fail++;}
                     }catch(e){console.error(`executeCut error (${li.layerConfig.name}):`,e);fail++;}
                 }
                 cutProcessing=false;
-                updateStatus(ok?`✅ ${ok} line(s) cut${fail?` · ${fail} failed`:''}.`:`❌ All ${fail} cut(s) failed.`);
+                updateStatus(ok
+                    ?`✅ ${ok} line(s) cut into ${ok+totalCreated} segments${fail?` · ${fail} failed`:''}.`
+                    :`❌ All ${fail} cut(s) failed.`);
             })();
         }
 
