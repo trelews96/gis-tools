@@ -23,18 +23,18 @@ async function main(){
   let _snapHoverTimer=null;
   let showVertexHighlight=false,extentWatchH=null;
   let copyGeoMode=false,copyGeoH=null,copyGeoAddVaults=false;
-  // Global so inline onclick on the vault toggle button can reach the closure var
+  let traceMode=false,traceSketchVM=null,traceSketchLayer=null;
+
   window.__pkgCGV=function(){
     copyGeoAddVaults=!copyGeoAddVaults;
     const btn=box.querySelector('#btn-copy-vaults');
     if(btn){btn.classList.toggle('btn-active',copyGeoAddVaults);btn.textContent='Vaults: '+(copyGeoAddVaults?'ON':'OFF');}
   };
 
-  // ── CSS ───────────────────────────────────────────────────────────────
   const styleEl=document.createElement('style');
   styleEl.textContent=`
-    #pkgT{position:fixed;top:100px;right:40px;z-index:${Z};width:490px;height:620px;
-      min-width:360px;min-height:240px;resize:both;overflow:hidden;
+    #pkgT{position:fixed;top:100px;right:40px;z-index:${Z};width:540px;height:640px;
+      min-width:380px;min-height:240px;resize:both;overflow:hidden;
       background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:8px;
       box-shadow:0 8px 32px rgba(0,0,0,.55);display:flex;flex-direction:column;
       font-family:'Segoe UI',Arial,sans-serif;font-size:12px;}
@@ -78,20 +78,25 @@ async function main(){
     #pkgT .btn-lock-on{background:#a6e3a1 !important;color:#1e1e2e !important;}
     #pkgT .btn-snap-soft{background:#fab387 !important;color:#1e1e2e !important;}
     #pkgT .btn-snap-hard{background:#f9a836 !important;color:#1e1e2e !important;}
+    #pkgT .btn-trace-on{background:#fab387 !important;color:#1e1e2e !important;}
     #pkgT .row{display:flex;gap:7px;align-items:center;}#pkgT .row .btn{flex:1;}
     #pkgT .stk{width:100%;border-collapse:collapse;font-size:10px;}
     #pkgT .stk th{background:#313244;color:#89b4fa;padding:4px 5px;text-align:left;font-weight:600;white-space:nowrap;}
     #pkgT .stk td{padding:3px 4px;vertical-align:middle;border-bottom:1px solid #2a2a3e;}
     #pkgT .stk tr:hover td{background:#252538;}
     #pkgT .stk input[type=number]{width:52px;padding:3px 4px;font-size:10px;}
+    #pkgT .stk input[type=text]{width:72px;padding:3px 4px;font-size:10px;}
     #pkgT .sbar{background:#181825;border-top:1px solid #313244;padding:6px 14px;
       font-size:10px;color:#a6adc8;flex-shrink:0;min-height:28px;}
     #pkgT .badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;}
     #pkgT .bp{background:#cba6f7;color:#1e1e2e;}#pkgT .bg{background:#a6e3a1;color:#1e1e2e;}
     #pkgT .br{background:#f38ba8;color:#1e1e2e;}#pkgT .bb{background:#89b4fa;color:#1e1e2e;}
-    #pkgT .plist{max-height:100px;overflow-y:auto;background:#0d0d1a;border-radius:4px;padding:5px;}
-    #pkgT .pitem{display:flex;justify-content:space-between;align-items:center;padding:2px 5px;border-radius:3px;font-size:10px;}
+    #pkgT .bo{background:#fab387;color:#1e1e2e;}
+    #pkgT .plist{max-height:120px;overflow-y:auto;background:#0d0d1a;border-radius:4px;padding:5px;}
+    #pkgT .pitem{display:flex;justify-content:space-between;align-items:center;padding:2px 5px;border-radius:3px;font-size:10px;cursor:default;}
     #pkgT .pitem:hover{background:#313244;}
+    #pkgT .pitem-del{opacity:0;transition:opacity .15s;padding:1px 5px !important;font-size:9px !important;line-height:1.4;flex-shrink:0;}
+    #pkgT .pitem:hover .pitem-del{opacity:1;}
     #pkgT .pbwrap{background:#313244;border-radius:4px;height:7px;overflow:hidden;margin-top:5px;}
     #pkgT .pbfill{height:100%;background:linear-gradient(90deg,#cba6f7,#89b4fa);transition:width .25s;border-radius:4px;width:0%;}
     #pkgT .rvtbl{width:100%;font-size:10px;border-collapse:collapse;}
@@ -158,6 +163,12 @@ async function main(){
     #pkgT .tog-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;background:#fff;border-radius:50%;transition:left .2s;}
     #pkgT .tog-track.on .tog-thumb{left:17px;}
     #pkgT .tog-lbl{font-size:10px;color:#a6adc8;}
+    #pkgT .trace-sec{background:#0d1a0a;border:1px solid #a6e3a1;border-radius:6px;padding:10px 12px;margin-bottom:11px;}
+    #pkgT .trace-sec-title{font-size:11px;font-weight:700;color:#a6e3a1;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;}
+    #pkgT .trace-active{background:#1a2e1a;border:1px solid #a6e3a1;border-radius:4px;padding:6px 10px;font-size:10px;color:#a6e3a1;margin-bottom:8px;display:flex;align-items:center;gap:6px;}
+    #pkgT .pt-new-vault{color:#cba6f7;}
+    #pkgT .pt-exist-vault{color:#fab387;}
+    #pkgT .pt-free{color:#89dceb;}
   `;
   document.head.appendChild(styleEl);
 
@@ -255,6 +266,7 @@ async function main(){
     return '<select id="'+domId+'" data-ss><option value="">— select —</option>'+opts+'</select>';
   }
   function mkDate(domId,cur){cur=cur||'';return '<input type="date" id="'+domId+'" value="'+cur+'">';}
+  function mkText(domId,cur,ph){return '<input type="text" id="'+domId+'" value="'+(cur||'')+'" placeholder="'+(ph||'—')+'">';}
   function frow(label,html,req){return '<div class="frow"><label class="'+(req?'req':'')+'">'+(req?label:label)+'</label>'+html+'</div>';}
 
   // ── Geometry ──────────────────────────────────────────────────────────
@@ -294,12 +306,25 @@ async function main(){
   }
 
   // ── Segment Builder ───────────────────────────────────────────────────
+  // gapBefore  — disconnected copy-geo span: close current segment WITHOUT this
+  //              point so no connecting line is drawn across the gap. No length
+  //              guard needed — if it's the last point, cur won't reach length 2.
+  // existingVault / newVault — shared endpoint: included at end of one seg AND
+  //              start of next (connected geometry).
   function buildSegments(ptArr){
     if(ptArr.length<2) return[];
     const segs=[];let cur=[ptArr[0].pt];
     for(let i=1;i<ptArr.length;i++){
-      cur.push(ptArr[i].pt);
-      if(!ptArr[i].noVault&&i<ptArr.length-1){segs.push(cur);cur=[ptArr[i].pt];}
+      const p=ptArr[i];
+      if(p.gapBefore){
+        if(cur.length>=2) segs.push(cur);
+        cur=[p.pt];
+      } else {
+        cur.push(p.pt);
+        if((!p.noVault||p.existingVault)&&i<ptArr.length-1){
+          segs.push(cur);cur=[p.pt];
+        }
+      }
     }
     if(cur.length>=2) segs.push(cur);
     return segs;
@@ -341,42 +366,54 @@ async function main(){
       gl=new GL({title:'__pkgCreator__',listMode:'hide'});mv.map.add(gl);window.__pkgGr=Gr;res();},rej)).catch(()=>{});
   }
   function rmTag(tag){if(gl) gl.removeMany(gl.graphics.filter(g=>g.attributes?._pkg===tag).toArray());}
-  function addMarker(pt,idx,isFree){
+  function addMarker(pt,idx,isFree,isSpecial){
     if(!gl||!window.__pkgGr) return;
-    const sym=isFree
-      ?{type:'simple-marker',style:'x',color:[137,220,235,0.9],size:'11px',outline:{color:[137,220,235,1],width:2}}
-      :{type:'simple-marker',style:'circle',color:[203,166,247,0.92],size:'13px',outline:{color:[255,255,255,0.9],width:2}};
+    let sym;
+    if(isSpecial){
+      sym={type:'simple-marker',style:'diamond',color:[250,179,135,1],size:'18px',outline:{color:[255,255,255,1],width:2.5}};
+    } else if(isFree){
+      sym={type:'simple-marker',style:'x',color:[137,220,235,1],size:'13px',outline:{color:[137,220,235,1],width:2.5}};
+    } else {
+      sym={type:'simple-marker',style:'circle',color:[203,166,247,1],size:'16px',outline:{color:[255,255,255,1],width:2.5}};
+    }
     gl.add(new window.__pkgGr({geometry:pt,symbol:sym,attributes:{_pkg:'vault',idx:idx}}));
     refreshLine();
   }
   function addArcGuideMarker(pt,stepN){
     if(!gl||!window.__pkgGr) return;
     const sym=stepN===2
-      ?{type:'simple-marker',style:'diamond',color:[250,179,135,0.9],size:'14px',outline:{color:'#fff',width:2}}
-      :{type:'simple-marker',style:'circle',color:[166,227,161,0.9],size:'13px',outline:{color:'#fff',width:2}};
+      ?{type:'simple-marker',style:'diamond',color:[250,179,135,1],size:'15px',outline:{color:'#fff',width:2.5}}
+      :{type:'simple-marker',style:'circle',color:[166,227,161,1],size:'14px',outline:{color:'#fff',width:2.5}};
     gl.add(new window.__pkgGr({geometry:pt,symbol:sym,attributes:{_pkg:'arc-guide',stepN:stepN}}));
     const guides=gl.graphics.filter(g=>g.attributes?._pkg==='arc-guide').toArray();
     rmTag('arc-preview');
     if(guides.length>=2){
       const coords=guides.map(g=>[g.geometry.x,g.geometry.y]);
-      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[coords],spatialReference:pt.spatialReference},symbol:{type:'simple-line',color:[250,179,135,0.6],width:1.5,style:'short-dash'},attributes:{_pkg:'arc-preview'}}));
+      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[coords],spatialReference:pt.spatialReference},symbol:{type:'simple-line',color:[250,179,135,0.85],width:2,style:'short-dash'},attributes:{_pkg:'arc-preview'}}));
     }
   }
   function clearArcGuides(){rmTag('arc-guide');rmTag('arc-preview');}
   function refreshLine(){
     if(!gl||!window.__pkgGr) return;
     rmTag('line');
-    if(pts.length<2) return;
-    gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[pts.map(p=>[p.pt.x,p.pt.y])],spatialReference:pts[0].pt.spatialReference},symbol:{type:'simple-line',color:[137,180,250,0.75],width:2,style:'dash'},attributes:{_pkg:'line'}}));
+    const segs=buildSegments(pts);
+    if(!segs.length) return;
+    segs.forEach(function(seg){
+      gl.add(new window.__pkgGr({
+        geometry:{type:'polyline',paths:[seg.map(function(p){return[p.x,p.y];})],spatialReference:seg[0].spatialReference},
+        symbol:{type:'simple-line',color:[137,180,250,1],width:3,style:'solid'},
+        attributes:{_pkg:'line'}
+      }));
+    });
   }
   function removeSnapRing(){rmTag('snap');}
   function addSnapRing(pt){
     if(!gl||!window.__pkgGr) return;removeSnapRing();
-    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'circle',color:[250,179,135,0],size:'20px',outline:{color:[250,179,135,0.9],width:2.5}},attributes:{_pkg:'snap'}}));
+    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'circle',color:[250,179,135,0],size:'22px',outline:{color:[250,179,135,1],width:3}},attributes:{_pkg:'snap'}}));
   }
   function addVertexSnapRing(pt){
     if(!gl||!window.__pkgGr) return;removeSnapRing();
-    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'square',color:[137,220,235,0],size:'18px',outline:{color:[137,220,235,0.9],width:2.5}},attributes:{_pkg:'snap'}}));
+    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'square',color:[137,220,235,0],size:'20px',outline:{color:[137,220,235,1],width:3}},attributes:{_pkg:'snap'}}));
   }
   function removeLastMarker(){
     if(!gl) return;
@@ -396,17 +433,17 @@ async function main(){
     pendingPt=res.commitPt;
     if(bearingLock&&lockedBearing!==null){
       const far=500000,ah=Geo.extendAlong(origin,lockedBearing,far),bh=Geo.extendAlong(origin,(lockedBearing+180)%360,far);
-      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[bh.x,bh.y],[ah.x,ah.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:[166,227,161,0.22],width:1,style:'long-dash'},attributes:{_pkg:'preview-ray'}}));
+      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[bh.x,bh.y],[ah.x,ah.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:[166,227,161,0.35],width:1,style:'long-dash'},attributes:{_pkg:'preview-ray'}}));
     }
     if(res.isSoft&&res.snapPt){
-      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[origin.x,origin.y],[res.snapPt.x,res.snapPt.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:[250,179,135,0.35],width:1.5,style:'long-dash'},attributes:{_pkg:'preview-ghost'}}));
-      gl.add(new window.__pkgGr({geometry:res.snapPt,symbol:{type:'simple-marker',style:'circle',color:[250,179,135,0.25],size:'10px',outline:{color:[250,179,135,0.7],width:1.5}},attributes:{_pkg:'preview-ghost'}}));
+      gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[origin.x,origin.y],[res.snapPt.x,res.snapPt.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:[250,179,135,0.55],width:2,style:'long-dash'},attributes:{_pkg:'preview-ghost'}}));
+      gl.add(new window.__pkgGr({geometry:res.snapPt,symbol:{type:'simple-marker',style:'circle',color:[250,179,135,0.3],size:'12px',outline:{color:[250,179,135,0.85],width:2}},attributes:{_pkg:'preview-ghost'}}));
     }
     const isHard=res.snapping&&!res.isSoft;
-    const lc=res.isLocked?[166,227,161,0.9]:isHard?[250,179,135,0.9]:[137,180,250,0.6];
-    gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[origin.x,origin.y],[res.commitPt.x,res.commitPt.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:lc,width:isHard?2.5:1.5,style:isHard||res.isLocked?'solid':'short-dash'},attributes:{_pkg:'preview-line'}}));
-    const dc=res.isLocked?[166,227,161,0.9]:isHard?[250,179,135,0.9]:[203,166,247,0.5];
-    gl.add(new window.__pkgGr({geometry:res.commitPt,symbol:{type:'simple-marker',style:'circle',color:dc,size:'9px',outline:{color:[255,255,255,0.8],width:1.5}},attributes:{_pkg:'preview-dot'}}));
+    const lc=res.isLocked?[166,227,161,1]:isHard?[250,179,135,1]:[137,180,250,0.9];
+    gl.add(new window.__pkgGr({geometry:{type:'polyline',paths:[[[origin.x,origin.y],[res.commitPt.x,res.commitPt.y]]],spatialReference:origin.spatialReference},symbol:{type:'simple-line',color:lc,width:isHard?2.5:2,style:isHard||res.isLocked?'solid':'short-dash'},attributes:{_pkg:'preview-line'}}));
+    const dc=res.isLocked?[166,227,161,1]:isHard?[250,179,135,1]:[203,166,247,0.9];
+    gl.add(new window.__pkgGr({geometry:res.commitPt,symbol:{type:'simple-marker',style:'circle',color:dc,size:'10px',outline:{color:[255,255,255,0.9],width:2}},attributes:{_pkg:'preview-dot'}}));
     updateBearingBar(Geo.bearing(origin,rawMapPt),res);
   }
   function clearPreview(){rmTag('preview-line');rmTag('preview-ghost');rmTag('preview-ray');rmTag('preview-dot');pendingPt=null;}
@@ -460,38 +497,208 @@ async function main(){
     }
     return null;
   }
+
+  // ── Geometry Engine (lazy load) ───────────────────────────────────────
+  async function loadGeometryEngine(){
+    if(window.__pkgGE) return window.__pkgGE;
+    if(!window.require) throw new Error('JSAPI require not available');
+    return new Promise((res,rej)=>window.require(['esri/geometry/geometryEngine'],ge=>{window.__pkgGE=ge;res(ge);},rej));
+  }
+
+  // ── Trace Path ────────────────────────────────────────────────────────
+  function orderFeaturesAlongLine(features,line){
+    const ge=window.__pkgGE;
+    return features.map(f=>{
+      let dist=0;
+      try{
+        const geo=f.geometry;
+        let pt=null;
+        if(geo.type==='point') pt=geo;
+        else if(geo.type==='polyline'&&geo.paths?.[0]){
+          const mid=Math.floor(geo.paths[0].length/2);
+          pt={type:'point',x:geo.paths[0][mid][0],y:geo.paths[0][mid][1],spatialReference:geo.spatialReference};
+        }
+        if(pt&&line.paths?.[0]){
+          const nc=ge.nearestCoordinate(line,pt);
+          if(nc?.coordinate&&nc.vertexIndex!==undefined){
+            let cum=0;
+            for(let i=0;i<nc.vertexIndex;i++){
+              const a={type:'point',x:line.paths[0][i][0],y:line.paths[0][i][1],spatialReference:line.spatialReference};
+              const b={type:'point',x:line.paths[0][i+1][0],y:line.paths[0][i+1][1],spatialReference:line.spatialReference};
+              cum+=ge.distance(a,b,'meters');
+            }
+            const lv={type:'point',x:line.paths[0][nc.vertexIndex][0],y:line.paths[0][nc.vertexIndex][1],spatialReference:line.spatialReference};
+            cum+=ge.distance(lv,nc.coordinate,'meters');
+            dist=cum;
+          }
+        }
+      }catch(e){}
+      return{f,dist};
+    }).sort((a,b)=>a.dist-b.dist).map(x=>x.f);
+  }
+
+  function walkSegments(orderedFeatures){
+    const result=[];
+    let chainTail=null;
+    const SNAP_TOL=5;
+    for(const feat of orderedFeatures){
+      const geo=feat.geometry;
+      if(!geo||!geo.paths) continue;
+      const coords=[];
+      for(const path of geo.paths)
+        for(const coord of path) coords.push({x:coord[0],y:coord[1],spatialReference:geo.spatialReference});
+      if(coords.length<2) continue;
+      if(!chainTail){
+        coords.forEach(pt=>result.push(pt));
+      } else {
+        const dStart=Math.hypot(coords[0].x-chainTail.x,coords[0].y-chainTail.y);
+        const dEnd=Math.hypot(coords[coords.length-1].x-chainTail.x,coords[coords.length-1].y-chainTail.y);
+        const ordered=dEnd<dStart?[...coords].reverse():coords;
+        const skipFirst=Math.hypot(ordered[0].x-chainTail.x,ordered[0].y-chainTail.y)<SNAP_TOL;
+        for(let i=skipFirst?1:0;i<ordered.length;i++) result.push(ordered[i]);
+      }
+      chainTail=result[result.length-1];
+    }
+    return result;
+  }
+
+  async function enableTracePath(){
+    if(active) disableTool();
+    if(copyGeoMode) disableCopyGeo();
+    traceMode=true;
+    updateTraceBtn();
+    await initGL();
+    try { await loadGeometryEngine(); } catch(e){ setStatus('Could not load geometry engine: '+e.message,'error'); disableTracePath(); return; }
+    if(!window.require){ setStatus('JSAPI require not available','error'); disableTracePath(); return; }
+    window.require(['esri/widgets/Sketch/SketchViewModel','esri/layers/GraphicsLayer'],(SVM,GL)=>{
+      traceSketchLayer=new GL({title:'__pkgTrace__',listMode:'hide'});
+      mv.map.add(traceSketchLayer);
+      traceSketchVM=new SVM({
+        view:mv,layer:traceSketchLayer,
+        polylineSymbol:{type:'simple-line',color:[166,227,161,1],width:3,style:'dash'}
+      });
+      traceSketchVM.on('create',async evt=>{
+        if(evt.state==='cancel'){disableTracePath();setStatus('Trace cancelled.','info');return;}
+        if(evt.state!=='complete') return;
+        await processTracedPath(evt.graphic.geometry);
+        disableTracePath();
+      });
+      traceSketchVM.create('polyline');
+      mv.container.style.cursor='crosshair';
+      setStatus('Sketch trace line — click points along the route, double-click to finish.','warn');
+    });
+  }
+
+  async function processTracedPath(line){
+    setStatus('Querying features along traced path…','info');
+    const ge=window.__pkgGE;
+    const bufInpEl=qs('#trace-buf');
+    const bufFt=bufInpEl?Math.max(1,parseInt(bufInpEl.value)||20):20;
+    let bufGeom;
+    try { bufGeom=ge.buffer(line,bufFt,'feet'); } catch(e){}
+    if(!bufGeom){ setStatus('Could not buffer trace line — try again.','error'); return; }
+
+    const lineLayers=[LAYERS.span.id,LAYERS.cable.id]
+      .map(id=>mv.map.allLayers.find(l=>l.layerId===id)).filter(Boolean);
+    let lineFeatures=[];
+    for(const layer of lineLayers){
+      if(lineFeatures.length) break;
+      try{
+        await layer.load();
+        const res=await layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:[],num:500});
+        lineFeatures=res.features||[];
+      }catch(e){ console.warn('[PKG Trace] line query:',e); }
+    }
+    if(!lineFeatures.length){
+      setStatus('No span/fiber features found — try widening the buffer or redrawing.','warn');
+      return;
+    }
+
+    setStatus('Building path from '+lineFeatures.length+' feature(s)…','info');
+    const ordered=orderFeaturesAlongLine(lineFeatures,line);
+    const chain=walkSegments(ordered);
+    if(chain.length<2){ setStatus('Could not build a continuous path.','error'); return; }
+
+    const vaultLayer=mv.map.allLayers.find(l=>l.layerId===LAYERS.vault.id);
+    let existingVaultGeos=[];
+    if(vaultLayer){
+      try{
+        await vaultLayer.load();
+        const vr=await vaultLayer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:[],num:500});
+        existingVaultGeos=(vr.features||[]).map(f=>f.geometry);
+      }catch(e){}
+    }
+
+    const vaultSnapTol=mv.resolution*SNAP_PX*3;
+    const existingVaultIdx=new Set();
+    for(const vGeo of existingVaultGeos){
+      let minDist=Infinity,minIdx=-1;
+      for(let i=0;i<chain.length;i++){
+        const d=Math.hypot(chain[i].x-vGeo.x,chain[i].y-vGeo.y);
+        if(d<minDist){minDist=d;minIdx=i;}
+      }
+      if(minIdx>=0&&minDist<vaultSnapTol) existingVaultIdx.add(minIdx);
+    }
+
+    pts=[];clearGL();
+    for(let i=0;i<chain.length;i++){
+      const isExist=existingVaultIdx.has(i);
+      const entry=isExist
+        ?{pt:chain[i],noVault:true,existingVault:true}
+        :{pt:chain[i],noVault:true};
+      pts.push(entry);
+      addMarker(entry.pt,i,entry.noVault,entry.existingVault);
+    }
+
+    const exV=existingVaultIdx.size;
+    const segs=buildSegments(pts).length;
+    refreshLine();refreshPlaceUI();
+    setStatus('✅ Traced: '+chain.length+' pts · '+exV+' existing vault splits · '+(chain.length-exV)+' free pts · '+segs+' segments','success');
+  }
+
+  function disableTracePath(){
+    traceMode=false;
+    if(traceSketchVM){try{traceSketchVM.cancel();traceSketchVM.destroy();}catch(e){} traceSketchVM=null;}
+    if(traceSketchLayer){try{mv.map.remove(traceSketchLayer);}catch(e){} traceSketchLayer=null;}
+    if(mv?.container) mv.container.style.cursor=active?'crosshair':'default';
+    updateTraceBtn();
+  }
+
+  function updateTraceBtn(){
+    const btn=qs('#btn-trace');if(!btn) return;
+    if(traceMode){btn.classList.remove('btn-b');btn.classList.add('btn-trace-on');btn.textContent='⏳ Tracing… (dbl-click to finish)';}
+    else{btn.classList.remove('btn-trace-on');btn.classList.add('btn-b');btn.textContent='🔍 Trace Path';}
+  }
+
   // ── Copy Geometry ─────────────────────────────────────────────────────
   function enableCopyGeo(){
     copyGeoMode=true;
     mv.container.style.cursor='copy';
     updateCopyGeoBtn();
-    setStatus('Click lines to copy geometry. Click multiple lines to chain them. Press Esc or Done when finished.','warn');
+    setStatus('Click spans to copy geometry as separate segments.','warn');
     copyGeoH=mv.on('click',async function(evt){
       evt.stopPropagation();
       const mapPt=mv.toMap({x:evt.x,y:evt.y}),tol=mv.resolution*SNAP_PX*4;
       const ext={type:'extent',xmin:mapPt.x-tol,ymin:mapPt.y-tol,xmax:mapPt.x+tol,ymax:mapPt.y+tol,spatialReference:mapPt.spatialReference};
       let bestLayer=null,bestOid=null,bestDist=Infinity;
-      const layerIds=[LAYERS.span.id,LAYERS.cable.id];
-      for(const lid of layerIds){
+      for(const lid of [LAYERS.span.id,LAYERS.cable.id]){
         const layer=mv.map.allLayers.find(function(l){return l.layerId===lid;});
         if(!layer) continue;
         try {
           await layer.load();
           const res=await layer.queryFeatures({geometry:ext,returnGeometry:true,outFields:['objectid','OBJECTID'],num:10});
           for(const feat of (res.features||[])){
-            const geo=feat.geometry;
-            if(!geo||!geo.paths) continue;
+            const geo=feat.geometry;if(!geo||!geo.paths) continue;
             const oid=feat.attributes.objectid||feat.attributes.OBJECTID;
-            for(const path of geo.paths){
+            for(const path of geo.paths)
               for(const coord of path){
                 const d=Math.hypot(coord[0]-mapPt.x,coord[1]-mapPt.y);
                 if(d<bestDist){bestDist=d;bestLayer=layer;bestOid=oid;}
               }
-            }
           }
         } catch(e){}
       }
-      if(!bestLayer||bestOid===null){setStatus('No line feature found near click — try another spot.','warn');return;}
+      if(!bestLayer||bestOid===null){setStatus('No line feature found near click.','warn');return;}
       let fullGeo=null;
       try {
         const fullRes=await bestLayer.queryFeatures({objectIds:[bestOid],returnGeometry:true,outFields:[]});
@@ -499,35 +706,42 @@ async function main(){
       } catch(e){}
       if(!fullGeo||!fullGeo.paths){setStatus('Could not retrieve full geometry.','warn');return;}
       const allCoords=[];
-      for(const path of fullGeo.paths){
+      for(const path of fullGeo.paths)
         for(const coord of path) allCoords.push({x:coord[0],y:coord[1],spatialReference:fullGeo.spatialReference});
-      }
       if(allCoords.length<2){setStatus('Feature has too few vertices.','warn');return;}
-      const newEntries=allCoords.map(function(pt,i){
-        const isEndpoint=(i===0||i===allCoords.length-1);
-        return{pt:pt,noVault:!(copyGeoAddVaults&&isEndpoint)};
-      });
-      for(const entry of newEntries){
-        pts.push(entry);
-        addMarker(entry.pt,pts.length-1,entry.noVault);
+
+      const newEntries=allCoords.map(function(pt){return{pt:pt,noVault:true};});
+      if(pts.length>0){
+        const last=pts[pts.length-1],first=newEntries[0];
+        const d=Math.hypot(first.pt.x-last.pt.x,first.pt.y-last.pt.y);
+        const snapTol=mv.resolution*SNAP_PX*2;
+        if(d<snapTol){
+          pts[pts.length-1].existingVault=true;
+          for(const entry of newEntries.slice(1)) pts.push(entry);
+        } else {
+          newEntries[0].gapBefore=true;
+          for(const entry of newEntries) pts.push(entry);
+        }
+      } else {
+        for(const entry of newEntries) pts.push(entry);
       }
+      rmTag('vault');rmTag('line');
+      pts.forEach(function(p,i){addMarker(p.pt,i,p.noVault,p.existingVault||p.gapBefore);});
       refreshPlaceUI();
-      // Count total vaults and free pts so far
-      const totalVaults=pts.filter(function(p){return !p.noVault;}).length;
-      const totalFree=pts.filter(function(p){return p.noVault;}).length;
-      setStatus('Copied '+allCoords.length+' vertices. Total: '+pts.length+' points ('+totalVaults+' vaults, '+totalFree+' free). Click another line or press Done.','success');
+      const splits=pts.filter(function(p){return !!p.existingVault||!!p.gapBefore;}).length;
+      const segs=buildSegments(pts).length;
+      setStatus('Copied '+allCoords.length+' vertices — '+pts.length+' total pts · '+splits+' splits · '+segs+' segments. Click another line or Done.','success');
     });
   }
   function updateCopyGeoBtn(){
-    const btn=qs('#btn-copy-geo');
-    if(!btn) return;
-    if(copyGeoMode){btn.classList.add('btn-active');btn.textContent='\u2705 Done Copying';}
-    else{btn.classList.remove('btn-active');btn.textContent='\ud83d\udccb Copy Geometry';}
+    const btn=qs('#btn-copy-geo');if(!btn) return;
+    if(copyGeoMode){btn.classList.add('btn-active');btn.textContent='✅ Done Copying';}
+    else{btn.classList.remove('btn-active');btn.textContent='📋 Copy Geometry';}
   }
   function disableCopyGeo(){
     copyGeoMode=false;
     if(copyGeoH){copyGeoH.remove();copyGeoH=null;}
-    mv.container.style.cursor=active?'crosshair':'default';
+    if(mv?.container) mv.container.style.cursor=active?'crosshair':'default';
     updateCopyGeoBtn();
   }
 
@@ -536,45 +750,34 @@ async function main(){
   async function drawVertexHighlights(){
     if(!gl||!window.__pkgGr) return;
     clearVertexHighlights();
-    const rawExt=mv.extent;
-    if(!rawExt) return;
-    // Serialize to plain object — passing the Extent class instance directly
-    // causes silent query failures in some JSAPI versions
-    const ext={
-      type:'extent',
-      xmin:rawExt.xmin, ymin:rawExt.ymin,
-      xmax:rawExt.xmax, ymax:rawExt.ymax,
-      spatialReference:{wkid:rawExt.spatialReference.wkid||rawExt.spatialReference.latestWkid||102100}
-    };
-    const layerIds=[LAYERS.span.id,LAYERS.cable.id];
-    for(const lid of layerIds){
+    const rawExt=mv.extent;if(!rawExt) return;
+    const ext={type:'extent',xmin:rawExt.xmin,ymin:rawExt.ymin,xmax:rawExt.xmax,ymax:rawExt.ymax,spatialReference:{wkid:rawExt.spatialReference.wkid||102100}};
+    for(const lid of [LAYERS.span.id,LAYERS.cable.id]){
       const layer=mv.map.allLayers.find(function(l){return l.layerId===lid;});
       if(!layer) continue;
       try {
         await layer.load();
         const res=await layer.queryFeatures({geometry:ext,returnGeometry:true,outFields:[],num:500});
         for(const feat of (res.features||[])){
-          const geo=feat.geometry;
-          if(!geo||!geo.paths) continue;
+          const geo=feat.geometry;if(!geo||!geo.paths) continue;
           for(const path of geo.paths){
             for(let i=0;i<path.length;i++){
-              const coord=path[i];
-              const pt={x:coord[0],y:coord[1],spatialReference:geo.spatialReference};
+              const coord=path[i],pt={x:coord[0],y:coord[1],spatialReference:geo.spatialReference};
               const isEndpoint=(i===0||i===path.length-1);
               const sym=isEndpoint
-                ?{type:'simple-marker',style:'circle',color:[250,179,135,0.9],size:'10px',outline:{color:[230,100,40,1],width:1.5}}
-                :{type:'simple-marker',style:'diamond',color:[137,180,250,0.9],size:'10px',outline:{color:[80,130,240,1],width:1.5}};
+                ?{type:'simple-marker',style:'circle',color:[250,179,135,1],size:'11px',outline:{color:[230,100,40,1],width:2}}
+                :{type:'simple-marker',style:'diamond',color:[137,180,250,1],size:'10px',outline:{color:[80,130,240,1],width:1.5}};
               gl.add(new window.__pkgGr({geometry:pt,symbol:sym,attributes:{_pkg:'vh'}}));
             }
           }
         }
-      } catch(e){ console.warn('[PKG] drawVertexHighlights error:',e); }
+      } catch(e){}
     }
   }
   function toggleVertexHighlight(){
     showVertexHighlight=!showVertexHighlight;
     const btn=qs('#btn-vh');
-    if(btn){btn.classList.toggle('btn-active',showVertexHighlight);btn.textContent='\u25c6 Vertices: '+(showVertexHighlight?'ON':'OFF');}
+    if(btn){btn.classList.toggle('btn-active',showVertexHighlight);btn.textContent='◆ Vertices: '+(showVertexHighlight?'ON':'OFF');}
     if(showVertexHighlight){
       drawVertexHighlights();
       if(!extentWatchH) extentWatchH=mv.watch('extent',function(){if(showVertexHighlight) drawVertexHighlights();});
@@ -618,13 +821,9 @@ async function main(){
   }
   function collectAllState(){
     saveCurrentStepState();
-    return{cfg:cfg,vCfg:vCfg,conduits:conduits,fibers:fibers,fiberSplit:fiberSplit,
-           spanOverride:spanOverride,fiberOverride:fiberOverride,createConduit:createConduit,createFiber:createFiber};
+    return{cfg,vCfg,conduits,fibers,fiberSplit,spanOverride,fiberOverride,createConduit,createFiber};
   }
-  function doSaveTemplate(name){
-    const state=collectAllState();Tmpl.save(name,state);currentTmplName=name;render();
-    setStatus('Template "'+name+'" saved.','success');
-  }
+  function doSaveTemplate(name){const state=collectAllState();Tmpl.save(name,state);currentTmplName=name;render();setStatus('Template "'+name+'" saved.','success');}
   function applyTemplate(name){
     saveCurrentStepState();const t=Tmpl.all()[name];if(!t) return;
     cfg=t.data.cfg||{};vCfg=t.data.vCfg||{};
@@ -635,7 +834,6 @@ async function main(){
     spanOverride=t.data.spanOverride||{};fiberOverride=t.data.fiberOverride||{};
     currentTmplName=name;render();setStatus('Template "'+name+'" loaded.','success');
   }
-
   function tmplCardHTML(t){
     const d=t.data;
     const cdMap={};
@@ -669,7 +867,7 @@ async function main(){
       :'');
   }
 
-  // ── Override attrs helper ─────────────────────────────────────────────
+  // ── Override attrs ────────────────────────────────────────────────────
   function overrideAttrs(ovr){
     const out={};
     if(ovr.supervisor) out.supervisor=ovr.supervisor;
@@ -698,7 +896,7 @@ async function main(){
             if(r.features&&r.features.length){
               const a=r.features[0].attributes;
               cfg={workflow_stage:a.workflow_stage||cfg.workflow_stage,workflow_status:a.workflow_status||cfg.workflow_status,work_type:a.work_type||cfg.work_type,client_code:a.client_code||cfg.client_code,project_id:a.project_id||cfg.project_id,job_number:a.job_number||cfg.job_number,workorder_id:a.workorder_id||cfg.workorder_id,purchase_order_id:a.purchase_order_id||cfg.purchase_order_id};
-              vCfg={vault_type:a.vault_type||vCfg.vault_type,vault_size:a.vault_size||vCfg.vault_size,vault_material:a.vault_material||vCfg.vault_material,physical_status:a.physical_status||vCfg.physical_status,vault_tier_rating:a.vault_tier_rating||vCfg.vault_tier_rating,supervisor:a.supervisor||vCfg.supervisor,crew:a.crew||vCfg.crew,installation_date:a.installation_date||vCfg.installation_date,workflow_status_ovr:a.workflow_status||vCfg.workflow_status_ovr};
+              vCfg={vault_type:a.vault_type||vCfg.vault_type,vault_size:a.vault_size||vCfg.vault_size,vault_material:a.vault_material||vCfg.vault_material,physical_status:a.physical_status||vCfg.physical_status,vault_tier_rating:a.vault_tier_rating||vCfg.vault_tier_rating,supervisor:a.supervisor||vCfg.supervisor,crew:a.crew||vCfg.crew,installation_date:a.installation_date||vCfg.installation_date,workflow_status_ovr:a.workflow_status||vCfg.workflow_status_ovr,vault_name:a.vault_name||vCfg.vault_name||'',assembly_code:a.assembly_code||vCfg.assembly_code||''};
               msgs.push('Vault');
             }
           }
@@ -709,7 +907,7 @@ async function main(){
             const r=await sl.queryFeatures({geometry:ext,returnGeometry:false,outFields:['*'],num:1});
             if(r.features&&r.features.length){
               const a=r.features[0].attributes;
-              const newRow={id:uid(),conduit_diameter:a.conduit_diameter||'',conduit_material:a.conduit_material||'',installation_method:a.installation_method||'',placement_type:a.placement_type||'',conduit_count:a.conduit_count||'',inner_duct:a.inner_duct||'',minimum_depth:a.minimum_depth||''};
+              const newRow={id:uid(),conduit_diameter:a.conduit_diameter||'',conduit_material:a.conduit_material||'',installation_method:a.installation_method||'',placement_type:a.placement_type||'',conduit_count:a.conduit_count||'',inner_duct:a.inner_duct||'',minimum_depth:a.minimum_depth||'',assembly_code:a.assembly_code||''};
               saveConduits();
               const blank=conduits.length===1&&!Object.entries(conduits[0]).some(function(e){return e[0]!=='id'&&e[1]!=='';});
               conduits=blank?[newRow]:conduits.concat([newRow]);
@@ -724,7 +922,7 @@ async function main(){
             const r=await cl.queryFeatures({geometry:ext,returnGeometry:false,outFields:['*'],num:1});
             if(r.features&&r.features.length){
               const a=r.features[0].attributes;
-              const newRow={id:uid(),fiber_count:a.fiber_count||'',buffer_count:a.buffer_count||'',cable_category:a.cable_category||'',cable_type:a.cable_type||'',sheath_type:a.sheath_type||'',core_type:a.core_type||'',installation_method:a.installation_method||'',placement_type:a.placement_type||''};
+              const newRow={id:uid(),fiber_count:a.fiber_count||'',buffer_count:a.buffer_count||'',cable_category:a.cable_category||'',cable_type:a.cable_type||'',sheath_type:a.sheath_type||'',core_type:a.core_type||'',installation_method:a.installation_method||'',placement_type:a.placement_type||'',assembly_code:a.assembly_code||'',cable_name:a.cable_name||''};
               saveFibers();
               const blank=fibers.length===1&&!Object.entries(fibers[0]).some(function(e){return e[0]!=='id'&&e[1]!=='';});
               fibers=blank?[newRow]:fibers.concat([newRow]);
@@ -738,20 +936,48 @@ async function main(){
       setStatus(msgs.length?msgs.join(' · '):'No features found near click.',msgs.length?'success':'warn');
     });
   }
-  function endPick(){if(pickH){pickH.remove();pickH=null;}mv.container.style.cursor='default';pickMode=false;const banner=qs('#pick-active-banner');if(banner) banner.style.display='none';}
+  function endPick(){if(pickH){pickH.remove();pickH=null;}if(mv?.container) mv.container.style.cursor='default';pickMode=false;const banner=qs('#pick-active-banner');if(banner) banner.style.display='none';}
 
   // ── State Collectors ──────────────────────────────────────────────────
   function readConduit(row){
     function g(id,fk){const e=box.querySelector('#'+id);return e?e.value.trim():(row[fk]||'');}
-    return{conduit_diameter:g('cd_d_'+row.id,'conduit_diameter'),conduit_material:g('cd_m_'+row.id,'conduit_material'),installation_method:g('cd_im_'+row.id,'installation_method'),placement_type:g('cd_pt_'+row.id,'placement_type'),conduit_count:g('cd_cc_'+row.id,'conduit_count'),inner_duct:g('cd_id_'+row.id,'inner_duct'),minimum_depth:g('cd_md_'+row.id,'minimum_depth')};
+    return{
+      conduit_diameter:g('cd_d_'+row.id,'conduit_diameter'),
+      conduit_material:g('cd_m_'+row.id,'conduit_material'),
+      installation_method:g('cd_im_'+row.id,'installation_method'),
+      placement_type:g('cd_pt_'+row.id,'placement_type'),
+      conduit_count:g('cd_cc_'+row.id,'conduit_count'),
+      inner_duct:g('cd_id_'+row.id,'inner_duct'),
+      minimum_depth:g('cd_md_'+row.id,'minimum_depth'),
+      assembly_code:g('cd_ac_'+row.id,'assembly_code')
+    };
   }
   function readFiber(row){
     function g(id,fk){const e=box.querySelector('#'+id);return e?e.value.trim():(row[fk]||'');}
-    return{fiber_count:g('fb_fc_'+row.id,'fiber_count'),buffer_count:g('fb_bc_'+row.id,'buffer_count'),cable_category:g('fb_ca_'+row.id,'cable_category'),cable_type:g('fb_ct_'+row.id,'cable_type'),sheath_type:g('fb_st_'+row.id,'sheath_type'),core_type:g('fb_co_'+row.id,'core_type'),installation_method:g('fb_im_'+row.id,'installation_method'),placement_type:g('fb_pt_'+row.id,'placement_type')};
+    return{
+      fiber_count:g('fb_fc_'+row.id,'fiber_count'),
+      buffer_count:g('fb_bc_'+row.id,'buffer_count'),
+      cable_category:g('fb_ca_'+row.id,'cable_category'),
+      cable_type:g('fb_ct_'+row.id,'cable_type'),
+      sheath_type:g('fb_st_'+row.id,'sheath_type'),
+      core_type:g('fb_co_'+row.id,'core_type'),
+      installation_method:g('fb_im_'+row.id,'installation_method'),
+      placement_type:g('fb_pt_'+row.id,'placement_type'),
+      assembly_code:g('fb_ac_'+row.id,'assembly_code'),
+      cable_name:g('fb_cn_'+row.id,'cable_name')
+    };
   }
   function saveConduits(){conduits=conduits.map(function(r){return Object.assign({},r,readConduit(r));});}
   function saveFibers(){fibers=fibers.map(function(r){return Object.assign({},r,readFiber(r));});}
-  function saveVCfg(){vCfg={vault_type:gval('v_vt'),vault_size:gval('v_vs'),vault_material:gval('v_vm'),physical_status:gval('v_ps'),vault_tier_rating:gval('v_vtr'),supervisor:gval('v_sup'),crew:gval('v_crew'),installation_date:gval('v_idate'),workflow_status_ovr:gval('v_wso')};}
+  function saveVCfg(){
+    vCfg={
+      vault_type:gval('v_vt'),vault_size:gval('v_vs'),vault_material:gval('v_vm'),
+      physical_status:gval('v_ps'),vault_tier_rating:gval('v_vtr'),
+      supervisor:gval('v_sup'),crew:gval('v_crew'),
+      installation_date:gval('v_idate'),workflow_status_ovr:gval('v_wso'),
+      vault_name:gval('v_vname'),assembly_code:gval('v_acode')
+    };
+  }
   function saveSpanOverride(){spanOverride={supervisor:gval('so_sup'),crew:gval('so_crew'),installation_date:gval('so_idate'),workflow_status_ovr:gval('so_wso')};}
   function saveFiberOverride(){fiberOverride={supervisor:gval('fo_sup'),crew:gval('fo_crew'),installation_date:gval('fo_idate'),workflow_status_ovr:gval('fo_wso')};}
   function saveCfg(){cfg={workflow_stage:gval('f_ws'),workflow_status:gval('f_wst'),work_type:gval('f_wt'),client_code:gval('f_cc'),project_id:gval('f_pi'),job_number:gval('f_jn'),workorder_id:gval('f_wo'),purchase_order_id:gval('f_po')};}
@@ -764,14 +990,13 @@ async function main(){
   function showErr(sel,msg){const e=qs(sel);if(e){e.textContent=msg;e.style.display='block';}}
   function hideErr(sel){const e=qs(sel);if(e) e.style.display='none';}
   function tabs(){
-    const order=['setup','layers','place','review'],labels=['1 \xb7 Setup','2 \xb7 Layers','3 \xb7 Place','4 \xb7 Review'],cur=order.indexOf(step);
-    return order.map(function(s,i){return '<div class="'+(i<cur?'tab done':s===step?'tab active':'tab')+'">'+(i<cur?'\u2713 ':'')+labels[i]+'</div>';}).join('');
+    const order=['setup','layers','place','review'],labels=['1 · Setup','2 · Layers','3 · Place','4 · Review'],cur=order.indexOf(step);
+    return order.map(function(s,i){return '<div class="'+(i<cur?'tab done':s===step?'tab active':'tab')+'">'+(i<cur?'✓ ':'')+labels[i]+'</div>';}).join('');
   }
-  function snapBtnLabel(){return snapMode==='off'?'\u2295 Snap: Off':snapMode==='soft'?'\u2295 Snap: Soft':'\u2295 Snap: Hard';}
+  function snapBtnLabel(){return snapMode==='off'?'⊕ Snap: Off':snapMode==='soft'?'⊕ Snap: Soft':'⊕ Snap: Hard';}
   function snapBtnClass(){return snapMode==='off'?'btn btn-n':snapMode==='soft'?'btn btn-snap-soft':'btn btn-snap-hard';}
   function cycleSnap(){snapMode=snapMode==='off'?'soft':snapMode==='soft'?'hard':'off';const btn=qs('#btn-snap');if(btn){btn.className=snapBtnClass();btn.textContent=snapBtnLabel();}setStatus('Snap: '+snapMode,'info');}
 
-  // ── Shared override section ───────────────────────────────────────────
   function ovrSection(idPrefix,state){
     return '<div class="ovr-sec">'
       +'<div class="ovr-title">Supervisor / Crew / Date / Status Override</div>'
@@ -787,15 +1012,15 @@ async function main(){
   // ── Render: SETUP ─────────────────────────────────────────────────────
   function renderSetup(){
     const tmplCount=Object.keys(Tmpl.all()).length;
-    return (tmplCount?'<div class="sec collapsed"><div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>Saved Templates ('+tmplCount+')</span><span class="chevron">\u25bc</span></div><div class="sec-body" style="padding:8px">'+renderTmplSection()+'</div></div>':'')
-      +(pickMode?'<div class="pick-panel"><div class="pick-panel-title"><span>\ud83c\udfaf Pick from Map</span><button class="btn btn-r btn-sm" onclick="window.__pkgEndPick()">\u2715 Cancel</button></div>'
+    return (tmplCount?'<div class="sec collapsed"><div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>Saved Templates ('+tmplCount+')</span><span class="chevron">▼</span></div><div class="sec-body" style="padding:8px">'+renderTmplSection()+'</div></div>':'')
+      +(pickMode?'<div class="pick-panel"><div class="pick-panel-title"><span>🎯 Pick from Map</span><button class="btn btn-r btn-sm" onclick="window.__pkgEndPick()">✕ Cancel</button></div>'
         +'<div class="pick-chk">'
-        +'<label><input type="checkbox" id="pick_vault" '+(pickOpts.vault?'checked':'')+' onchange="window.__pkgPickOpt(\'vault\',this.checked)"> \ud83c\udfd7\ufe0f Vault</label>'
-        +'<label><input type="checkbox" id="pick_conduit" '+(pickOpts.conduit?'checked':'')+' onchange="window.__pkgPickOpt(\'conduit\',this.checked)"> \ud83d\udd35 Conduit/Span</label>'
-        +'<label><input type="checkbox" id="pick_fiber" '+(pickOpts.fiber?'checked':'')+' onchange="window.__pkgPickOpt(\'fiber\',this.checked)"> \ud83d\udfe3 Fiber Cable</label>'
-        +'</div><div id="pick-active-banner" class="pick-active-banner" style="display:none"><span>\ud83d\udda5\ufe0f Click a feature on the map\u2026</span></div>'
-        +'<button class="btn btn-b" style="width:100%" onclick="window.__pkgStartPick()">\u25b6 Click Map to Pick</button></div>':'')
-      +'<div class="sec"><div class="sec-hdr"><span>Workflow Fields</span><button class="btn btn-b btn-sm" id="btn-pick-toggle">\ud83c\udfaf Pick from Map</button></div>'
+        +'<label><input type="checkbox" id="pick_vault" '+(pickOpts.vault?'checked':'')+' onchange="window.__pkgPickOpt(\'vault\',this.checked)"> 🏗️ Vault</label>'
+        +'<label><input type="checkbox" id="pick_conduit" '+(pickOpts.conduit?'checked':'')+' onchange="window.__pkgPickOpt(\'conduit\',this.checked)"> 🔵 Conduit/Span</label>'
+        +'<label><input type="checkbox" id="pick_fiber" '+(pickOpts.fiber?'checked':'')+' onchange="window.__pkgPickOpt(\'fiber\',this.checked)"> 🟣 Fiber Cable</label>'
+        +'</div><div id="pick-active-banner" class="pick-active-banner" style="display:none"><span>🖥️ Click a feature on the map…</span></div>'
+        +'<button class="btn btn-b" style="width:100%" onclick="window.__pkgStartPick()">▶ Click Map to Pick</button></div>':'')
+      +'<div class="sec"><div class="sec-hdr"><span>Workflow Fields</span><button class="btn btn-b btn-sm" id="btn-pick-toggle">🎯 Pick from Map</button></div>'
       +'<div class="sec-body"><div class="grid2">'
       +frow('Workflow Stage',mkSelect('workflow_stage','f_ws',cfg.workflow_stage),true)
       +frow('Workflow Status',mkSelect('workflow_status','f_wst',cfg.workflow_status),true)
@@ -810,9 +1035,9 @@ async function main(){
       +frow('Purchase Order ID',mkSelect('purchase_order_id','f_po',cfg.purchase_order_id),true)
       +'</div></div>'
       +'<div class="row">'
-      +(currentTmplName?'<button class="btn btn-n" id="btn-sv-current">\ud83d\udcbe Save to "'+currentTmplName+'"</button>':'<button class="btn btn-n" id="btn-sv-current" disabled>\ud83d\udcbe Save to Current</button>')
-      +'<button class="btn btn-n" id="btn-sv-new">\ud83d\udcbe Save as New</button>'
-      +'<button class="btn btn-p" id="btn-to-layers">Next \u2192</button>'
+      +(currentTmplName?'<button class="btn btn-n" id="btn-sv-current">💾 Save to "'+currentTmplName+'"</button>':'<button class="btn btn-n" id="btn-sv-current" disabled>💾 Save to Current</button>')
+      +'<button class="btn btn-n" id="btn-sv-new">💾 Save as New</button>'
+      +'<button class="btn btn-p" id="btn-to-layers">Next →</button>'
       +'</div>'
       +'<div id="setup-err" class="errbx" style="display:none"></div>';
   }
@@ -821,14 +1046,19 @@ async function main(){
   function renderLayers(){
     const tmplCount=Object.keys(Tmpl.all()).length;
     return '<div class="sec collapsed"><div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')">'
-      +'<span>\ud83c\udfd7\ufe0f Vault Options <span style="font-weight:400;color:#6c7086;font-size:10px">(optional)</span></span><span class="chevron">\u25bc</span>'
+      +'<span>🏗️ Vault Options <span style="font-weight:400;color:#6c7086;font-size:10px">(optional)</span></span><span class="chevron">▼</span>'
       +'</div><div class="sec-body"><div class="grid2">'
       +frow('Vault Type',mkSelect('vault_type','v_vt',vCfg.vault_type))
       +frow('Vault Size',mkSelect('vault_size','v_vs',vCfg.vault_size))
       +frow('Vault Material',mkSelect('vault_material','v_vm',vCfg.vault_material))
       +frow('Physical Status',mkSelect('physical_status','v_ps',vCfg.physical_status))
-      +'</div>'+frow('Vault Tier Rating',mkSelect('vault_tier_rating','v_vtr',vCfg.vault_tier_rating))
-      +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid #313244;">'
+      +'</div>'
+      +frow('Vault Tier Rating',mkSelect('vault_tier_rating','v_vtr',vCfg.vault_tier_rating))
+      +'<div class="grid2">'
+      +frow('Vault Name Prefix',mkText('v_vname',vCfg.vault_name,'auto-generated if blank'))
+      +frow('Assembly Code',mkText('v_acode',vCfg.assembly_code,'—'))
+      +'</div>'
+      +'<div style="margin-top:8px;padding-top:8px;border-top:1px solid #313244;">'
       +'<div class="ovr-title" style="color:#6c7086;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Supervisor / Crew / Date / Status</div>'
       +'<div class="grid2">'
       +frow('Supervisor',mkSelect('supervisor','v_sup',vCfg.supervisor||''))
@@ -839,7 +1069,7 @@ async function main(){
       +'</div></div></div></div>'
 
       +'<div class="sec"><div class="sec-hdr">'
-      +'<span>\ud83d\udd35 Conduit Stack <span class="badge bp" style="margin-left:5px">'+conduits.length+' row'+(conduits.length!==1?'s':'')+'</span></span>'
+      +'<span>🔵 Conduit Stack <span class="badge bp" style="margin-left:5px">'+conduits.length+' row'+(conduits.length!==1?'s':'')+'</span></span>'
       +'<div style="display:flex;align-items:center;gap:8px">'
       +mkToggle('createConduit','Create',createConduit)
       +'<button class="btn btn-p btn-sm" id="btn-add-cd">+ Add Row</button>'
@@ -850,7 +1080,7 @@ async function main(){
 
       +'<div class="sec"><div class="sec-hdr">'
       +'<div style="display:flex;align-items:center;gap:8px">'
-      +'<span>\ud83d\udfe3 Fiber Stack <span class="badge bp" style="margin-left:5px">'+fibers.length+' row'+(fibers.length!==1?'s':'')+'</span></span>'
+      +'<span>🟣 Fiber Stack <span class="badge bp" style="margin-left:5px">'+fibers.length+' row'+(fibers.length!==1?'s':'')+'</span></span>'
       +mkToggle('createFiber','Create',createFiber)
       +(createFiber?mkToggle('fiberSplit','Split per seg',fiberSplit):'')
       +'</div>'
@@ -861,17 +1091,20 @@ async function main(){
       +ovrSection('fo',fiberOverride)+'</div>'
 
       +'<div class="row" style="margin-bottom:11px">'
-      +(currentTmplName?'<button class="btn btn-n" id="btn-sv-current-2">\ud83d\udcbe Save to "'+currentTmplName+'"</button>':'<button class="btn btn-n" id="btn-sv-current-2" disabled>\ud83d\udcbe Save to Current</button>')
-      +'<button class="btn btn-n" id="btn-sv-new-2">\ud83d\udcbe Save as New</button></div>'
-      +(tmplCount?'<div class="sec collapsed"><div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>Templates ('+tmplCount+')</span><span class="chevron">\u25bc</span></div><div class="sec-body" style="padding:8px">'+renderTmplSection()+'</div></div>':'')
-      +'<div class="row"><button class="btn btn-n" id="btn-to-setup">\u2190 Back</button>'
-      +'<button class="btn btn-p" id="btn-to-place">Next: Placement \u2192</button></div>'
+      +(currentTmplName?'<button class="btn btn-n" id="btn-sv-current-2">💾 Save to "'+currentTmplName+'"</button>':'<button class="btn btn-n" id="btn-sv-current-2" disabled>💾 Save to Current</button>')
+      +'<button class="btn btn-n" id="btn-sv-new-2">💾 Save as New</button></div>'
+      +(tmplCount?'<div class="sec collapsed"><div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>Templates ('+tmplCount+')</span><span class="chevron">▼</span></div><div class="sec-body" style="padding:8px">'+renderTmplSection()+'</div></div>':'')
+      +'<div class="row"><button class="btn btn-n" id="btn-to-setup">← Back</button>'
+      +'<button class="btn btn-p" id="btn-to-place">Next: Placement →</button></div>'
       +'<div id="layers-err" class="errbx" style="display:none"></div>';
   }
 
   function renderConduitStack(){
     if(!conduits.length) return '<div class="empty">No rows — click "+ Add Row"</div>';
-    return '<table class="stk"><thead><tr><th>Diameter</th><th>Material</th><th>Method</th><th>Placement</th><th>Count</th><th>Inner&nbsp;Duct</th><th>Depth&nbsp;ft</th><th></th></tr></thead><tbody>'
+    return '<table class="stk"><thead><tr>'
+      +'<th>Diameter</th><th>Material</th><th>Method</th><th>Placement</th>'
+      +'<th>Count</th><th>Inner&nbsp;Duct</th><th>Depth&nbsp;ft</th><th>Asm.&nbsp;Code</th><th></th>'
+      +'</tr></thead><tbody>'
       +conduits.map(function(r){return '<tr>'
         +'<td>'+mkSelect('conduit_diameter','cd_d_'+r.id,r.conduit_diameter)+'</td>'
         +'<td>'+mkSelect('conduit_material','cd_m_'+r.id,r.conduit_material)+'</td>'
@@ -880,12 +1113,18 @@ async function main(){
         +'<td><input type="number" id="cd_cc_'+r.id+'" value="'+(r.conduit_count||'')+'" min="1" placeholder="#"></td>'
         +'<td>'+mkSelect('inner_duct','cd_id_'+r.id,r.inner_duct)+'</td>'
         +'<td><input type="number" id="cd_md_'+r.id+'" value="'+(r.minimum_depth||'')+'" min="0" placeholder="ft"></td>'
-        +'<td><button class="btn btn-r btn-sm" onclick="window.__pkgDelCd(\''+r.id+'\')">\u2715</button></td>'
+        +'<td><input type="text" id="cd_ac_'+r.id+'" value="'+(r.assembly_code||'')+'" placeholder="—"></td>'
+        +'<td><button class="btn btn-r btn-sm" onclick="window.__pkgDelCd(\''+r.id+'\')">✕</button></td>'
         +'</tr>';}).join('')+'</tbody></table>';
   }
+
   function renderFiberStack(){
     if(!fibers.length) return '<div class="empty">No rows — click "+ Add Row"</div>';
-    return '<table class="stk"><thead><tr><th>Fiber&nbsp;Ct</th><th>Buffer&nbsp;Ct</th><th>Category</th><th>Cable Type</th><th>Sheath</th><th>Core</th><th>Method</th><th>Placement</th><th></th></tr></thead><tbody>'
+    return '<table class="stk"><thead><tr>'
+      +'<th>Fiber&nbsp;Ct</th><th>Buffer&nbsp;Ct</th><th>Category</th><th>Cable&nbsp;Type</th>'
+      +'<th>Sheath</th><th>Core</th><th>Method</th><th>Placement</th>'
+      +'<th>Cable&nbsp;Name</th><th>Asm.&nbsp;Code</th><th></th>'
+      +'</tr></thead><tbody>'
       +fibers.map(function(r){return '<tr>'
         +'<td>'+mkSelect('fiber_count','fb_fc_'+r.id,r.fiber_count)+'</td>'
         +'<td>'+mkSelect('buffer_count','fb_bc_'+r.id,r.buffer_count)+'</td>'
@@ -895,109 +1134,183 @@ async function main(){
         +'<td>'+mkSelect('core_type','fb_co_'+r.id,r.core_type)+'</td>'
         +'<td>'+mkSelect('cable_installation_method','fb_im_'+r.id,r.installation_method)+'</td>'
         +'<td>'+mkSelect('cable_placement_type','fb_pt_'+r.id,r.placement_type)+'</td>'
-        +'<td><button class="btn btn-r btn-sm" onclick="window.__pkgDelFb(\''+r.id+'\')">\u2715</button></td>'
+        +'<td><input type="text" id="fb_cn_'+r.id+'" value="'+(r.cable_name||'')+'" placeholder="auto"></td>'
+        +'<td><input type="text" id="fb_ac_'+r.id+'" value="'+(r.assembly_code||'')+'" placeholder="—"></td>'
+        +'<td><button class="btn btn-r btn-sm" onclick="window.__pkgDelFb(\''+r.id+'\')">✕</button></td>'
         +'</tr>';}).join('')+'</tbody></table>';
+  }
+
+  // ── Point label / item HTML ───────────────────────────────────────────
+  function ptLabel(p){
+    if(p.existingVault) return{icon:'🏛️',cls:'pt-exist-vault',text:'Exist. Vault'};
+    if(p.gapBefore)     return{icon:'✂️', cls:'pt-exist-vault',text:'Seg. Break'};
+    if(p.noVault)       return{icon:'✕', cls:'pt-free',       text:'Free Pt'};
+    return                     {icon:'📍',cls:'pt-new-vault',  text:'New Vault'};
+  }
+  function ptItemHTML(p,i){
+    const lbl=ptLabel(p);
+    const dist=i>0?'<span style="color:#585b70;font-size:9px">+'+Geo.dist(pts[i-1].pt,p.pt).toLocaleString()+' ft</span>':'<span></span>';
+    return '<div class="pitem" data-ptidx="'+i+'">'
+      +'<span class="'+lbl.cls+'">'+lbl.icon+' '+lbl.text+' '+(i+1)+'</span>'
+      +'<span style="color:#6c7086;font-size:9px">'+p.pt.x.toFixed(0)+', '+p.pt.y.toFixed(0)+'</span>'
+      +dist
+      +'<button class="btn btn-r btn-sm pitem-del" onclick="window.__pkgDelPt('+i+');event.stopPropagation()">✕</button>'
+      +'</div>';
+  }
+  window.__pkgDelPt=function(idx){
+    if(idx<0||idx>=pts.length) return;
+    rmTag('hover-hl');
+    pts.splice(idx,1);
+    rmTag('vault');rmTag('line');
+    pts.forEach(function(p,i){addMarker(p.pt,i,p.noVault,p.existingVault||p.gapBefore);});
+    if(bearingLock){
+      const vaults=pts.filter(function(p){return !p.noVault;});
+      if(vaults.length>=2) lockedBearing=Geo.bearing(vaults[vaults.length-2].pt,vaults[vaults.length-1].pt);
+      else{bearingLock=false;lockedBearing=null;}
+    }
+    refreshPlaceUI();
+    setStatus('Point '+(idx+1)+' removed.','info');
+  };
+  window.__pkgHoverPt=function(idx){
+    if(!gl||!window.__pkgGr||idx<0||idx>=pts.length) return;
+    rmTag('hover-hl');
+    const pt=pts[idx].pt;
+    gl.add(new window.__pkgGr({geometry:pt,symbol:{type:'simple-marker',style:'circle',
+      color:[255,220,0,1],size:'26px',outline:{color:[255,255,255,1],width:4}},
+      attributes:{_pkg:'hover-hl'}}));
+  };
+  window.__pkgUnhoverPt=function(){rmTag('hover-hl');};
+  function attachPlistHoverListeners(){
+    const plistEl=qs('#plist');if(!plistEl) return;
+    plistEl.querySelectorAll('[data-ptidx]').forEach(function(item){
+      item.addEventListener('mouseenter',function(){window.__pkgHoverPt(parseInt(item.dataset.ptidx));});
+      item.addEventListener('mouseleave',function(){window.__pkgUnhoverPt();});
+    });
   }
 
   // ── Render: PLACE ─────────────────────────────────────────────────────
   function renderPlace(){
-    const vaultCt=pts.filter(function(p){return !p.noVault;}).length;
-    const freeCt=pts.filter(function(p){return p.noVault;}).length;
+    const newVaultCt=pts.filter(function(p){return !p.noVault;}).length;
+    const existVaultCt=pts.filter(function(p){return !!p.existingVault;}).length;
+    const freeCt=pts.filter(function(p){return p.noVault&&!p.existingVault&&!p.gapBefore;}).length;
+    const gapCt=pts.filter(function(p){return !!p.gapBefore;}).length;
     const segs=buildSegments(pts).length;
     const len=pts.length>1?Geo.totalLen(pts.map(function(p){return p.pt;})):0;
     const arcLabels=['start of curve','midpoint along curve','end of curve'];
-    const lockLabel=bearingLock&&lockedBearing!==null?' '+lockedBearing.toFixed(0)+'\xb0':'';
-    return '<div class="sec"><div class="sec-body" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-      +'<span class="badge bp">'+vaultCt+' vault'+(vaultCt!==1?'s':'')+'</span>'
+    const lockLabel=bearingLock&&lockedBearing!==null?' '+lockedBearing.toFixed(0)+'°':'';
+
+    return '<div class="trace-sec">'
+      +'<div class="trace-sec-title"><span>🔍 Trace Path</span>'
+      +(traceMode?'<button class="btn btn-r btn-sm" onclick="window.__pkgCancelTrace()">✕ Cancel</button>':'')
+      +'</div>'
+      +(traceMode?'<div class="trace-active"><span style="font-size:14px">✏️</span><span>Sketching — click points, <strong>double-click</strong> to finish</span></div>':'')
+      +'<div style="display:flex;gap:7px;align-items:center;'+(traceMode?'opacity:.4;pointer-events:none;':'')+'">'
+      +'<button class="btn btn-b" id="btn-trace" style="flex:2">🔍 Trace Path</button>'
+      +'<label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#a6adc8;white-space:nowrap;">Buffer<input type="number" id="trace-buf" value="20" min="1" max="1000" style="width:50px">ft</label>'
+      +'</div>'
+      +'<div style="font-size:9px;color:#585b70;margin-top:5px;">Sketches a line → finds underlying span/fiber → snaps conduit splits to existing vaults.</div>'
+      +'</div>'
+
+      +'<div class="sec"><div class="sec-body" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +'<span class="badge bp">'+newVaultCt+' new vault'+(newVaultCt!==1?'s':'')+'</span>'
+      +(existVaultCt?'<span class="badge bo">'+existVaultCt+' exist. split'+(existVaultCt!==1?'s':'')+'</span>':'')
+      +(gapCt?'<span class="badge bo">'+gapCt+' seg break'+(gapCt!==1?'s':'')+'</span>':'')
       +(freeCt?'<span class="badge bb">'+freeCt+' free pt'+(freeCt!==1?'s':'')+'</span>':'')
       +'<span class="badge bp">'+segs+' seg'+(segs!==1?'s':'')+'</span>'
       +(len?'<span style="margin-left:auto;font-size:10px;color:#a6adc8">~'+len.toLocaleString()+' ft</span>':'')
       +'</div></div>'
-      +(active&&pts.length?'<div class="bearing-bar" id="bearing-bar"><div><div style="font-size:9px;color:#6c7086;margin-bottom:1px">BEARING</div><div class="bearing-val" id="bearing-val">\u2014</div></div><div style="flex:1"><span class="bearing-snap-ind" id="bearing-snap-ind" style="background:#313244;color:#585b70">Free</span></div><div style="font-size:9px;color:#585b70;text-align:right">'+snapBtnLabel()+'<br>'+(bearingLock?'\ud83d\udd12 Lock ON':'Lock OFF')+'</div></div>':'')
+
+      +(active&&pts.length?'<div class="bearing-bar" id="bearing-bar"><div><div style="font-size:9px;color:#6c7086;margin-bottom:1px">BEARING</div><div class="bearing-val" id="bearing-val">—</div></div><div style="flex:1"><span class="bearing-snap-ind" id="bearing-snap-ind" style="background:#313244;color:#585b70">Free</span></div><div style="font-size:9px;color:#585b70;text-align:right">'+snapBtnLabel()+'<br>'+(bearingLock?'🔒 Lock ON':'Lock OFF')+'</div></div>':'')
+
       +(arcMode?'<div class="arc-guide">'
         +'<span class="arc-step '+(arcPts.length>0?'done':'cur')+'">1</span>'
         +'<span class="arc-step '+(arcPts.length>1?'done':arcPts.length===1?'cur':'wait')+'">2</span>'
         +'<span class="arc-step '+(arcPts.length>2?'done':arcPts.length===2?'cur':'wait')+'">3</span>'
-        +'<div><div style="font-weight:700">\u2312 Arc \u2014 click the <em>'+(arcLabels[arcPts.length]||'complete')+'</em></div>'
+        +'<div><div style="font-weight:700">⌒ Arc — click the <em>'+(arcLabels[arcPts.length]||'complete')+'</em></div>'
         +'<div class="arc-density-row">Spacing: <input type="number" id="arc-density-inp" value="'+arcDensity+'" min="10" max="500"> ft &nbsp;'
         +'<button class="btn btn-r btn-sm" onclick="window.__pkgCancelArc()">Cancel</button></div></div></div>':'')
-      +'<div class="sec"><div class="sec-hdr" style="cursor:default">Placed Points</div>'
+
+      +'<div class="sec"><div class="sec-hdr" style="cursor:default">'
+      +'<span>Placed Points</span>'
+      +'<span style="font-size:9px;color:#6c7086">'
+      +'<span style="color:#cba6f7">■</span> New Vault &nbsp;'
+      +'<span style="color:#fab387">◆</span> Exist./Break &nbsp;'
+      +'<span style="color:#89dceb">✕</span> Free Pt'
+      +'</span>'
+      +'</div>'
       +'<div class="sec-body" style="padding:6px"><div class="plist" id="plist">'
-      +(pts.length?pts.map(function(p,i){return '<div class="pitem"><span>'+(p.noVault?'\u2715':'📍')+' '+(p.noVault?'Free Pt':'Vault')+' '+(i+1)+'</span>'
-        +'<span style="color:#6c7086;font-size:9px">'+p.pt.x.toFixed(0)+', '+p.pt.y.toFixed(0)+'</span>'
-        +(i>0?'<span style="color:#585b70;font-size:9px">+'+Geo.dist(pts[i-1].pt,p.pt).toLocaleString()+' ft</span>':'<span></span>')
-        +'</div>';}).join(''):'<div class="empty">Enable placement and click the map.</div>')
+      +(pts.length?pts.map(function(p,i){return ptItemHTML(p,i);}).join(''):'<div class="empty">Trace a path or enable placement and click the map.</div>')
       +'</div></div></div>'
+
       +'<div class="row" style="margin-bottom:6px">'
-      +'<button class="btn btn-g" id="btn-enable" '+(active?'disabled':'')+'>&#9654; Enable</button>'
-      +'<button class="btn btn-n" id="btn-disable" '+(!active?'disabled':'')+'>&#9209; Stop</button>'
+      +'<button class="btn btn-g" id="btn-enable" '+(active?'disabled':'')+'>▶ Enable</button>'
+      +'<button class="btn btn-n" id="btn-disable" '+(!active?'disabled':'')+'>⏹ Stop</button>'
       +'</div>'
       +'<div class="row" style="margin-bottom:5px">'
-      +'<button class="btn btn-n '+(waypointMode?'btn-active':'')+'" id="btn-waypoint" style="flex:1">\u2715 Free Pt'+(waypointMode?' ON':'')+'</button>'
-      +'<button class="btn btn-n '+(arcMode?'btn-arc-on':'')+'" id="btn-arc" style="flex:1">\u2312 Arc'+(arcMode?' ON':'')+'</button>'
+      +'<button class="btn btn-n '+(waypointMode?'btn-active':'')+'" id="btn-waypoint" style="flex:1">✕ Free Pt'+(waypointMode?' ON':'')+'</button>'
+      +'<button class="btn btn-n '+(arcMode?'btn-arc-on':'')+'" id="btn-arc" style="flex:1">⌒ Arc'+(arcMode?' ON':'')+'</button>'
       +'</div>'
       +'<div class="row" style="margin-bottom:5px">'
       +'<button class="'+snapBtnClass()+'" id="btn-snap" style="flex:1">'+snapBtnLabel()+'</button>'
       +'<button class="btn btn-n '+(bearingLock?'btn-lock-on':'')+'" id="btn-lock" style="flex:1" '+(pts.length<2?'disabled':'')+'>🔒 Lock'+lockLabel+'</button>'
       +'</div>'
       +'<div class="row" style="margin-bottom:6px">'
-      +'<button class="btn btn-n '+(showVertexHighlight?'btn-active':'')+'" id="btn-vh" style="flex:1">\u25c6 Vertices: '+(showVertexHighlight?'ON':'OFF')+'</button>'
+      +'<button class="btn btn-n '+(showVertexHighlight?'btn-active':'')+'" id="btn-vh" style="flex:1">◆ Vertices: '+(showVertexHighlight?'ON':'OFF')+'</button>'
       +'</div>'
       +'<div class="row" style="margin-bottom:6px">'
-      +'<button class="btn btn-n '+(copyGeoMode?'btn-active':'')+'" id="btn-copy-geo" style="flex:2">\ud83d\udccb Copy Geometry</button>'
+      +'<button class="btn btn-n '+(copyGeoMode?'btn-active':'')+'" id="btn-copy-geo" style="flex:2">📋 Copy Geometry</button>'
       +'<button class="btn btn-n btn-sm '+(copyGeoAddVaults?'btn-active':'')+'" id="btn-copy-vaults" onclick="window.__pkgCGV()" style="white-space:nowrap">Vaults: '+(copyGeoAddVaults?'ON':'OFF')+'</button>'
       +'</div>'
       +'<div class="row" style="margin-bottom:6px">'
-      +'<button class="btn btn-o" id="btn-undo" '+(pts.length?'':'disabled')+'>&#8617; Undo</button>'
-      +'<button class="btn btn-r" id="btn-clear" '+(pts.length?'':'disabled')+'>\u2715 Clear</button>'
+      +'<button class="btn btn-o" id="btn-undo" '+(pts.length?'':'disabled')+'>↩ Undo</button>'
+      +'<button class="btn btn-r" id="btn-clear" '+(pts.length?'':'disabled')+'>✕ Clear</button>'
       +'</div>'
       +'<div class="row">'
-      +'<button class="btn btn-n" id="btn-to-layers">\u2190 Back</button>'
-      +'<button class="btn btn-p" id="btn-to-review" '+(pts.length<2?'disabled':'')+'>Review \u2192</button>'
+      +'<button class="btn btn-n" id="btn-to-layers">← Back</button>'
+      +'<button class="btn btn-p" id="btn-to-review" '+(pts.length<2?'disabled':'')+'>Review →</button>'
       +'</div>'
       +'<div class="sec collapsed" style="margin-top:8px">'
-      +'<div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>&#9000;&#65039; Keyboard Shortcuts</span><span class="chevron">\u25bc</span></div>'
+      +'<div class="sec-hdr clickable" onclick="this.closest(\'.sec\').classList.toggle(\'collapsed\')"><span>⌨️ Keyboard Shortcuts</span><span class="chevron">▼</span></div>'
       +'<div class="sec-body"><div class="hk-grid">'
       +'<span class="hk-key">F</span><span class="hk-desc">Toggle free point mode</span>'
       +'<span class="hk-key">A</span><span class="hk-desc">Toggle arc mode</span>'
-      +'<span class="hk-key">S</span><span class="hk-desc">Cycle snap: Off \u2192 Soft \u2192 Hard</span>'
+      +'<span class="hk-key">S</span><span class="hk-desc">Cycle snap: Off → Soft → Hard</span>'
       +'<span class="hk-key">L</span><span class="hk-desc">Toggle bearing lock</span>'
       +'<span class="hk-key">Z / Esc</span><span class="hk-desc">Undo / cancel arc</span>'
       +'<span class="hk-key">Enter</span><span class="hk-desc">Advance to review</span>'
       +'<span class="hk-key">Shift+Click</span><span class="hk-desc">Place free point</span>'
-      +'</div>'
-      +'<div style="margin-top:7px;font-size:9px;color:#585b70">Soft snap shows alignment guide without forcing position. Hard locks click to nearest 45°.<br>'
-      +'&#x1f7e0; orange ring = vault snap &nbsp;\u00b7&nbsp; \ud83d\udd37 teal square = line vertex snap</div>'
-      +'</div></div>';
+      +'</div></div></div>';
   }
 
   // ── Render: REVIEW ────────────────────────────────────────────────────
   function renderReview(){
-    const vaultCt=pts.filter(function(p){return !p.noVault;}).length;
-    const freeCt=pts.filter(function(p){return p.noVault;}).length;
+    const newVaultCt=pts.filter(function(p){return !p.noVault;}).length;
+    const existVaultCt=pts.filter(function(p){return !!p.existingVault;}).length;
+    const freeCt=pts.filter(function(p){return p.noVault&&!p.existingVault&&!p.gapBefore;}).length;
     const segments=buildSegments(pts),segCt=segments.length;
     const sCt=createConduit?segCt*conduits.length:0;
     const fCt=createFiber?(fiberSplit?segCt*fibers.length:fibers.length):0;
-    const total=vaultCt+sCt+fCt;
+    const total=newVaultCt+sCt+fCt;
     const len=Geo.totalLen(pts.map(function(p){return p.pt;}));
-    return '<div class="sec"><div class="sec-hdr" style="cursor:default">Package Summary \u2014 '+total+' features</div>'
+    return '<div class="sec"><div class="sec-hdr" style="cursor:default">Package Summary — '+total+' features</div>'
       +'<div class="sec-body" style="padding:6px"><table class="rvtbl">'
-      +'<tr><td>Vaults</td><td><span class="badge bp">'+vaultCt+'</span></td></tr>'
+      +'<tr><td>New Vaults</td><td><span class="badge bp">'+newVaultCt+'</span></td></tr>'
+      +(existVaultCt?'<tr><td>Existing Vault Splits</td><td><span class="badge bo">'+existVaultCt+'</span></td></tr>':'')
       +(freeCt?'<tr><td>Free Points</td><td><span class="badge bb">'+freeCt+'</span></td></tr>':'')
-      +'<tr><td>V-to-V Segments</td><td><span class="badge bp">'+segCt+'</span></td></tr>'
-      +'<tr><td>Spans</td><td><span class="badge '+(createConduit?'bp':'br')+'">'+( createConduit?segCt+' \xd7 '+conduits.length+' = '+sCt:'disabled')+'</span></td></tr>'
-      +'<tr><td>Fiber Cables</td><td><span class="badge '+(createFiber?'bp':'br')+'">'+( createFiber?(fiberSplit?segCt+' \xd7 '+fibers.length+' = '+fCt:fibers.length+' (full span)'):'disabled')+'</span></td></tr>'
+      +'<tr><td>Segments</td><td><span class="badge bp">'+segCt+'</span></td></tr>'
+      +'<tr><td>Spans</td><td><span class="badge '+(createConduit?'bp':'br')+'">'+( createConduit?segCt+' × '+conduits.length+' = '+sCt:'disabled')+'</span></td></tr>'
+      +'<tr><td>Fiber Cables</td><td><span class="badge '+(createFiber?'bp':'br')+'">'+( createFiber?(fiberSplit?segCt+' × '+fibers.length+' = '+fCt:fibers.length+' (full span)'):'disabled')+'</span></td></tr>'
       +'<tr><td>Total Length</td><td>~'+len.toLocaleString()+' ft</td></tr>'
       +'<tr><td>Project</td><td>'+cfg.project_id+'</td></tr>'
       +'<tr><td>Job / WO</td><td>'+cfg.job_number+' / '+cfg.workorder_id+'</td></tr>'
-      +'<tr><td>Workflow</td><td>'+cfg.workflow_stage+' \xb7 '+cfg.workflow_status+'</td></tr>'
+      +'<tr><td>Workflow</td><td>'+cfg.workflow_stage+' · '+cfg.workflow_status+'</td></tr>'
       +'</table></div></div>'
       +'<div id="prog-wrap" style="display:none;margin-bottom:8px">'
-      +'<div id="prog-lbl" style="font-size:10px;color:#a6adc8;margin-bottom:4px">Creating features\u2026</div>'
+      +'<div id="prog-lbl" style="font-size:10px;color:#a6adc8;margin-bottom:4px">Creating features…</div>'
       +'<div class="pbwrap"><div class="pbfill" id="pbfill"></div></div></div>'
       +'<div class="row" style="margin-top:4px">'
-      +'<button class="btn btn-n" id="btn-to-place">\u2190 Back</button>'
-      +'<button class="btn btn-g" id="btn-commit">\u2705 Commit Package</button>'
+      +'<button class="btn btn-n" id="btn-to-place">← Back</button>'
+      +'<button class="btn btn-g" id="btn-commit">✅ Commit Package</button>'
       +'</div><div id="rv-result"></div>';
   }
 
@@ -1008,15 +1321,19 @@ async function main(){
     if(step==='layers') body=renderLayers();
     if(step==='place')  body=renderPlace();
     if(step==='review') body=renderReview();
-    box.innerHTML='<div class="hdr"><span style="font-size:15px">&#128230;</span><span class="hdr-title">Package Creator v2</span><button class="hdr-close" id="btn-close">\u2715</button></div>'
+    box.innerHTML='<div class="hdr"><span style="font-size:15px">📦</span><span class="hdr-title">Package Creator v4</span><button class="hdr-close" id="btn-close">✕</button></div>'
       +'<div class="tabs">'+tabs()+'</div><div class="body">'+body+'</div><div class="sbar">Ready.</div>';
     bind();makeDraggable();initSearchSelects();
+    if(step==='place') updateTraceBtn();
   }
 
   // ── Bind ──────────────────────────────────────────────────────────────
   function bind(){
     function on(id,ev,fn){const e=qs('#'+id);if(e) e.addEventListener(ev,fn);}
-    on('btn-close','click',function(){disableTool();disableCopyGeo();endPick();clearGL();styleEl.remove();document.removeEventListener('click',closeAllDrops);box.remove();});
+    on('btn-close','click',function(){
+      disableTool();disableCopyGeo();disableTracePath();endPick();clearGL();
+      styleEl.remove();document.removeEventListener('click',closeAllDrops);box.remove();
+    });
     if(step==='setup'){
       on('btn-pick-toggle','click',function(){pickMode=!pickMode;render();});
       on('btn-sv-current','click',function(){const err=validateSetup();if(err){showErr('#setup-err',err);return;}doSaveTemplate(currentTmplName);});
@@ -1032,27 +1349,20 @@ async function main(){
       on('btn-sv-new-2','click',function(){const name=prompt('Template name:');if(!name)return;doSaveTemplate(name);});
     }
     if(step==='place'){
-      on('btn-enable','click',enableTool);
+      on('btn-trace','click',function(){if(traceMode){disableTracePath();return;}initGL().then(function(){enableTracePath();});});
+      on('btn-enable','click',function(){disableTracePath();enableTool();});
       on('btn-disable','click',disableTool);
       on('btn-waypoint','click',toggleFreePoint);
       on('btn-arc','click',toggleArc);
       on('btn-snap','click',cycleSnap);
       on('btn-lock','click',toggleBearingLock);
       on('btn-vh','click',function(){initGL().then(function(){toggleVertexHighlight();});});
-      on('btn-copy-geo','click',function(){
-        initGL().then(function(){
-          if(copyGeoMode){disableCopyGeo();}
-          else{
-            const btn=qs('#btn-copy-geo');
-            if(btn){btn.classList.add('btn-active');btn.textContent='\ud83d\udccb Cancel Copy';}
-            enableCopyGeo();
-          }
-        });
-      });
-      on('btn-to-layers','click',function(){disableTool();cancelArc();step='layers';render();});
-      on('btn-to-review','click',function(){disableTool();cancelArc();step='review';render();});
+      on('btn-copy-geo','click',function(){initGL().then(function(){if(copyGeoMode){disableCopyGeo();}else{disableTracePath();enableCopyGeo();}});});
+      on('btn-to-layers','click',function(){disableTool();disableTracePath();cancelArc();step='layers';render();});
+      on('btn-to-review','click',function(){disableTool();disableTracePath();cancelArc();step='review';render();});
       on('btn-undo','click',undoLast);
-      on('btn-clear','click',function(){pts=[];clearGL();waypointMode=false;cancelArc();bearingLock=false;lockedBearing=null;refreshPlaceUI();});
+      on('btn-clear','click',function(){pts=[];clearGL();waypointMode=false;cancelArc();bearingLock=false;lockedBearing=null;refreshPlaceUI();setStatus('All points cleared.','info');});
+      attachPlistHoverListeners();
     }
     if(step==='review'){
       on('btn-to-place','click',function(){step='place';render();});
@@ -1065,14 +1375,10 @@ async function main(){
     if(arcMode){arcMode=false;cancelArc();}
     waypointMode=!waypointMode;
     const btn=qs('#btn-waypoint');
-    if(btn){btn.classList.toggle('btn-active',waypointMode);btn.textContent=waypointMode?'\u2715 Free Pt ON':'\u2715 Free Pt';}
+    if(btn){btn.classList.toggle('btn-active',waypointMode);btn.textContent=waypointMode?'✕ Free Pt ON':'✕ Free Pt';}
     setStatus(waypointMode?'Free point mode ON.':'Free point mode OFF.','info');
   }
-  function toggleArc(){
-    waypointMode=false;arcMode=!arcMode;arcPts=[];clearArcGuides();
-    if(arcMode) setStatus('Arc Mode: click the start point.','warn');
-    render();
-  }
+  function toggleArc(){waypointMode=false;arcMode=!arcMode;arcPts=[];clearArcGuides();if(arcMode) setStatus('Arc Mode: click the start point.','warn');render();}
   function toggleBearingLock(){
     if(bearingLock){bearingLock=false;lockedBearing=null;setStatus('Bearing lock off.','info');}
     else{
@@ -1081,7 +1387,7 @@ async function main(){
       const p2=vaults.length>=1?vaults[vaults.length-1].pt:pts.length>=1?pts[pts.length-1].pt:null;
       if(!p1||!p2){setStatus('Need at least 2 points to lock a bearing.','warn');return;}
       lockedBearing=Geo.bearing(p1,p2);bearingLock=true;
-      setStatus('\ud83d\udd12 Bearing locked to '+lockedBearing.toFixed(1)+'\xb0','success');
+      setStatus('🔒 Bearing locked to '+lockedBearing.toFixed(1)+'°','success');
     }
     render();
   }
@@ -1091,7 +1397,7 @@ async function main(){
     active=true;
     clickH=mv.on('click',handleClick);
     moveH=mv.on('pointer-move',function(e){
-      if(!active||arcMode) return;
+      if(!active||arcMode||copyGeoMode) return;
       if(!pts.length){clearPreview();return;}
       updatePreview(mv.toMap({x:e.x,y:e.y}));
       scheduleSnapHover(e);
@@ -1101,7 +1407,7 @@ async function main(){
     mv.container.style.cursor='crosshair';
     const en=qs('#btn-enable'),di=qs('#btn-disable');
     if(en) en.disabled=true;if(di) di.disabled=false;
-    setStatus('Placement active \u2014 click map to place vaults.');
+    setStatus('Placement active — click map to place vaults.');
     render();
   }
   function disableTool(){
@@ -1119,40 +1425,49 @@ async function main(){
   function cancelArc(){arcMode=false;arcPts=[];clearArcGuides();}
 
   async function handleClick(evt){
-    if(!active) return;
-    if(copyGeoMode) return; // copy geo has its own handler
+    if(!active||copyGeoMode||traceMode) return;
     evt.stopPropagation();
     if(arcMode){
       const dinp=qs('#arc-density-inp');if(dinp) arcDensity=Math.max(10,parseInt(dinp.value)||50);
       const pt=mv.toMap({x:evt.x,y:evt.y});
       arcPts.push(pt);addArcGuideMarker(pt,arcPts.length);
-      if(arcPts.length<3){setStatus('Arc: click the '+['','midpoint along curve','end of curve'][arcPts.length]+'\u2026','warn');render();return;}
+      if(arcPts.length<3){setStatus('Arc: click the '+['','midpoint along curve','end of curve'][arcPts.length]+'…','warn');render();return;}
       const wps=generateArcWaypoints(arcPts[0],arcPts[1],arcPts[2],arcDensity);
       clearArcGuides();
       wps.forEach(function(wp){pts.push({pt:wp,noVault:true});addMarker(wp,pts.length-1,true);});
       cancelArc();refreshPlaceUI();render();
-      setStatus('\u2312 Arc complete \u2014 '+wps.length+' free points added.','success');
+      setStatus('⌒ Arc complete — '+wps.length+' free points added.','success');
       return;
     }
     const isFree=waypointMode||(evt.native&&evt.native.shiftKey);
     const snap=await findSnap(evt);
-    let finalPt;
+    let finalPt,entry;
     if(snap){
       finalPt=snap.pt;
-      setStatus(snap.type==='vertex'?'\ud83d\udd37 Snapped to line vertex.':'Snapped to existing vault.','warn');
       removeSnapRing();
+      if(snap.type==='vault'){
+        // Snapped to an existing layer vault — always a split point, never a new feature
+        entry={pt:finalPt,noVault:true,existingVault:true};
+        setStatus('🏛️ Snapped to existing vault — conduit/fiber will split here.','warn');
+      } else {
+        // Snapped to a line vertex — respect current placement mode
+        entry={pt:finalPt,noVault:isFree};
+        setStatus('🔷 Snapped to line vertex.','warn');
+      }
     } else {
       finalPt=pendingPt||resolvePoint(mv.toMap({x:evt.x,y:evt.y})).commitPt;
+      entry={pt:finalPt,noVault:isFree};
     }
-    pts.push({pt:finalPt,noVault:isFree});
-    addMarker(finalPt,pts.length-1,isFree);
+    pts.push(entry);
+    addMarker(finalPt,pts.length-1,entry.noVault,entry.existingVault);
     clearPreview();
-    if(bearingLock&&!isFree){
+    if(bearingLock&&!entry.noVault){
       const vaults=pts.filter(function(p){return !p.noVault;});
       if(vaults.length>=2) lockedBearing=Geo.bearing(vaults[vaults.length-2].pt,vaults[vaults.length-1].pt);
     }
     refreshPlaceUI();
-    setStatus((isFree?'\u2715 Free point':'📍 Vault')+' '+pts.length+' placed.'+(pts.length>=2?' Enter to review.':' Place 1 more.'),'info');
+    const typeLabel=entry.existingVault?'🏛️ Exist. vault split':entry.noVault?'✕ Free point':'📍 New vault';
+    setStatus(typeLabel+' '+pts.length+' placed.'+(pts.length>=2?' Enter to review.':' Place 1 more.'),'info');
   }
 
   function handleKey(e){
@@ -1189,22 +1504,37 @@ async function main(){
     const listEl=qs('#plist');
     if(listEl){
       listEl.innerHTML=pts.length
-        ?pts.map(function(p,i){
-            return '<div class="pitem"><span>'+(p.noVault?'\u2715':'📍')+' '+(p.noVault?'Free Pt':'Vault')+' '+(i+1)+'</span>'
-              +'<span style="color:#6c7086;font-size:9px">'+p.pt.x.toFixed(0)+', '+p.pt.y.toFixed(0)+'</span>'
-              +(i>0?'<span style="color:#585b70;font-size:9px">+'+Geo.dist(pts[i-1].pt,p.pt).toLocaleString()+' ft</span>':'<span></span>')
-              +'</div>';}).join('')
-        :'<div class="empty">Enable placement and click the map.</div>';
+        ?pts.map(function(p,i){return ptItemHTML(p,i);}).join('')
+        :'<div class="empty">Trace a path or enable placement and click the map.</div>';
+    }
+    const newV=pts.filter(p=>!p.noVault).length;
+    const exV=pts.filter(p=>!!p.existingVault).length;
+    const gapV=pts.filter(p=>!!p.gapBefore).length;
+    const freeV=pts.filter(p=>p.noVault&&!p.existingVault&&!p.gapBefore).length;
+    const segs=buildSegments(pts).length;
+    const badgeEl=qs('.sec .sec-body');
+    if(badgeEl&&badgeEl.querySelector('.badge')){
+      badgeEl.innerHTML=''
+        +'<span class="badge bp">'+newV+' new vault'+(newV!==1?'s':'')+'</span>'
+        +(exV?'<span class="badge bo">'+exV+' exist. split'+(exV!==1?'s':'')+'</span>':'')
+        +(gapV?'<span class="badge bo">'+gapV+' seg break'+(gapV!==1?'s':'')+'</span>':'')
+        +(freeV?'<span class="badge bb">'+freeV+' free pt'+(freeV!==1?'s':'')+'</span>':'')
+        +'<span class="badge bp">'+segs+' seg'+(segs!==1?'s':'')+'</span>'
+        +(pts.length>1?'<span style="margin-left:auto;font-size:10px;color:#a6adc8">~'+Geo.totalLen(pts.map(p=>p.pt)).toLocaleString()+' ft</span>':'');
     }
     const undo=qs('#btn-undo'),clr=qs('#btn-clear'),rev=qs('#btn-to-review'),lock=qs('#btn-lock');
     if(undo) undo.disabled=!pts.length;
     if(clr)  clr.disabled=!pts.length;
     if(rev)  rev.disabled=pts.length<2;
     if(lock) lock.disabled=pts.length<2;
+    attachPlistHoverListeners();
   }
 
   // ── Commit ────────────────────────────────────────────────────────────
   async function commitPackage(){
+    // Disable all interaction modes immediately so map clicks don't fire during commit
+    disableCopyGeo(); disableTracePath(); endPick(); disableTool();
+
     const commitBtn=qs('#btn-commit'),backBtn=qs('#btn-to-place');
     if(commitBtn) commitBtn.disabled=true;
     if(backBtn)   backBtn.disabled=true;
@@ -1224,32 +1554,38 @@ async function main(){
         client_code:cfg.client_code,project_id:cfg.project_id,job_number:cfg.job_number,
         purchase_order_id:cfg.purchase_order_id,workorder_id:cfg.workorder_id,delete_feature:'NO',construction_status:'NA'};
 
+      // Build vault options — handle vault_name and assembly_code separately
       const vaultOpts={};
-      for(const k in vCfg){if(vCfg[k]!==''&&k!=='workflow_status_ovr') vaultOpts[k]=vCfg[k];}
+      for(const k in vCfg){
+        if(vCfg[k]!==''&&k!=='workflow_status_ovr'&&k!=='vault_name') vaultOpts[k]=vCfg[k];
+      }
       if(vCfg.workflow_status_ovr) vaultOpts.workflow_status=vCfg.workflow_status_ovr;
+      const vaultNamePfx=vCfg.vault_name||null; // user prefix, or auto-generate below
 
       const spanOvrAttrs=overrideAttrs(spanOverride);
       const fiberOvrAttrs=overrideAttrs(fiberOverride);
       const segments=buildSegments(pts);
       const segCt=segments.length;
-      const vaultCount=pts.filter(function(p){return !p.noVault;}).length;
+      const newVaultPts=pts.filter(function(p){return !p.noVault;});
+      const vaultCount=newVaultPts.length;
       const spanTotal=createConduit?segCt*conduits.length:0;
       const fiberTotal=createFiber?(fiberSplit?segCt*fibers.length:fibers.length):0;
       const grandTotal=vaultCount+spanTotal+fiberTotal;
       let done=0;
-      function tick(msg){done++;setP(Math.round(done/grandTotal*100),msg);}
+      function tick(msg){done++;setP(Math.round(done/Math.max(grandTotal,1)*100),msg);}
 
       // Vaults
       for(let i=0;i<pts.length;i++){
         if(pts[i].noVault) continue;
-        const attrs=Object.assign({},base,vaultOpts,{vault_name:'Vault_'+Date.now()+'_'+(i+1)});
+        const vname=vaultNamePfx
+          ?(vaultNamePfx+'_'+(log.vaults.length+1))
+          :('Vault_'+Date.now()+'_'+(log.vaults.length+1));
+        const attrs=Object.assign({},base,vaultOpts,{vault_name:vname});
         try {
           const id=await createFeat(vl,pts[i].pt,attrs);
           log.vaults.push(id);
-        } catch(e) {
-          log.errors.push('Vault '+(i+1)+': '+e.message);
-        }
-        tick('Creating vaults\u2026 '+log.vaults.length+'/'+vaultCount);
+        } catch(e) { log.errors.push('Vault '+(i+1)+': '+e.message); }
+        tick('Creating vaults… '+log.vaults.length+'/'+vaultCount);
       }
 
       // Spans
@@ -1267,10 +1603,8 @@ async function main(){
             try {
               const id=await createFeat(sl,geom,attrs);
               log.spans.push(id);
-            } catch(e) {
-              log.errors.push('Span seg '+(si+1)+' row '+(ri+1)+': '+e.message);
-            }
-            tick('Creating spans\u2026 row '+(ri+1)+'/'+conduits.length+', seg '+(si+1)+'/'+segCt);
+            } catch(e) { log.errors.push('Span seg '+(si+1)+' row '+(ri+1)+': '+e.message); }
+            tick('Creating spans… row '+(ri+1)+'/'+conduits.length+', seg '+(si+1)+'/'+segCt);
           }
         }
       }
@@ -1279,53 +1613,53 @@ async function main(){
       if(createFiber){
         for(let ri=0;ri<fibers.length;ri++){
           const rv=readFiber(fibers[ri]);
+          // Extract cable_name and assembly_code; build fibOpts without cable_name
+          // (we compute the final name below with segment suffix if needed)
+          const userCableName=rv.cable_name||null;
           const fibOpts={};
-          for(const k in rv){if(rv[k]!=='') fibOpts[k]=rv[k];}
+          for(const k in rv){if(rv[k]!==''&&k!=='cable_name') fibOpts[k]=rv[k];}
           if(fibOpts.fiber_count)  fibOpts.fiber_count=parseInt(fibOpts.fiber_count);
           if(fibOpts.buffer_count) fibOpts.buffer_count=parseInt(fibOpts.buffer_count);
           if(fiberSplit){
             for(let si=0;si<segments.length;si++){
               const segPts=segments[si];
-              const name='Fiber_'+Date.now()+'_r'+(ri+1)+'_s'+(si+1);
+              const name=userCableName
+                ?(userCableName+'_seg'+(si+1))
+                :('Fiber_'+Date.now()+'_r'+(ri+1)+'_s'+(si+1));
               const geom={type:'polyline',paths:[segPts.map(function(p){return[p.x,p.y];})],spatialReference:segPts[0].spatialReference};
               const attrs=Object.assign({},base,fibOpts,fiberOvrAttrs,{cable_name:name,calculated_length:Geo.totalLen(segPts)});
               try {
                 const id=await createFeat(cl,geom,attrs);
                 log.fibers.push(id);
-              } catch(e) {
-                log.errors.push('Fiber seg '+(si+1)+' row '+(ri+1)+': '+e.message);
-              }
-              tick('Creating fiber\u2026 row '+(ri+1)+'/'+fibers.length+', seg '+(si+1)+'/'+segCt);
+              } catch(e) { log.errors.push('Fiber seg '+(si+1)+' row '+(ri+1)+': '+e.message); }
+              tick('Creating fiber… row '+(ri+1)+'/'+fibers.length+', seg '+(si+1)+'/'+segCt);
             }
           } else {
-            const name='Fiber_'+Date.now()+'_r'+(ri+1);
+            const name=userCableName||('Fiber_'+Date.now()+'_r'+(ri+1));
             const geom={type:'polyline',paths:[pts.map(function(p){return[p.pt.x,p.pt.y];})],spatialReference:pts[0].pt.spatialReference};
             const attrs=Object.assign({},base,fibOpts,fiberOvrAttrs,{cable_name:name,calculated_length:Geo.totalLen(pts.map(function(p){return p.pt;}))});
             try {
               const id=await createFeat(cl,geom,attrs);
               log.fibers.push(id);
-            } catch(e) {
-              log.errors.push('Fiber row '+(ri+1)+': '+e.message);
-            }
-            tick('Creating fiber\u2026 row '+(ri+1)+'/'+fibers.length);
+            } catch(e) { log.errors.push('Fiber row '+(ri+1)+': '+e.message); }
+            tick('Creating fiber… row '+(ri+1)+'/'+fibers.length);
           }
         }
       }
 
-      setP(100,'Done!');
-      clearGL();
+      setP(100,'Done!');clearGL();
       const rvRes=qs('#rv-result');
       if(rvRes){
         if(!log.errors.length){
-          rvRes.innerHTML='<div class="okbx">\u2705 Package created!<br>'
-            +'<strong>'+log.vaults.length+'</strong> vaults &nbsp;\xb7&nbsp; '
-            +'<strong>'+log.spans.length+'</strong> spans &nbsp;\xb7&nbsp; '
+          rvRes.innerHTML='<div class="okbx">✅ Package created!<br>'
+            +'<strong>'+log.vaults.length+'</strong> vaults &nbsp;·&nbsp; '
+            +'<strong>'+log.spans.length+'</strong> spans &nbsp;·&nbsp; '
             +'<strong>'+log.fibers.length+'</strong> fiber cables</div>'
             +'<div class="row" style="margin-top:8px">'
-            +'<button class="btn btn-p" onclick="window.__pkgNewPkg()">&#128230; New Package (same config)</button>'
+            +'<button class="btn btn-p" onclick="window.__pkgNewPkg()">📦 New Package (same config)</button>'
             +'</div>';
         } else {
-          rvRes.innerHTML='<div class="errbx">\u26a0\ufe0f Partial: '+(log.vaults.length+log.spans.length+log.fibers.length)+' created, '+log.errors.length+' failed.<br><br>'+log.errors.map(function(e){return '\u2022 '+e;}).join('<br>')+'</div>';
+          rvRes.innerHTML='<div class="errbx">⚠️ Partial: '+(log.vaults.length+log.spans.length+log.fibers.length)+' created, '+log.errors.length+' failed.<br><br>'+log.errors.map(function(e){return '• '+e;}).join('<br>')+'</div>';
           if(commitBtn) commitBtn.disabled=false;
           if(backBtn)   backBtn.disabled=false;
         }
@@ -1333,7 +1667,7 @@ async function main(){
     } catch(err) {
       setP(0,'Error');
       const rvRes=qs('#rv-result');
-      if(rvRes) rvRes.innerHTML='<div class="errbx">\u274c '+err.message+'</div>';
+      if(rvRes) rvRes.innerHTML='<div class="errbx">❌ '+err.message+'</div>';
       if(commitBtn) commitBtn.disabled=false;
       if(backBtn)   backBtn.disabled=false;
     }
@@ -1349,24 +1683,24 @@ async function main(){
   window.__pkgStartPick=function(){initGL().then(startPick);};
   window.__pkgEndPick=function(){endPick();pickMode=false;render();};
   window.__pkgCancelArc=function(){cancelArc();render();setStatus('Arc cancelled.');};
+  window.__pkgCancelTrace=function(){disableTracePath();setStatus('Trace cancelled.','info');render();};
   window.__pkgLoadTmpl=function(name){applyTemplate(name);};
   window.__pkgDelTmpl=function(name){if(!confirm('Delete template "'+name+'"?'))return;Tmpl.del(name);if(currentTmplName===name)currentTmplName=null;render();};
   window.__pkgDelCd=function(id){saveConduits();conduits=conduits.filter(function(r){return r.id!==id;});const el=qs('#cd-stk');if(el){el.innerHTML=renderConduitStack();initSearchSelects(el);}};
   window.__pkgDelFb=function(id){saveFibers();fibers=fibers.filter(function(r){return r.id!==id;});const el=qs('#fb-stk');if(el){el.innerHTML=renderFiberStack();initSearchSelects(el);}};
-  window.__pkgNewPkg=function(){pts=[];waypointMode=false;cancelArc();bearingLock=false;lockedBearing=null;clearGL();step='place';render();};
+  window.__pkgNewPkg=function(){pts=[];waypointMode=false;cancelArc();disableTracePath();bearingLock=false;lockedBearing=null;clearGL();step='place';render();};
 
   // ── Init ──────────────────────────────────────────────────────────────
-  box.innerHTML='<div class="hdr"><span style="font-size:15px">&#128230;</span><span class="hdr-title">Package Creator v2</span><button class="hdr-close" id="btn-close-init">\u2715</button></div>'
-    +'<div class="body" style="text-align:center;padding:32px;color:#6c7086"><div style="font-size:28px;margin-bottom:10px">\u23f3</div>Loading layer domains\u2026</div>';
+  box.innerHTML='<div class="hdr"><span style="font-size:15px">📦</span><span class="hdr-title">Package Creator v4</span><button class="hdr-close" id="btn-close-init">✕</button></div>'
+    +'<div class="body" style="text-align:center;padding:32px;color:#6c7086"><div style="font-size:28px;margin-bottom:10px">⏳</div>Loading layer domains…</div>';
   qs('#btn-close-init').addEventListener('click',function(){styleEl.remove();document.removeEventListener('click',closeAllDrops);box.remove();});
   makeDraggable();
   try {
-    await loadDomains();
-    render();
-    setStatus('Domains loaded \u2014 '+Object.keys(domains).length+' entries found.','success');
+    await loadDomains();render();
+    setStatus('Domains loaded — '+Object.keys(domains).length+' entries found.','success');
   } catch(err) {
-    qs('.body').innerHTML='<div class="errbx" style="margin:16px">\u274c '+err.message+'</div>';
+    qs('.body').innerHTML='<div class="errbx" style="margin:16px">❌ '+err.message+'</div>';
   }
 }
-main().catch(function(err){alert('Package Creator v2 failed: '+err.message);});
+main().catch(function(err){alert('Package Creator v4 failed: '+err.message);});
 })();
