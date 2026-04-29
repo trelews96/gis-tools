@@ -974,7 +974,7 @@
 
         // ── Locked feature helpers ────────────────────────────────────────────
 
-        async function applyLock(feature, layer, cfg, featureType = 'line') {
+        async function applyLock(feature, layer, cfg, featureType = 'line', explicitPick = false) {
             lockedFeature = { feature, layer, layerConfig: cfg, featureType };
             pickingFeatureMode = false;
             const typeIcon = featureType === 'point' ? '📍' : '〰️';
@@ -996,7 +996,10 @@
                     updateStatus(`🔒 Locked to ${cfg.name}. Preparing…`);
                     const [preFetchedConnected, preFetchedColocated] = await Promise.all([
                         findConnectedLines(feature.geometry),
-                        findColocatedPoints(feature.geometry, getOid(feature))
+                        // If the user explicitly chose this feature from the picker
+                        // (meaning they knew there were others and picked just this one),
+                        // skip co-located detection entirely — don't move the others.
+                        explicitPick ? Promise.resolve([]) : findColocatedPoints(feature.geometry, getOid(feature))
                     ]);
                     lockedFeature.preloaded = { connectedFeatures: preFetchedConnected, colocatedPoints: preFetchedColocated };
 
