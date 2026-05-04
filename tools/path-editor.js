@@ -35,6 +35,9 @@
         let mapClickHandler      = null;
         let filesToUpload        = [];
         let lastSubmittedValues  = null;
+        // Persists textarea heights within a session, keyed by field name.
+        // Cleared on startOver so a fresh session starts without stale sizes.
+        const textareaHeights    = new Map();
 
         function layerKey(layer) {
             return 'L' + String(layer.uid).replace(/\W/g, '_');
@@ -394,8 +397,18 @@
                 sketchViewModel.on('create',async evt=>{
                     if(evt.state!=='complete')return;
                     selectionGraphic=evt.graphic;
-                    if(selectionMode==='polygon')await selectFeaturesInPolygon(selectionGraphic.geometry);
-                    else if(selectionMode==='line')await selectFeaturesAlongLine(selectionGraphic.geometry);
+                    try{
+                        if(selectionMode==='polygon')await selectFeaturesInPolygon(selectionGraphic.geometry);
+                        else if(selectionMode==='line')await selectFeaturesAlongLine(selectionGraphic.geometry);
+                    }catch(err){
+                        updateStatus('Selection error: '+err.message);
+                        console.error('Sketch selection error:',err);
+                        // Reset sketch state so the tool isn't stuck
+                        try{sketchViewModel.cancel();}catch(e){}
+                        if(sketchLayer)try{sketchLayer.removeAll();}catch(e){}
+                        selectionGraphic=null;
+                        $('#clearSelectionBtn').disabled=true;
+                    }
                     $('#clearSelectionBtn').disabled=false;
                 });
                 if(callback)callback();
@@ -468,8 +481,9 @@
         async function selectFeaturesInPolygon(polygon){
             updateStatus('Selecting features in polygon…');
             selectedFeaturesByLayer.clear();
-            // Simplify drawn geometry before querying — reduces vertex count sent to
-            // the server without meaningfully affecting which features are selected.
+            // Load geometryEngine if not already available — same guard as selectFeaturesAlongLine.
+            // Without this, generalize() throws if polygon fires before line has ever run.
+            if(!window.geometryEngine)await new Promise(r=>window.require(['esri/geometry/geometryEngine'],ge=>{window.geometryEngine=ge;r();}));
             const tol=(mapView.extent.width/mapView.width)*2;
             const geom=window.geometryEngine.generalize(polygon,tol,true,'meters')||polygon;
             await queryAllLayers(geom,'intersects',null);
@@ -1082,6 +1096,10 @@
                 const log={timestamp:new Date(),action:'update',layerName:item.layer.title,featureOID:oid,changes:{},success:true};
                 Object.keys(vals).forEach(k=>{const field=item.fields.find(f=>f.name===k);log.changes[k]={fieldAlias:field?(field.alias||field.name):k,oldValue:item.feature.attributes[k],newValue:vals[k]};});
                 editLog.push(log);
+                // Store submitted string values for predictive text on future features
+                item.fields.filter(f=>f.type==='string').forEach(f=>{
+                    if(vals[f.name]!==undefined) saveSuggestion(f.name, vals[f.name]);
+                });
                 if(filesToUpload.length>0)await uploadAttachments(item.layer,item.feature);
                 updateStatus('Feature updated!');currentIndex++;setTimeout(()=>showCurrentFeature(),400);
             }catch(err){updateStatus('Error: '+err.message);alert('Error updating feature: '+err.message);}
@@ -1117,9 +1135,6 @@
             else if(field.type==='integer'||field.type==='small-integer'){input=document.createElement('input');input.type='number';input.step='1';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
             else if(field.type==='double'||field.type==='single'){input=document.createElement('input');input.type='number';input.step='any';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
             else{
-                // Textarea instead of input[type=text] so users can type multi-line
-                // content. Shift+Enter inserts a newline naturally; existing newlines
-                // in the stored value render correctly rather than collapsing to one line.
                 input=document.createElement('textarea');
                 input.rows=3;
                 input.value=currentValue??'';
@@ -1128,11 +1143,50 @@
                 input.dataset.fieldName=field.name;
                 input.dataset.fieldType=field.type;
                 input.style.cssText+='resize:vertical;font-family:inherit;line-height:1.4;';
-                // Auto-expand height to fit existing content on load
-                input.addEventListener('input',()=>{input.style.height='auto';input.style.height=input.scrollHeight+'px';});
-                requestAnimationFrame(()=>{input.style.height='auto';input.style.height=input.scrollHeight+'px';});
+
+                // Auto-expand: grow to fit content but never shrink below a
+                // manually set height. This runs on every keystroke.
+                function autoExpand(){
+                    const stored=textareaHeights.get(field.name);
+                    input.style.height='auto';
+                    const natural=input.scrollHeight;
+                    const target=stored?Math.max(natural,stored):natural;
+                    input.style.height=target+'px';
+                }
+                input.addEventListener('input', autoExpand);
+
+                // Apply stored height or fit to content on first render.
+                requestAnimationFrame(()=>{
+                    const stored=textareaHeights.get(field.name);
+                    if(stored){
+                        // Honour the user's last manual size, then grow if content
+                        // is taller than that saved size.
+                        input.style.height=stored+'px';
+                        if(input.scrollHeight>stored) input.style.height=input.scrollHeight+'px';
+                    } else {
+                        input.style.height='auto';
+                        input.style.height=input.scrollHeight+'px';
+                    }
+                });
+
+                // ResizeObserver captures both manual drags and programmatic
+                // expansions and persists the final height by field name so the
+                // next feature in the queue opens at the same size.
+                const ro=new ResizeObserver(entries=>{
+                    const h=Math.round(entries[0].contentRect.height);
+                    if(h>0) textareaHeights.set(field.name, h);
+                });
+                ro.observe(input);
+                // Clean up observer when the form is replaced by the next feature
+                input.addEventListener('blur', ()=>{}, {once:false});
+                const origRemove=input.remove.bind(input);
+                input.remove=()=>{ ro.disconnect(); origRemove(); };
+
+                container.style.position='relative';
             }
-            container.appendChild(input);return container;
+            container.appendChild(input);
+            if(field.type==='string') attachAutocomplete(input, field.name);
+            return container;
         }
 
         // ── Highlights ────────────────────────────────────────────────────────
@@ -1478,6 +1532,157 @@
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
             toolBox.remove();
             const ps=document.getElementById('peStyles');if(ps)ps.remove();
+        }
+
+        // ── Predictive text / autocomplete ───────────────────────────────────
+        const AC_KEY = fn => `pe_ac_${fn.toLowerCase()}`;
+        const AC_CAP = 25;
+        const AC_MIN_STORE = 4;
+
+        function getSuggestions(fieldName){
+            try{ return JSON.parse(localStorage.getItem(AC_KEY(fieldName))||'[]'); }
+            catch(e){ return []; }
+        }
+        function saveSuggestion(fieldName, value){
+            if(!value||value.trim().length<AC_MIN_STORE) return;
+            try{
+                let list=getSuggestions(fieldName).filter(s=>s!==value);
+                list.unshift(value);
+                list.length=Math.min(list.length,AC_CAP);
+                localStorage.setItem(AC_KEY(fieldName),JSON.stringify(list));
+            }catch(e){ console.warn('Autocomplete save failed:',e); }
+        }
+        function removeSuggestion(fieldName, value){
+            try{
+                const list=getSuggestions(fieldName).filter(s=>s!==value);
+                localStorage.setItem(AC_KEY(fieldName),JSON.stringify(list));
+            }catch(e){}
+        }
+
+        function attachAutocomplete(textarea, fieldName){
+            let activeIdx=-1;
+            let visible=[];
+
+            // Append to body and use fixed positioning so the dropdown can render
+            // to the left of the toolbox without being clipped by overflow:hidden.
+            const dropdown=document.createElement('div');
+            dropdown.style.cssText=[
+                'display:none',
+                'position:fixed',
+                'width:280px',
+                'background:#1e1e2e',
+                'border:1px solid #cba6f7',
+                'border-radius:8px',
+                'z-index:999999',
+                'max-height:220px',
+                'overflow-y:auto',
+                'box-shadow:-4px 4px 20px rgba(0,0,0,.7)',
+                'font:13px/1.4 "Segoe UI",Arial,sans-serif',
+            ].join(';');
+            document.body.appendChild(dropdown);
+
+            function reposition(){
+                const r=textarea.getBoundingClientRect();
+                // Anchor top to the textarea, nudge down if it would clip above viewport
+                const top=Math.max(8, r.top);
+                // Place to the left of the toolbox with an 8px gap
+                const right=window.innerWidth-r.left+8;
+                dropdown.style.top=top+'px';
+                dropdown.style.right=right+'px';
+                // If dropdown would overflow below viewport, shift it up
+                const dropH=dropdown.offsetHeight;
+                const maxTop=window.innerHeight-dropH-8;
+                if(top>maxTop) dropdown.style.top=Math.max(8,maxTop)+'px';
+            }
+
+            // Reposition on peBody scroll so it tracks the textarea as user scrolls
+            const peBody=document.getElementById('peBody');
+            function onScroll(){ if(dropdown.style.display!=='none') reposition(); }
+            if(peBody) peBody.addEventListener('scroll',onScroll);
+
+            function getMatches(text){
+                const all=getSuggestions(fieldName);
+                if(!text||!text.trim()) return all.slice(0,10);
+                const lower=text.toLowerCase();
+                return all.filter(s=>s.toLowerCase().includes(lower));
+            }
+            function setActive(idx){
+                activeIdx=idx;
+                dropdown.querySelectorAll('.pe-ac-item').forEach((el,i)=>{
+                    el.style.background=i===idx?'#2a1f3d':'transparent';
+                });
+                if(idx>=0){const el=dropdown.querySelectorAll('.pe-ac-item')[idx];if(el)el.scrollIntoView({block:'nearest'});}
+            }
+            function select(val){
+                textarea.value=val;
+                textarea.style.height='auto';
+                textarea.style.height=textarea.scrollHeight+'px';
+                hide();
+                textarea.focus();
+                textarea.setSelectionRange(val.length,val.length);
+            }
+            function hide(){
+                dropdown.style.display='none';
+                activeIdx=-1; visible=[];
+            }
+            function show(matches){
+                visible=matches; activeIdx=-1; dropdown.innerHTML='';
+                if(!matches.length){ hide(); return; }
+
+                const hdr=document.createElement('div');
+                hdr.style.cssText='padding:5px 10px;font-size:10px;color:#6c7086;border-bottom:1px solid #313244;display:flex;justify-content:space-between;align-items:center;';
+                hdr.innerHTML=`<span style="color:#cba6f7;font-weight:700;">💡 ${fieldName}</span><span>↑↓ • Enter • Esc</span>`;
+                dropdown.appendChild(hdr);
+
+                matches.forEach((s,i)=>{
+                    const item=document.createElement('div');
+                    item.className='pe-ac-item';
+                    item.style.cssText='display:flex;align-items:flex-start;padding:8px 10px;cursor:pointer;border-bottom:1px solid #313244;gap:8px;transition:background .1s;';
+
+                    const txt=document.createElement('span');
+                    txt.style.cssText='flex:1;font-size:12px;color:#cdd6f4;white-space:pre-wrap;word-break:break-word;line-height:1.4;';
+                    txt.textContent=s;
+
+                    const rm=document.createElement('button');
+                    rm.type='button'; rm.textContent='✕'; rm.title='Remove suggestion';
+                    rm.style.cssText='background:none;border:none;color:#6c7086;cursor:pointer;font-size:11px;padding:2px 5px;flex-shrink:0;border-radius:3px;line-height:1;transition:color .1s;';
+                    rm.addEventListener('mouseenter',()=>rm.style.color='#f38ba8');
+                    rm.addEventListener('mouseleave',()=>rm.style.color='#6c7086');
+                    rm.addEventListener('mousedown',e=>{
+                        e.preventDefault(); e.stopPropagation();
+                        removeSuggestion(fieldName,s);
+                        show(getMatches(textarea.value));
+                    });
+
+                    item.addEventListener('mouseenter',()=>setActive(i));
+                    item.addEventListener('mousedown',e=>{ e.preventDefault(); select(s); });
+                    item.appendChild(txt); item.appendChild(rm);
+                    dropdown.appendChild(item);
+                });
+
+                dropdown.style.display='block';
+                reposition();
+            }
+
+            textarea.addEventListener('focus',()=>{ const m=getMatches(textarea.value); if(m.length) show(m); });
+            textarea.addEventListener('input',()=>show(getMatches(textarea.value)));
+            textarea.addEventListener('keydown',e=>{
+                if(dropdown.style.display==='none') return;
+                if(e.key==='ArrowDown'){ e.preventDefault(); setActive(Math.min(activeIdx+1,visible.length-1)); }
+                else if(e.key==='ArrowUp'){ e.preventDefault(); setActive(Math.max(activeIdx-1,-1)); }
+                else if(e.key==='Enter'&&activeIdx>=0){ e.preventDefault(); select(visible[activeIdx]); }
+                else if(e.key==='Escape'){ e.preventDefault(); hide(); }
+            });
+            textarea.addEventListener('blur',()=>setTimeout(hide,150));
+
+            // Clean up the body-level dropdown and scroll listener when the
+            // textarea is removed from the DOM (i.e. when advancing features).
+            const origRemove=textarea.remove.bind(textarea);
+            textarea.remove=()=>{
+                dropdown.remove();
+                if(peBody) peBody.removeEventListener('scroll',onScroll);
+                origRemove();
+            };
         }
 
         // ── Event Wiring ──────────────────────────────────────────────────────
