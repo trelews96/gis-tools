@@ -1,4 +1,4 @@
-// tools/remote-qc-workflow.js — Remote QC Workflow Tool v3
+// tools/remote-qc-workflow.js — Remote QC Workflow Tool v4
 (function () {
   try {
     if (window.gisToolHost.activeTools.has('remote-qc-workflow')) return;
@@ -9,16 +9,14 @@
     const mapView = utils.getMapView();
     const Z = 99999;
 
-    // AMD module loader
     const loadModule = path => new Promise((res, rej) => require([path], res, rej));
 
     // ── State ─────────────────────────────────────────────────────────
     let mode = 'new_qc';
     let qcQueue = [], currentIndex = 0, currentPhase = 'query';
-    let gigTypes = [], workOrderOptions = [], poOptions = [];
+    let gigTypes = [], workOrderOptions = [], poOptions = [], jobOptions = [];
     let sessionLog = [], sessionStartTime = null;
     let featureStartTime = null, timerInterval = null, highlightHandle = null;
-    // Spatial filter
     let spatialMode = 'none'; // 'none' | 'screen' | 'drawn'
     let drawnGeometry = null, sketchLayer = null, sketchVM = null, isDrawing = false;
 
@@ -80,7 +78,6 @@
       #rqcw .attr-grid { display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:11px; }
       #rqcw .attr-key { color:#64748b;font-weight:600;white-space:nowrap; }
       #rqcw .attr-val { color:#1e293b; }
-      /* Chip radio group */
       #rqcw .chip-group { display:flex;gap:6px;flex-wrap:wrap; }
       #rqcw .chip { display:inline-flex;align-items:center;gap:4px;padding:5px 11px;border:1.5px solid #cbd5e1;
         border-radius:99px;cursor:pointer;font-size:11px;font-weight:600;color:#64748b;background:#fff;
@@ -89,19 +86,19 @@
       #rqcw .chip.active       { border-color:#2563eb;background:#eff6ff;color:#2563eb; }
       #rqcw .chip.active-green { border-color:#16a34a;background:#f0fdf4;color:#15803d; }
       #rqcw .chip input { display:none; }
-      /* Draw panel */
       #rqcw .draw-panel { margin-top:8px;padding:10px 12px;background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:6px; }
       #rqcw .draw-hint  { font-size:11px;color:#0369a1;margin-top:7px;display:flex;align-items:center;gap:6px;line-height:1.4; }
       #rqcw .draw-hint.drawing { color:#dc2626; }
       #rqcw .draw-hint.done    { color:#16a34a; }
       #rqcw .pulse { width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0;animation:qcPulse 1s ease-in-out infinite; }
       @keyframes qcPulse { 0%,100%{opacity:1}50%{opacity:.25} }
-      /* Filter badge */
       #rqcw .filter-badge { display:inline-flex;align-items:center;padding:2px 8px;background:#dbeafe;color:#1d4ed8;border-radius:99px;font-size:10px;font-weight:700; }
-      /* Quick-date strip */
       #rqcw .qd-strip { display:flex;gap:4px;margin-top:5px; }
       #rqcw .qd-strip .btn { padding:3px 9px;font-size:10px;color:#475569;border-color:#e2e8f0; }
       #rqcw .qd-strip .btn:hover { background:#f1f5f9; }
+      /* Drag handle cursor on header */
+      #rqcwHeader { cursor:grab; user-select:none; }
+      #rqcwHeader.dragging { cursor:grabbing; }
     `;
     document.head.appendChild(css);
 
@@ -117,7 +114,7 @@
 
     box.innerHTML = `
       <!-- Header -->
-      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);padding:14px 16px;
+      <div id="rqcwHeader" style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);padding:14px 16px;
                   border-radius:12px 12px 0 0;display:flex;align-items:center;justify-content:space-between;
                   position:sticky;top:0;z-index:10;">
         <div>
@@ -150,7 +147,7 @@
               <button class="btn btn-ghost btn-sm" id="btnClearFilters">✕ Clear All</button>
             </div>
 
-            <!-- Two-column filter grid -->
+            <!-- Two-column filter grid: Work Order + Purchase Order -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
 
               <!-- Work Order -->
@@ -172,6 +169,15 @@
               </div>
 
             </div><!-- /grid -->
+
+            <!-- Job Number — full width row -->
+            <div style="margin-bottom:10px;">
+              <label class="field-label">Job Number</label>
+              <div style="position:relative;">
+                <input type="text" id="jobSearch" placeholder="Search…" autocomplete="off">
+                <div id="jobDrop" class="dropdown-list" style="display:none;"></div>
+              </div>
+            </div>
 
             <!-- GIG Type (clear mode only) -->
             <div id="gigTypeWrap" style="margin-bottom:10px;display:none;">
@@ -377,6 +383,43 @@
     document.body.appendChild(box);
     const $ = sel => box.querySelector(sel);
 
+    // ── Drag-to-move ───────────────────────────────────────────────────
+    {
+      const header = $('#rqcwHeader');
+      let dragging = false, offX = 0, offY = 0;
+
+      header.addEventListener('mousedown', e => {
+        if (e.target.id === 'btnClose') return;
+        dragging = true;
+        const rect = box.getBoundingClientRect();
+        offX = e.clientX - rect.left;
+        offY = e.clientY - rect.top;
+        // Switch from right-anchored to left-anchored positioning
+        box.style.right = 'auto';
+        box.style.left  = rect.left + 'px';
+        box.style.top   = rect.top  + 'px';
+        header.classList.add('dragging');
+        e.preventDefault();
+      });
+
+      document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        let nx = e.clientX - offX;
+        let ny = e.clientY - offY;
+        // Clamp within viewport
+        nx = Math.max(0, Math.min(nx, window.innerWidth  - box.offsetWidth));
+        ny = Math.max(0, Math.min(ny, window.innerHeight - box.offsetHeight));
+        box.style.left = nx + 'px';
+        box.style.top  = ny + 'px';
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        header.classList.remove('dragging');
+      });
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
     function setStatus(msg, type = 'idle') {
       $('#statusMsg').textContent = msg;
@@ -395,6 +438,7 @@
       let n = 0;
       if ($('#woSearch').dataset.code)  n++;
       if ($('#poSearch').dataset.code)  n++;
+      if ($('#jobSearch').dataset.code) n++;
       if ($('#gigTypeFilter').value)    n++;
       if ($('#dateFrom').value || $('#dateTo').value) n++;
       if (spatialMode !== 'none')       n++;
@@ -423,6 +467,7 @@
         await loadGigTypes();
         await loadWorkOrders();
         await loadPurchaseOrders();
+        await loadJobNumbers();
         setStatus('Ready — configure filters and query.', 'ok');
       } catch (e) { setStatus('Init error: ' + e.message, 'error'); console.error(e); }
     }
@@ -441,11 +486,10 @@
       });
     }
 
-    // Generic: collect distinct values that actually exist in visible feature layers.
-    // Domain (if present) is used only as a name-lookup — values not in the data are excluded.
+    // Collect distinct field values that exist in visible feature layers.
     async function collectFieldValues(fieldName) {
       const layers = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
-      const map = new Map(); // code → display name
+      const map = new Map();
 
       for (const lyr of layers.items) {
         try {
@@ -454,13 +498,11 @@
           const fld = lyr.fields.find(f => f.name.toLowerCase() === fieldName.toLowerCase());
           if (!fld) continue;
 
-          // Build a code→name lookup from the domain (if available)
           const domainLookup = new Map();
           if (fld.domain?.type === 'coded-value') {
             fld.domain.codedValues.forEach(cv => domainLookup.set(cv.code, cv.name));
           }
 
-          // Always query for values that are actually in the data
           const q = lyr.createQuery();
           q.where = '1=1'; q.returnDistinctValues = true;
           q.outFields = [fld.name]; q.returnGeometry = false;
@@ -469,7 +511,6 @@
           res.features.forEach(f => {
             const code = f.attributes[fld.name];
             if (code == null || code === '') return;
-            // Prefer the domain display name; fall back to the raw code value
             const name = domainLookup.get(code) ?? code;
             map.set(code, name);
           });
@@ -481,8 +522,9 @@
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     }
 
-    async function loadWorkOrders()    { workOrderOptions = await collectFieldValues('workorder_id');       setupDropdown('#woSearch', '#woDrop', workOrderOptions); }
-    async function loadPurchaseOrders(){ poOptions         = await collectFieldValues('purchase_order_id'); setupDropdown('#poSearch', '#poDrop', poOptions); }
+    async function loadWorkOrders()    { workOrderOptions = await collectFieldValues('workorder_id');       setupDropdown('#woSearch',  '#woDrop',  workOrderOptions); }
+    async function loadPurchaseOrders(){ poOptions         = await collectFieldValues('purchase_order_id'); setupDropdown('#poSearch',  '#poDrop',  poOptions); }
+    async function loadJobNumbers()    { jobOptions        = await collectFieldValues('job_number');        setupDropdown('#jobSearch', '#jobDrop', jobOptions); }
 
     function setupDropdown(inputSel, dropSel, options) {
       const inp = $(inputSel), dd = $(dropSel);
@@ -620,6 +662,20 @@
       }
     }
 
+    // ── Layer candidate list ───────────────────────────────────────────
+    // When a spatial filter is active we query ALL feature layers (ignoring
+    // scale-dependent visibility) so results aren't silently dropped just
+    // because the user is zoomed out past a layer's visible scale range.
+    // When no spatial filter is set we respect the current visible set as
+    // before, keeping behaviour identical to the original for attribute-only queries.
+    function getCandidateLayers() {
+      const useSpatial = spatialMode === 'screen' || spatialMode === 'drawn';
+      if (useSpatial) {
+        return mapView.map.allLayers.filter(l => l.type === 'feature');
+      }
+      return mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+    }
+
     // ── Run query ──────────────────────────────────────────────────────
     async function runQuery() {
       try {
@@ -634,15 +690,18 @@
 
     async function queryNewFeatures() {
       const clauses = ["workflow_stage = 'OSP_CONST'", "workflow_status = 'CMPLT'"];
-      const woCode = $('#woSearch').dataset.code, poCode = $('#poSearch').dataset.code;
-      if (woCode) clauses.push(`workorder_id = '${woCode.replace(/'/g,"''")}'`);
-      if (poCode) clauses.push(`purchase_order_id = '${poCode.replace(/'/g,"''")}'`);
+      const woCode  = $('#woSearch').dataset.code;
+      const poCode  = $('#poSearch').dataset.code;
+      const jobCode = $('#jobSearch').dataset.code;
+      if (woCode)  clauses.push(`workorder_id = '${woCode.replace(/'/g,"''")}'`);
+      if (poCode)  clauses.push(`purchase_order_id = '${poCode.replace(/'/g,"''")}'`);
+      if (jobCode) clauses.push(`job_number = '${jobCode.replace(/'/g,"''")}'`);
       const df = $('#dateFrom').value, dt = $('#dateTo').value;
       if (df) clauses.push(`installation_date >= ${new Date(df).getTime()}`);
       if (dt) clauses.push(`installation_date <= ${new Date(dt + 'T23:59:59').getTime()}`);
       const where = clauses.join(' AND '), sort = $('#sortOrder').value;
 
-      const layers = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+      const layers = getCandidateLayers();
       qcQueue = [];
       const counts = {}, errs = [];
 
@@ -680,10 +739,14 @@
       await gigLyr.load();
 
       const clauses = ["gig_status = 'CLEAR'"];
-      const woCode = $('#woSearch').dataset.code, poCode = $('#poSearch').dataset.code, gtCode = $('#gigTypeFilter').value;
-      if (woCode) clauses.push(`workorder_id = '${woCode.replace(/'/g,"''")}'`);
-      if (poCode) clauses.push(`purchase_order_id = '${poCode.replace(/'/g,"''")}'`);
-      if (gtCode) clauses.push(`gig_type = '${gtCode.replace(/'/g,"''")}'`);
+      const woCode  = $('#woSearch').dataset.code;
+      const poCode  = $('#poSearch').dataset.code;
+      const jobCode = $('#jobSearch').dataset.code;
+      const gtCode  = $('#gigTypeFilter').value;
+      if (woCode)  clauses.push(`workorder_id = '${woCode.replace(/'/g,"''")}'`);
+      if (poCode)  clauses.push(`purchase_order_id = '${poCode.replace(/'/g,"''")}'`);
+      if (jobCode) clauses.push(`job_number = '${jobCode.replace(/'/g,"''")}'`);
+      if (gtCode)  clauses.push(`gig_type = '${gtCode.replace(/'/g,"''")}'`);
       const df = $('#dateFrom').value, dt = $('#dateTo').value;
       if (df) clauses.push(`created_date >= ${new Date(df).getTime()}`);
       if (dt) clauses.push(`created_date <= ${new Date(dt + 'T23:59:59').getTime()}`);
@@ -794,15 +857,17 @@
       if (isNew) {
         rows.push(['GIS ID', item.gisId], ['Layer', item.layer.title],
           ['Work Order', a.workorder_id || 'N/A']);
+        if (a.job_number)        rows.push(['Job Number', a.job_number]);
         if (a.purchase_order_id) rows.push(['Purchase Order', a.purchase_order_id]);
         if (a.installation_date) rows.push(['Install Date', new Date(a.installation_date).toLocaleDateString()]);
-        if (a.supervisor) rows.push(['Supervisor', a.supervisor]);
-        if (a.crew)       rows.push(['Crew', a.crew]);
+        if (a.supervisor)        rows.push(['Supervisor', a.supervisor]);
+        if (a.crew)              rows.push(['Crew', a.crew]);
       } else {
         rows.push(['Origin GlobalID', item.gisId], ['GIG Type', item.gigTypeName],
           ['Work Order', a.workorder_id || 'N/A']);
+        if (a.job_number)        rows.push(['Job Number', a.job_number]);
         if (a.purchase_order_id) rows.push(['Purchase Order', a.purchase_order_id]);
-        if (a.created_date) rows.push(['Created', new Date(a.created_date).toLocaleDateString()]);
+        if (a.created_date)      rows.push(['Created', new Date(a.created_date).toLocaleDateString()]);
         rows.push(['GIG Status', a.gig_status || 'N/A']);
       }
       $('#featureInfo').innerHTML = rows.map(([k, v]) => `<span class="attr-key">${k}:</span><span class="attr-val">${v}</span>`).join('');
@@ -943,7 +1008,6 @@
         try {
           if (lyr === sketchLayer) continue;
           await lyr.load();
-          // GlobalID is a system-managed field — skip layers that don't have one
           if (!lyr.globalIdField) continue;
           const q = lyr.createQuery();
           q.where = `${lyr.globalIdField} = '${globalId}'`;
@@ -955,7 +1019,7 @@
           const ur  = up.updateFeatureResults?.[0];
           if (!(ur?.success===true||(ur?.success===undefined&&ur?.error===null)))
             throw new Error(ur?.error?.message || 'Originating feature update failed');
-          return; // matched exactly one record — done
+          return;
         } catch (e) { throw e; }
       }
       setStatus(`⚠ Originating feature GlobalID "${globalId}" not found in visible layers`, 'error');
@@ -1037,7 +1101,7 @@
       if (highlightHandle) { highlightHandle.remove(); highlightHandle=null; }
       mapView.popup?.close();
       if (clearForm) {
-        ['#woSearch','#poSearch','#dateFrom','#dateTo'].forEach(s => { $(s).value=''; delete $(s).dataset.code; });
+        ['#woSearch','#poSearch','#jobSearch','#dateFrom','#dateTo'].forEach(s => { $(s).value=''; delete $(s).dataset.code; });
         $('#sortOrder').value='desc'; $('#gigTypeFilter').value='';
         $('#queryResults').style.display='none'; $('#btnRefresh').disabled=true;
         setSpatialMode('none'); clearSketchGraphics();
@@ -1075,7 +1139,7 @@
     $('#btnExport').onclick   = exportReport;
     $('#btnStartOver').onclick = () => resetSession(true);
     $('#btnClearFilters').onclick = () => {
-      ['#woSearch','#poSearch','#dateFrom','#dateTo'].forEach(s => { $(s).value=''; delete $(s).dataset.code; });
+      ['#woSearch','#poSearch','#jobSearch','#dateFrom','#dateTo'].forEach(s => { $(s).value=''; delete $(s).dataset.code; });
       $('#gigTypeFilter').value=''; $('#sortOrder').value='desc';
       setSpatialMode('none'); clearSketchGraphics();
       $('#queryResults').style.display='none'; updateFilterBadge();
