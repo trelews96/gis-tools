@@ -813,7 +813,46 @@
 
         // ── Layer query helpers ───────────────────────────────────────────────
 
-        async function findNearestPointFeature(mapPt, excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mapPt.x,mapPt.y,tol,mapView.spatialReference),results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let nearest=null,minD=Infinity;for(const{cfg,features}of results)for(const f of features){if(!f.geometry)continue;const oid=getOid(f);if(oid!=null&&excludeOids.has(oid))continue;const d=calcDist(mapPt,f.geometry);if(d<minD){minD=d;nearest={feature:f,layer:cfg.layer,layerConfig:cfg,distance:d,geometry:f.geometry};}}return(nearest&&nearest.distance<tol)?nearest:null;}catch(e){console.error("findNearestPointFeature error:",e);return null;}}
+        async function findNearestPointFeature(mapPt, excludeOids=new Set()){
+            try{
+                const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
+
+                // Primary: hitTest on currently-rendered client-side graphics.
+                // Fast, no network round-trip, works on anything visible on screen.
+                if(mapView.hitTest){
+                    const screenPt=mapView.toScreen(mapPt);
+                    try{
+                        const hit=await mapView.hitTest(screenPt,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});
+                        for(const r of hit.results){
+                            if(r.graphic?.geometry?.type!=='point')continue;
+                            const cfg=pointLayers.find(p=>p.id===r.layer.layerId);
+                            if(!cfg)continue;
+                            const oid=getOid(r.graphic);
+                            if(oid!=null&&excludeOids.has(oid))continue;
+                            const geom=r.graphic.geometry,d=calcDist(mapPt,geom);
+                            if(d<tol)return{feature:r.graphic,layer:r.layer,layerConfig:cfg,distance:d,geometry:geom};
+                        }
+                    }catch(ignore){}
+                }
+
+                // Fallback: spatial query — catches features not yet rendered or whose
+                // symbol is smaller than the hit-test click radius.
+                const ext=makeExt(mapPt.x,mapPt.y,tol,mapView.spatialReference);
+                const results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{
+                    try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}
+                    catch(e){return{cfg,features:[]};}
+                }));
+                let nearest=null,minD=Infinity;
+                for(const{cfg,features}of results)for(const f of features){
+                    if(!f.geometry)continue;
+                    const oid=getOid(f);
+                    if(oid!=null&&excludeOids.has(oid))continue;
+                    const d=calcDist(mapPt,f.geometry);
+                    if(d<minD){minD=d;nearest={feature:f,layer:cfg.layer,layerConfig:cfg,distance:d,geometry:f.geometry};}
+                }
+                return(nearest&&nearest.distance<tol)?nearest:null;
+            }catch(e){console.error("findNearestPointFeature error:",e);return null;}
+        }
         async function findNearestLineVertex(dst,excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(dst.x,dst.y,tol,mapView.spatialReference),results=await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["objectid"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let nearest=null,minD=Infinity,nearestCfg=null;for(const{cfg,features}of results)for(const f of features){if(excludeOids.has(getOid(f))||!f.geometry?.paths)continue;for(const path of f.geometry.paths)for(const coord of path){const d=calcDist(dst,{x:coord[0],y:coord[1]});if(d<minD){minD=d;nearest={x:coord[0],y:coord[1],spatialReference:dst.spatialReference};nearestCfg=cfg;}}}return(nearest&&minD<tol)?{geometry:nearest,layerConfig:nearestCfg,snapType:'lineVertex'}:null;}catch(e){console.error("findNearestLineVertex error:",e);return null;}}
         async function findNearestPointOnLine(dst,excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(dst.x,dst.y,tol,mapView.spatialReference),results=await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['objectid'],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let nearest=null,minD=Infinity,nearestCfg=null;for(const{cfg,features}of results){for(const f of features){if(excludeOids.has(getOid(f))||!f.geometry?.paths)continue;const seg=findClosestSeg(f.geometry,dst);if(seg&&seg.distance<minD&&seg.distance<tol){minD=seg.distance;nearest={x:seg.point.x,y:seg.point.y,spatialReference:dst.spatialReference};nearestCfg=cfg;}}}return nearest?{geometry:nearest,layerConfig:nearestCfg,snapType:'lineSegment'}:null;}catch(e){console.error('findNearestPointOnLine error:',e);return null;}}
         async function findSnapTarget(dst,excludeOids=new Set()){const[ps,vs,ls]=await Promise.all([findNearestPointFeature(dst,excludeOids),findNearestLineVertex(dst,excludeOids),findNearestPointOnLine(dst,excludeOids)]);const candidates=[ps?{...ps,snapType:'pointFeature',dist:calcDist(dst,ps.geometry)}:null,vs?{...vs,dist:calcDist(dst,vs.geometry)}:null,ls?{...ls,dist:calcDist(dst,ls.geometry)}:null].filter(Boolean);if(!candidates.length)return null;return candidates.reduce((best,c)=>c.dist<best.dist?c:best);}
