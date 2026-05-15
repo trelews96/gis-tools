@@ -70,6 +70,12 @@
                 watchFields: ['sequential_in', 'sequential_out'],
                 targetField: 'sequential_qty',
                 compute: (vals) => Math.abs(vals['sequential_in'] - vals['sequential_out'])
+            },
+            {
+                layerMatch: 'slackloop',
+                watchFields: ['sequential_in', 'sequential_out'],
+                targetField: 'sequential_qty',
+                compute: (vals) => Math.abs(vals['sequential_in'] - vals['sequential_out'])
             }
         ];
 
@@ -1088,6 +1094,8 @@
                 updateStatus('Updating feature…');
                 const oidField=getObjectIdField(item.feature),oid=item.feature.attributes[oidField];
                 const vals=collectFormValues($('#editFormContainer'));
+                const errs=validateFieldLengths(vals,item.fields);
+                if(errs.length){updateStatus('Value too long — see alert');alert('Cannot submit — field length exceeded:\n\n'+errs.join('\n'));return;}
                 const result=await item.layer.applyEdits({updateFeatures:[{attributes:{[oidField]:oid,...vals}}]});
                 const ur=result.updateFeatureResults?.[0];
                 const ok=ur?.success===true||(ur?.success===undefined&&ur?.error===null&&(ur?.objectId||ur?.globalId));
@@ -1189,6 +1197,19 @@
             return container;
         }
 
+        function validateFieldLengths(vals, fields){
+            // Catches values that exceed the field's defined length before they
+            // hit the database and return a cryptic SQLSTATE=22001 error.
+            const errors=[];
+            fields.forEach(f=>{
+                if(f.type==='string'&&f.length&&vals[f.name]!==undefined){
+                    const len=String(vals[f.name]).length;
+                    if(len>f.length) errors.push(`"${f.alias||f.name}" is ${len} chars — max is ${f.length}`);
+                }
+            });
+            return errors;
+        }
+
         // ── Highlights ────────────────────────────────────────────────────────
         function clearHighlights(){highlightGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});highlightGraphics=[];const tr=[];mapView.graphics.forEach(g=>{if(!g.symbol)return;const s=g.symbol;if((s.type==='simple-marker'&&s.size>=20)||(s.type==='simple-line'&&s.width>=8)||(s.type==='simple-fill'&&(s.color?.[3]>=0.3||(s.outline?.width>=4))))tr.push(g);});tr.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});mapView.popup?.close();}
         function highlightFeature(feature,showPopup){
@@ -1227,6 +1248,8 @@
             const el=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0),cfg=el[currentBulkLayerIndex];
             const vals=collectFormValues($('#bulkEditFormContainer'));
             if(!Object.keys(vals).length){alert('Enter at least one value.');return;}
+            const errs=validateFieldLengths(vals,cfg.fields);
+            if(errs.length){alert('Cannot apply — field length exceeded:\n\n'+errs.join('\n'));return;}
             if(!confirm(`Apply to ${cfg.features.length} features?`))return;
             updateStatus('Applying bulk edit…');$('#applyBulkEditBtn').disabled=true;
 
@@ -1234,9 +1257,26 @@
                 try{
                     return await cfg.layer.applyEdits({updateFeatures:batch});
                 }catch(err){
-                    if(attempt>=3) throw err;
-                    const delay=500*Math.pow(2,attempt); // 500ms, 1s, 2s
-                    updateStatus(`Server busy — retrying in ${delay/1000}s…`);
+                    const status=err.httpStatus??err.status;
+
+                    // Data and auth errors will never succeed on retry — surface immediately.
+                    // Only retry on genuine transient capacity signals (429, 503, no status).
+                    const isDataError=(err.messages??[]).some(m=>
+                        /DBMS error|SQLSTATE|too long|constraint|invalid value|not null|unique/i.test(m)
+                    );
+                    const isAuthError=status===401||status===403||status===404;
+                    const isTransient=status===429||status===503||(!status&&err.name==='request:timeout');
+
+                    if(isDataError){
+                        // Extract the meaningful part of the DB message for the user
+                        const dbMsg=(err.messages??[]).find(m=>/DBMS error|SQLSTATE/i.test(m))||err.message;
+                        const friendly=dbMsg.match(/ERROR:\s*([^\n\[]+)/i)?.[1]?.trim()??dbMsg;
+                        throw new Error(`Data error — ${friendly}`);
+                    }
+                    if(isAuthError||!isTransient||attempt>=3) throw err;
+
+                    const delay=500*Math.pow(2,attempt);
+                    updateStatus(`Server busy — retrying in ${delay/1000}s… (attempt ${attempt+1}/3)`);
                     await new Promise(r=>setTimeout(r,delay));
                     return applyWithRetry(batch,attempt+1);
                 }
@@ -1614,6 +1654,10 @@
                 if(idx>=0){const el=dropdown.querySelectorAll('.pe-ac-item')[idx];if(el)el.scrollIntoView({block:'nearest'});}
             }
             function select(val){
+                // Respect maxLength when applying programmatically — browser only
+                // enforces maxLength for keyboard input, not .value assignment.
+                const maxLen=parseInt(textarea.maxLength);
+                if(maxLen>0&&val.length>maxLen) val=val.slice(0,maxLen);
                 textarea.value=val;
                 textarea.style.height='auto';
                 textarea.style.height=textarea.scrollHeight+'px';
