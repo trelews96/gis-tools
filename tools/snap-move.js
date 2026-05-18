@@ -285,28 +285,45 @@
                         mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
                         boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
                     }
-                } else if(boreSplitStep===2&&boreSplitVtx1){
-                    if(nearest.pathIdx!==boreSplitVtx1.pathIdx)return;
-                    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx];
-                    const i1=boreSplitVtx1.vtxIdx;
-                    const borePts=[];
-                    const endSeg=nearest.segIdx>=i1?nearest.segIdx:i1;
-                    for(let i=i1;i<=endSeg&&i<path.length;i++){borePts.push([path[i][0],path[i][1]]);}
-                    if(nearest.segIdx>=i1){borePts.push([nearest.point.x,nearest.point.y]);}
-                    else{borePts.push([path[i1][0],path[i1][1]]);}
-                    if(borePts.length>=2){
-                        const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference};
-                        const boreLen=geodeticLength(borePreviewGeom);
-                        addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);
-                        addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);
-                        updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');
-                        if(nearest.distance<tol){
-                            mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
-                            boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
-                            showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');
-                        }
-                    }
-                }
+                // Replace the entire  } else if(boreSplitStep===2&&boreSplitVtx1){  block with this:
+
+} else if(boreSplitStep===2&&boreSplitVtx1){
+    if(nearest.pathIdx!==boreSplitVtx1.pathIdx)return;
+    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx];
+    const i1=boreSplitVtx1.vtxIdx;
+    const borePts=[];
+
+    // Determine whether cursor is forward or backward along the path from vtx1
+    const goForward = nearest.segIdx >= i1;
+
+    if(goForward){
+        // Cursor is ahead of vtx1: collect vtx1 → nearest cursor position
+        for(let i=i1; i<=nearest.segIdx && i<path.length; i++){
+            borePts.push([path[i][0],path[i][1]]);
+        }
+        borePts.push([nearest.point.x,nearest.point.y]);
+    } else {
+        // Cursor is behind vtx1: collect cursor position → vtx1 (reversed so
+        // the geometry still reads start→end along the path direction)
+        borePts.push([nearest.point.x,nearest.point.y]);
+        for(let i=nearest.segIdx+1; i<=i1 && i<path.length; i++){
+            borePts.push([path[i][0],path[i][1]]);
+        }
+    }
+
+    if(borePts.length>=2){
+        const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference};
+        const boreLen=geodeticLength(borePreviewGeom);
+        addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);
+        addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);
+        updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');
+        if(nearest.distance<tol){
+            mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
+            boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
+            showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');
+        }
+    }
+}
             });
         }
 
