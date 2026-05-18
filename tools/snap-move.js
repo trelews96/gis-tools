@@ -254,7 +254,7 @@
         delCtxMenu.innerHTML = `
             <div style="padding:6px 10px;background:#4a0a0a;color:#fca5a5;font-weight:bold;font-size:11px;display:flex;align-items:center;justify-content:space-between;">
                 <span>🗑️ Features: <span id="delCtxCount">0</span></span>
-                <button id="delCtxSelectAll" style="padding:1px 7px;background:rgba(255,255,255,.12);color:#fca5a5;border:1px solid rgba(255,150,150,.35);border-radius:3px;font-size:10px;cursor:pointer;font-family:inherit;">✓ All</button>
+                <button id="delCtxSelectAll" style="padding:1px 7px;background:rgba(255,255,255,.12);color:#fca5a5;border:1px solid rgba(150,150,150,.35);border-radius:3px;font-size:10px;cursor:pointer;font-family:inherit;">✓ All</button>
             </div>
             <div id="delCtxList" style="max-height:200px;overflow-y:auto;border-bottom:1px solid #2d2550;background:#0f0d1a;"></div>
             <div style="display:flex;flex-direction:column;background:#0f0d1a;">
@@ -299,7 +299,7 @@
         let extentWatchHandle = null, highlightDebounceTimer = null;
         let pickerPopup = null, pickerHoverGraphic = null;
         let hotkeyHandler = null, ctrlKeyUpHandler = null, flipMode = false;
-        let ctrlSnapSuppressed = false; // true while Ctrl is held to temporarily override snap
+        let ctrlSnapSuppressed = false;
 
         // ── Arc mode state ────────────────────────────────────────────────────
         let arcMode = false, arcWaitingForMidpoint = false;
@@ -311,15 +311,13 @@
         let arcRightClickHandler = null, arcContextMenuHandler = null;
 
         // ── Move preview state ────────────────────────────────────────────────
-        // movePreviewGraphics: array of dashed preview line graphics.
-        // Vertex mode  → one graphic per coincident line, showing full modified geometry.
-        // Point mode   → one graphic per connected line (endpoint stretched to cursor);
-        //                falls back to a single rubber-band line if no connected data yet.
-        // moveSnapGraphic: crosshair at the nearest cache snap target.
 
-        let movePreviewGraphics = [];    // array — supports multiple simultaneous preview lines
-        let movePreviewHandler  = null;  // esri pointer-move handle
-        let moveSnapGraphic     = null;  // crosshair indicator
+        let movePreviewGraphics = [];
+        let movePreviewHandler  = null;
+        let moveSnapGraphic     = null;
+        // FIX (Bug 1): generation counter prevents stale async hitTest results from
+        // updating the preview after the mouse has already moved on.
+        let previewSnapGeneration = 0;
 
         let copyMode = false, copyPlacementMode = false;
         let cutMode = false, cutPreviewMode = false, cutProcessing = false;
@@ -437,22 +435,18 @@
 
         // ── Move preview: full-geometry rubber-band ───────────────────────────
 
-        // Shared preview line symbol — dashed purple, consistent with arc preview.
         const PREVIEW_SYM = { type:'simple-line', color:[167,139,250,0.75], width:1.5, style:'dash' };
 
-        /** Remove all current preview line graphics. */
         function clearMovePreviewGraphics() {
             for (const g of movePreviewGraphics) mapView.graphics.remove(g);
             movePreviewGraphics = [];
         }
 
-        /** Add one dashed preview line to the map and track it. */
         function addMovePreviewGraphic(geometry) {
             mapView.graphics.add({ geometry, symbol: PREVIEW_SYM });
             movePreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length - 1));
         }
 
-        /** Crosshair at the nearest cache-based snap target. */
         function showMoveSnapIndicator(point, snapType) {
             hideMoveSnapIndicator();
             if (!point) return;
@@ -462,37 +456,29 @@
         }
         function hideMoveSnapIndicator() { if(moveSnapGraphic){mapView.graphics.remove(moveSnapGraphic);moveSnapGraphic=null;} }
 
-        /** Nearest snap target from in-memory cache — synchronous, zero network. */
         function findNearestSnapInCache(mp, excludeOids=new Set()) {
             const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
             let nearest=null,minD=Infinity,snapType='lineVertex';
             for(const[key,geom]of vertexGeomCache){if(!geom?.paths)continue;const oid=Number(key.split(':')[1]);if(excludeOids.has(oid)||excludeOids.has(String(oid)))continue;for(const path of geom.paths)for(const coord of path){const d=calcDist(mp,{x:coord[0],y:coord[1]});if(d<minD&&d<tol){minD=d;nearest={x:coord[0],y:coord[1],spatialReference:geom.spatialReference};snapType='lineVertex';}}const seg=findClosestSeg(geom,mp);if(seg&&seg.distance<minD&&seg.distance<tol){minD=seg.distance;nearest={x:seg.point.x,y:seg.point.y,spatialReference:geom.spatialReference};snapType='lineSegment';}}
-            return nearest?{geometry:nearest,snapType}:null;
+            return nearest?{geometry:nearest,snapType,dist:minD}:null;
         }
 
         /**
-         * Start the live move preview. Registers a pointer-move handler that
-         * redraws preview geometry on every mouse event.
+         * Start the live move preview.
          *
-         * options.mode           'point' | 'vertex'
-         * options.coincidentLines  (vertex mode) array of { feature, vertex } — available immediately
-         * options.connectedLines   (point mode)  array of connected-line infos — if already known
-         * options.connectedPromise (point mode)  Promise that resolves to connected-line infos
+         * FIX (Bug 1): The handler is now async and also performs a hitTest against
+         * point layers on every mouse-move event.  A per-call generation counter
+         * (`previewSnapGeneration`) ensures that a stale hitTest result arriving after
+         * the mouse has moved is silently discarded — only the most-recent event ever
+         * updates the UI.
          *
-         * Vertex mode  — Redraws each coincident line with the selected vertex
-         *               moved to the cursor, showing both sides of the move in real time.
-         *
-         * Point mode   — If connected lines are available, redraws each with its
-         *               endpoint stretched to the cursor, showing exactly how the
-         *               network will deform. Falls back to a single rubber-band
-         *               line while the background query is still in flight, or for
-         *               standalone points with no connections.
+         * Point-feature snaps are given priority over line-vertex / segment snaps from
+         * the cache (matching the priority used in `findSnapTarget` at click time), so
+         * the preview indicator is now consistent with where the move will actually land.
          */
         function startMovePreview(fromPt, excludeOids=new Set(), options={}) {
             stopMovePreview();
 
-            // For non-locked points the connected line query fires in the background;
-            // store the result when it arrives so pointer-move can use it.
             let resolvedConnected = options.connectedLines || null;
             if (options.connectedPromise) {
                 options.connectedPromise
@@ -502,26 +488,58 @@
 
             movePreviewHandler = mapView.on('pointer-move', e => {
                 if (!waitingForDestination) { stopMovePreview(); return; }
+                // Increment generation so any in-flight async hitTest from the previous
+                // event knows it is stale and should not update the indicator.
+                const gen = ++previewSnapGeneration;
                 const mp = mapView.toMap({ x: e.x, y: e.y });
                 let toPt = { x: mp.x, y: mp.y, spatialReference: mp.spatialReference || mapView.spatialReference };
 
-                // Cache-only snap (synchronous)
-                if (snappingEnabled && vertexGeomCache.size > 0) {
-                    const snap = findNearestSnapInCache(mp, excludeOids);
-                    if (snap) {
-                        toPt = { x: snap.geometry.x, y: snap.geometry.y, spatialReference: snap.geometry.spatialReference || mapView.spatialReference };
-                        showMoveSnapIndicator(toPt, snap.snapType);
+                // ── Synchronous cache snap (line vertices / segments) ─────────
+                // This runs instantly and determines toPt for the rubber-band draw
+                // below — no async work, no lag.
+                let cacheSnap = null;
+                if (snappingEnabled) {
+                    const tol = POINT_SNAP_TOLERANCE * (mapView.resolution || 1);
+                    cacheSnap = vertexGeomCache.size > 0 ? findNearestSnapInCache(mp, excludeOids) : null;
+                    if (cacheSnap) {
+                        toPt = { x: cacheSnap.geometry.x, y: cacheSnap.geometry.y, spatialReference: cacheSnap.geometry.spatialReference || mapView.spatialReference };
+                        showMoveSnapIndicator(toPt, cacheSnap.snapType);
                     } else {
                         hideMoveSnapIndicator();
                     }
+
+                    // ── Async point-feature snap (indicator only) ─────────────
+                    // Fire-and-forget: does NOT block the rubber-band draw below.
+                    // Only updates the snap indicator crosshair when it resolves.
+                    // The actual move (handleMoveToDestination) always re-queries
+                    // with full priority logic at click time, so this is purely visual.
+                    const ptLayerObjs = pointLayers.map(p => p.layer).filter(l => l?.loaded);
+                    const cacheDist = cacheSnap ? cacheSnap.dist : Infinity;
+                    if (ptLayerObjs.length > 0 && cacheDist > tol * 0.25) {
+                        mapView.hitTest({ x: e.x, y: e.y }, { include: ptLayerObjs })
+                            .then(hit => {
+                                if (gen !== previewSnapGeneration) return; // stale — mouse already moved
+                                for (const r of hit.results) {
+                                    if (r.graphic?.geometry?.type !== 'point') continue;
+                                    const oid = getOid(r.graphic);
+                                    if (oid != null && excludeOids.has(oid)) continue;
+                                    const d = calcDist(mp, r.graphic.geometry);
+                                    if (d < tol && d <= cacheDist) {
+                                        // Point feature is within range and competitive —
+                                        // upgrade the indicator to show the point target.
+                                        showMoveSnapIndicator(r.graphic.geometry, 'pointFeature');
+                                    }
+                                    break;
+                                }
+                            })
+                            .catch(() => {});
+                    }
                 }
 
+                // ── Draw rubber-band immediately (synchronous) ────────────────
                 clearMovePreviewGraphics();
 
                 if (options.mode === 'vertex' && options.coincidentLines?.length) {
-                    // ── Vertex mode ──────────────────────────────────────────
-                    // Redraw each coincident line with the vertex at toPt.
-                    // This shows both adjacent segments updating simultaneously.
                     for (const li of options.coincidentLines) {
                         const geom = li.feature.geometry;
                         if (!geom?.paths) continue;
@@ -532,9 +550,6 @@
                     }
 
                 } else if (options.mode === 'point' && resolvedConnected?.length) {
-                    // ── Point mode with connected lines ──────────────────────
-                    // Stretch each connected line's endpoint to toPt so the user
-                    // can see exactly how the network will deform.
                     for (const info of resolvedConnected) {
                         const geom = info.feature.geometry;
                         if (!geom?.paths) continue;
@@ -546,9 +561,6 @@
                     }
 
                 } else {
-                    // ── Fallback: rubber-band line ────────────────────────────
-                    // Used for standalone points (no connections) or while the
-                    // background connected-line query is still in flight.
                     addMovePreviewGraphic({
                         type: 'polyline',
                         paths: [[[fromPt.x, fromPt.y], [toPt.x, toPt.y]]],
@@ -558,8 +570,10 @@
             });
         }
 
-        /** Tear down the preview handler and remove all preview graphics. */
         function stopMovePreview() {
+            // Incrementing the generation counter invalidates any async hitTest callbacks
+            // that are still in flight from a previous pointer-move event.
+            previewSnapGeneration++;
             if (movePreviewHandler) { movePreviewHandler.remove(); movePreviewHandler = null; }
             clearMovePreviewGraphics();
             hideMoveSnapIndicator();
@@ -639,8 +653,6 @@
                     break;
                 case 'x':case 'X': e.preventDefault();if(lockedFeature)releaseLockedFeature();break;
                 case 'Control':
-                    // Hold Ctrl to temporarily suppress snapping; release to restore.
-                    // Only activates when snap is currently ON — won't override a manual OFF.
                     if (snappingEnabled && !ctrlSnapSuppressed) {
                         ctrlSnapSuppressed = true;
                         snappingEnabled = false;
@@ -714,18 +726,10 @@
         function findAllCutInfos(lineGeom,snapPt,tolerance){if(!lineGeom?.paths?.length)return[];const hits=[];for(let pi=0;pi<lineGeom.paths.length;pi++){const path=lineGeom.paths[pi];for(let si=0;si<path.length-1;si++){const a={x:path[si][0],y:path[si][1]},b={x:path[si+1][0],y:path[si+1][1]},res=closestPtOnSeg(snapPt,a,b);if(res.distance<=tolerance)hits.push({pathIdx:pi,segIdx:si,dist:res.distance});}}return hits.sort((a,b)=>a.pathIdx-b.pathIdx||a.segIdx-b.segIdx);}
         function splitLineMulti(lineGeom,sortedCutInfos,snapPt){
             if(!sortedCutInfos.length)return[];
-
-            // Deduplicate consecutive-segment hits on the same path.
-            // When the snap point is near a vertex, BOTH bordering segments fall within
-            // the cut tolerance (each has that vertex as its closest point). Processing
-            // both produces a phantom stub segment [snap → vertex → snap] between the
-            // two real output segments. Removing any entry whose predecessor is on the
-            // same path at segIdx-1 collapses each near-vertex double-hit into one cut.
             const cutInfos=sortedCutInfos.filter((ci,idx,arr)=>{
                 const prev=arr[idx-1];
                 return!(prev&&prev.pathIdx===ci.pathIdx&&prev.segIdx===ci.segIdx-1);
             });
-
             const snap=[snapPt.x,snapPt.y],cutsByPath=new Map();
             for(const ci of cutInfos){if(!cutsByPath.has(ci.pathIdx))cutsByPath.set(ci.pathIdx,[]);cutsByPath.get(ci.pathIdx).push(ci.segIdx);}
             const outputSegments=[];let currentPaths=[],currentVerts=[];
@@ -793,14 +797,11 @@
                     if(feature.geometry?.clone)originalGeometries.set(getOid(feature)??'locked',feature.geometry.clone());
                     for(const info of preFetchedConnected)if(info.feature.geometry?.clone)originalGeometries.set(info.feature.attributes.objectid,info.feature.geometry.clone());
                     if(cancelBtn)cancelBtn.disabled=false;
-
-                    // Preview: stretch connected lines to cursor; data already available
                     startMovePreview(
                         {x:feature.geometry.x,y:feature.geometry.y,spatialReference:feature.geometry.spatialReference},
                         new Set([getOid(feature),...preFetchedColocated.map(p=>getOid(p.feature))].filter(Boolean)),
                         {mode:'point', connectedLines:preFetchedConnected}
                     );
-
                     const connNote=preFetchedConnected.length?` · ${preFetchedConnected.length} connected`:'',colocNote=preFetchedColocated.length?` · ${preFetchedColocated.length} co-located will move`:'';
                     updateStatus(`🔒 Locked to ${cfg.name}${connNote}${colocNote}. Click destination.`);
                 }else{updateStatus(`🔒 Locked to ${cfg.name}. Enable the tool then click the destination.`);}
@@ -813,16 +814,17 @@
 
         // ── Layer query helpers ───────────────────────────────────────────────
 
-        async function findNearestPointFeature(mapPt, excludeOids=new Set()){
+        // FIX (Bug 1): Accept an optional screenPt to use directly for hitTest instead of
+        // converting mapPt back to screen coordinates — avoiding floating-point drift from
+        // the double toMap → toScreen round-trip that could shift the hitTest click area.
+        async function findNearestPointFeature(mapPt, excludeOids=new Set(), screenPt=null){
             try{
                 const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
-
-                // Primary: hitTest on currently-rendered client-side graphics.
-                // Fast, no network round-trip, works on anything visible on screen.
                 if(mapView.hitTest){
-                    const screenPt=mapView.toScreen(mapPt);
+                    // Use the caller-supplied screen coordinates when available.
+                    const htPt = screenPt || mapView.toScreen(mapPt);
                     try{
-                        const hit=await mapView.hitTest(screenPt,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});
+                        const hit=await mapView.hitTest(htPt,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});
                         for(const r of hit.results){
                             if(r.graphic?.geometry?.type!=='point')continue;
                             const cfg=pointLayers.find(p=>p.id===r.layer.layerId);
@@ -834,9 +836,7 @@
                         }
                     }catch(ignore){}
                 }
-
-                // Fallback: spatial query — catches features not yet rendered or whose
-                // symbol is smaller than the hit-test click radius.
+                // Fallback: spatial query
                 const ext=makeExt(mapPt.x,mapPt.y,tol,mapView.spatialReference);
                 const results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{
                     try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}
@@ -853,13 +853,107 @@
                 return(nearest&&nearest.distance<tol)?nearest:null;
             }catch(e){console.error("findNearestPointFeature error:",e);return null;}
         }
+
         async function findNearestLineVertex(dst,excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(dst.x,dst.y,tol,mapView.spatialReference),results=await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["objectid"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let nearest=null,minD=Infinity,nearestCfg=null;for(const{cfg,features}of results)for(const f of features){if(excludeOids.has(getOid(f))||!f.geometry?.paths)continue;for(const path of f.geometry.paths)for(const coord of path){const d=calcDist(dst,{x:coord[0],y:coord[1]});if(d<minD){minD=d;nearest={x:coord[0],y:coord[1],spatialReference:dst.spatialReference};nearestCfg=cfg;}}}return(nearest&&minD<tol)?{geometry:nearest,layerConfig:nearestCfg,snapType:'lineVertex'}:null;}catch(e){console.error("findNearestLineVertex error:",e);return null;}}
         async function findNearestPointOnLine(dst,excludeOids=new Set()){try{const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(dst.x,dst.y,tol,mapView.spatialReference),results=await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['objectid'],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let nearest=null,minD=Infinity,nearestCfg=null;for(const{cfg,features}of results){for(const f of features){if(excludeOids.has(getOid(f))||!f.geometry?.paths)continue;const seg=findClosestSeg(f.geometry,dst);if(seg&&seg.distance<minD&&seg.distance<tol){minD=seg.distance;nearest={x:seg.point.x,y:seg.point.y,spatialReference:dst.spatialReference};nearestCfg=cfg;}}}return nearest?{geometry:nearest,layerConfig:nearestCfg,snapType:'lineSegment'}:null;}catch(e){console.error('findNearestPointOnLine error:',e);return null;}}
-        async function findSnapTarget(dst,excludeOids=new Set()){const[ps,vs,ls]=await Promise.all([findNearestPointFeature(dst,excludeOids),findNearestLineVertex(dst,excludeOids),findNearestPointOnLine(dst,excludeOids)]);const candidates=[ps?{...ps,snapType:'pointFeature',dist:calcDist(dst,ps.geometry)}:null,vs?{...vs,dist:calcDist(dst,vs.geometry)}:null,ls?{...ls,dist:calcDist(dst,ls.geometry)}:null].filter(Boolean);if(!candidates.length)return null;return candidates.reduce((best,c)=>c.dist<best.dist?c:best);}
+
+        // FIX (Bug 1): Point features are given priority over line vertices/segments.
+        // In practice the user is almost always trying to snap a line endpoint onto an
+        // existing node (a point feature), not onto the nearest line vertex — especially
+        // when a vertex happens to sit right next to that node.  We only fall back to
+        // a vertex/segment snap when it is dramatically closer (< 30 % of the point
+        // feature distance), which prevents an adjacent line vertex from "stealing" the
+        // snap away from an intended point-node target.
+        //
+        // Also accepts an optional screenPt to pass through to findNearestPointFeature.
+        async function findSnapTarget(dst, excludeOids=new Set(), screenPt=null){
+            const[ps,vs,ls]=await Promise.all([
+                findNearestPointFeature(dst,excludeOids,screenPt),
+                findNearestLineVertex(dst,excludeOids),
+                findNearestPointOnLine(dst,excludeOids)
+            ]);
+            const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);
+            const psD=ps?calcDist(dst,ps.geometry):Infinity;
+            const vsD=vs?calcDist(dst,vs.geometry):Infinity;
+            const lsD=ls?calcDist(dst,ls.geometry):Infinity;
+
+            // Point feature found within tolerance — give it priority.
+            if(ps&&psD<tol){
+                // Only yield to a vertex if it is dramatically closer (< 30 % of point dist).
+                if(vsD<psD*0.3)return{...vs,snapType:vs.snapType||'lineVertex'};
+                return{...ps,snapType:'pointFeature'};
+            }
+
+            // No point feature — take the closest vertex or segment snap.
+            const candidates=[
+                vs?{...vs,dist:vsD}:null,
+                ls?{...ls,dist:lsD}:null
+            ].filter(Boolean);
+            if(!candidates.length)return null;
+            return candidates.reduce((best,c)=>c.dist<best.dist?c:best);
+        }
+
         async function findPointFeatureAtLocation(sp){try{if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="point"){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(cfg)return{feature:r.graphic,layer:r.layer,layerConfig:cfg};}}const mp=mapView.toMap(sp),tol=SNAP_TOLERANCE*(mapView.resolution||1),ext=makeExt(mp.x,mp.y,tol,mapView.spatialReference),results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let best=null,bestD=Infinity;for(const{cfg,features}of results)for(const f of features){if(!f.geometry)continue;const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best={feature:f,layer:cfg.layer,layerConfig:cfg};}}return best;}catch(e){console.error("findPointFeatureAtLocation error:",e);return null;}}
         async function findColocatedPoints(ptGeom,primaryOid){const ext=makeExt(ptGeom.x,ptGeom.y,COLOC_BUF_M,ptGeom.spatialReference),results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:50});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}})),coloc=[];for(const{cfg,features}of results)for(const f of features){if(!f.geometry)continue;const oid=getOid(f);if(primaryOid!=null&&oid===primaryOid)continue;if(calcDist(ptGeom,f.geometry)<=COLOC_BUF_M)coloc.push({feature:f,layer:cfg.layer,layerConfig:cfg});}return coloc;}
         async function findCoincidentLinesForVertexCreation(sp,mp){try{const bufM=10/3.28084,lines=[];if(lockedFeature?.featureType==='line'){const seg=findClosestSeg(lockedFeature.feature.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,segmentInfo:seg});return lines;}if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="polyline"){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(cfg){const seg=findClosestSeg(r.graphic.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,segmentInfo:seg});}}}if(lines.length===0){const buf={type:"polygon",spatialReference:mp.spatialReference,rings:[[[mp.x-bufM,mp.y-bufM],[mp.x+bufM,mp.y-bufM],[mp.x+bufM,mp.y+bufM],[mp.x-bufM,mp.y+bufM],[mp.x-bufM,mp.y-bufM]]]};await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:buf,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});for(const f of res.features){const seg=findClosestSeg(f.geometry,mp);if(seg&&seg.distance<=bufM)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,segmentInfo:seg});}}catch(e){console.error(`findCoincidentLines on ${cfg.name}:`,e);}}))}return lines;}catch(e){console.error("findCoincidentLinesForVertexCreation error:",e);return[];}}
-        async function findCoincidentLineVertices(sp){try{const clickPt=mapView.toMap(sp),snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),lines=[];if(lockedFeature?.featureType==='line'){const v=findClosestVertex(lockedFeature.feature.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,vertex:v});return lines;}if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});for(const r of hit.results)if(r.graphic?.geometry?.type==="polyline"){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(cfg){const v=findClosestVertex(r.graphic.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,vertex:v});}}}if(lines.length===0){const ext=makeExt(clickPt.x,clickPt.y,snapTol,mapView.spatialReference);await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});for(const f of res.features){const v=findClosestVertex(f.geometry,clickPt);if(v&&v.distance<snapTol)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,vertex:v});}}catch(e){console.error(`findCoincidentLineVertices on ${cfg.name}:`,e);}}))}if(lines.length>0){const ref=lines[0].vertex.coordinates;return lines.filter(li=>calcDist(ref,li.vertex.coordinates)<snapTol);}return[];}catch(e){console.error("findCoincidentLineVertices error:",e);return[];}}
+
+        // FIX (Bug 2): Two changes to the coincidence grouping at the end of this function:
+        //
+        // 1. Sort results by vertex.distance before picking the reference — this ensures
+        //    we use the vertex that is genuinely closest to the click as the anchor, not
+        //    whichever happened to come back first from hitTest.
+        //
+        // 2. Use a small coincidence buffer (a few map-coordinate units / ~1 ft) instead
+        //    of the full snap tolerance for the "is this vertex at the same location?"
+        //    check.  Using snapTol here was wrong: two vertices that are both within 45px
+        //    of the click but on opposite sides could be up to 90px apart from each other
+        //    and therefore fail the filter — silently dropping a coincident line.
+        async function findCoincidentLineVertices(sp){
+            try{
+                const clickPt=mapView.toMap(sp),snapTol=POINT_SNAP_TOLERANCE*(mapView.resolution||1),lines=[];
+                if(lockedFeature?.featureType==='line'){
+                    const v=findClosestVertex(lockedFeature.feature.geometry,clickPt);
+                    if(v&&v.distance<snapTol)lines.push({feature:lockedFeature.feature,layer:lockedFeature.layer,layerConfig:lockedFeature.layerConfig,vertex:v});
+                    return lines;
+                }
+                if(mapView.hitTest){
+                    const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==="feature")});
+                    for(const r of hit.results)if(r.graphic?.geometry?.type==="polyline"){
+                        const cfg=lineLayers.find(l=>l.id===r.layer.layerId);
+                        if(cfg){
+                            const v=findClosestVertex(r.graphic.geometry,clickPt);
+                            if(v&&v.distance<snapTol)lines.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,vertex:v});
+                        }
+                    }
+                }
+                if(lines.length===0){
+                    const ext=makeExt(clickPt.x,clickPt.y,snapTol,mapView.spatialReference);
+                    await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{
+                        try{
+                            const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:"intersects",returnGeometry:true,outFields:["*"],maxRecordCount:50});
+                            for(const f of res.features){
+                                const v=findClosestVertex(f.geometry,clickPt);
+                                if(v&&v.distance<snapTol)lines.push({feature:f,layer:cfg.layer,layerConfig:cfg,vertex:v});
+                            }
+                        }catch(e){console.error(`findCoincidentLineVertices on ${cfg.name}:`,e);}
+                    }))
+                }
+                if(lines.length>0){
+                    // Sort so the vertex closest to the actual click becomes the reference.
+                    lines.sort((a,b)=>a.vertex.distance-b.vertex.distance);
+                    const ref=lines[0].vertex.coordinates;
+                    // Use a tight coincidence tolerance — vertices that share the same node
+                    // should be within a foot (~0.3 m) of each other in well-maintained data.
+                    // This avoids the bug where snapTol was used here: two vertices that are
+                    // both within 45px of the click but on opposite sides can be 90px apart
+                    // from each other, causing the second one to be incorrectly filtered out.
+                    const coincTol=Math.max(COLOC_BUF_M*3,(mapView.resolution||1)*2);
+                    return lines.filter(li=>calcDist(ref,li.vertex.coordinates)<=coincTol);
+                }
+                return[];
+            }catch(e){console.error("findCoincidentLineVertices error:",e);return[];}
+        }
+
         async function findConnectedLines(ptGeom){
             const connected=[],bufM=10/3.28084,
             buf={type:"polygon",spatialReference:ptGeom.spatialReference,rings:[[[ptGeom.x-bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y-bufM]]]},
@@ -868,7 +962,7 @@
                     const res=await cfg.layer.queryFeatures({
                         geometry:buf,spatialRelationship:"intersects",returnGeometry:true,
                         outFields:["*"],maxRecordCount:100,
-                        outSpatialReference:mapView.spatialReference   // ← match ptGeom's SR
+                        outSpatialReference:mapView.spatialReference
                     });
                     return{cfg,features:res.features};
                 }catch(e){return{cfg,features:[]};}
@@ -906,8 +1000,6 @@
                         if (info.feature.geometry?.clone) originalGeometries.set(info.feature.attributes.objectid, info.feature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
                     waitingForDestination = true;
-
-                    // Connected lines already preloaded — preview stretches them immediately
                     startMovePreview(
                         { x: selectedFeature.geometry.x, y: selectedFeature.geometry.y, spatialReference: selectedFeature.geometry.spatialReference },
                         new Set([getOid(selectedFeature), ...colocatedPoints.map(p => getOid(p.feature))].filter(Boolean)),
@@ -927,9 +1019,6 @@
                         originalGeometries.set(selectedFeature.attributes.objectid, selectedFeature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
                     waitingForDestination = true;
-
-                    // Fire connected-line query in background; preview upgrades once it resolves.
-                    // Falls back to rubber-band until then (or permanently for standalone points).
                     const connectedPromise = findConnectedLines(selectedFeature.geometry);
                     startMovePreview(
                         { x: selectedFeature.geometry.x, y: selectedFeature.geometry.y, spatialReference: selectedFeature.geometry.spatialReference },
@@ -953,14 +1042,11 @@
                         if (li.feature.geometry?.clone) originalGeometries.set(li.feature.attributes.objectid, li.feature.geometry.clone());
                     if (cancelBtn) cancelBtn.disabled = false;
                     waitingForDestination = true;
-
-                    // Preview: redraw all coincident lines with vertex at cursor
                     startMovePreview(
                         { x: selectedVertex.coordinates.x, y: selectedVertex.coordinates.y, spatialReference: selectedFeature.geometry.spatialReference },
                         new Set(results.map(r => getOid(r.feature)).filter(Boolean)),
                         { mode: 'vertex', coincidentLines: results }
                     );
-
                     const vType  = results[0].vertex.isEndpoint ? "endpoint" : "vertex";
                     const snap   = results[0].vertex.isEndpoint ? " (will snap)" : "";
                     const lock   = lockedFeature?.featureType === 'line' ? " [🔒]" : "";
@@ -974,26 +1060,34 @@
         async function handleMoveToDestination(event) {
             if (!selectedFeature) { updateStatus("❌ No feature selected."); return; }
             let dst = mapView.toMap({ x: event.x, y: event.y });
-            stopMovePreview();  // clear preview immediately on destination click
+            // Keep the original screen coords for the snap hitTest (avoids toScreen round-trip).
+            const evtScreen = { x: event.x, y: event.y };
+            stopMovePreview();
             updateStatus("Moving feature…");
             try {
                 if (currentMode === "point") {
                     const isLockedPoint = lockedFeature?.featureType === 'point';
                     if (isLockedPoint) { colocatedPoints = lockedFeature.preloaded?.colocatedPoints || colocatedPoints; connectedFeatures = []; }
                     else { updateStatus("Moving feature — finding connected features…"); [connectedFeatures, colocatedPoints] = await Promise.all([findConnectedLines(selectedFeature.geometry), findColocatedPoints(selectedFeature.geometry, getOid(selectedFeature))]); }
-                    const excludeOids=new Set([getOid(selectedFeature),...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean)),snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids):null;
+                    const excludeOids=new Set([getOid(selectedFeature),...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean));
+                    // FIX (Bug 1): pass original screen coords so findNearestPointFeature
+                    // uses them directly for the hitTest instead of re-converting from map.
+                    const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;
                     if(snapInfo)dst=toTypedPoint(snapInfo.geometry,mapView.spatialReference);
                     if(!isLockedPoint)await updateConnectedLines(dst);
                     const upd=selectedFeature.clone();upd.geometry=dst;if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});if(isLockedPoint)syncLockedFeature(dst);
                     const colocByLayer=new Map();for(const cp of colocatedPoints){const coUpd=cp.feature.clone();coUpd.geometry=dst;const lid=layerKey(cp.layer,cp.layerConfig);if(!colocByLayer.has(lid))colocByLayer.set(lid,{layer:cp.layer,features:[],names:new Set()});colocByLayer.get(lid).features.push(coUpd);colocByLayer.get(lid).names.add(cp.layerConfig.name);}
                     let colocOk=0,colocFail=0;for(const{layer,features}of colocByLayer.values()){try{await layer.applyEdits({updateFeatures:features});colocOk+=features.length;}catch(e){console.error('co-located batch error:',e);colocFail+=features.length;}}
-                    const movedLines=isLockedPoint?0:connectedFeatures.length;let msg=`✅ Moved ${selectedLayerConfig.name}`;if(colocOk>0){const allNames=[...new Set([...colocByLayer.values()].flatMap(v=>[...v.names]))];msg+=` + ${colocOk} co-located (${allNames.join(', ')})`;}if(colocFail>0)msg+=` · ${colocFail} co-located failed`;if(movedLines>0)msg+=` + ${movedLines} line(s)`;msg+='!';if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='pointFeature'?`point in ${snapInfo.layerConfig.name}`:snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig.name}`:`line in ${snapInfo.layerConfig.name}`}.`;updateStatus(msg);
+                    const movedLines=isLockedPoint?0:connectedFeatures.length;let msg=`✅ Moved ${selectedLayerConfig.name}`;if(colocOk>0){const allNames=[...new Set([...colocByLayer.values()].flatMap(v=>[...v.names]))];msg+=` + ${colocOk} co-located (${allNames.join(', ')})`;}if(colocFail>0)msg+=` · ${colocFail} co-located failed`;if(movedLines>0)msg+=` + ${movedLines} line(s)`;msg+='!';if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='pointFeature'?`point in ${snapInfo.layerConfig?.name??'layer'}`:snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig?.name??'layer'}`:`line in ${snapInfo.layerConfig?.name??'layer'}`}.`;updateStatus(msg);
                 } else {
-                    const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean)),snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids):null;if(snapInfo)dst=snapInfo.geometry;
+                    const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));
+                    // FIX (Bug 1): pass original screen coords here too.
+                    const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;
+                    if(snapInfo)dst=snapInfo.geometry;
                     const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;
                     for(const li of selectedCoincidentLines){try{const newPaths=clonePaths(li.feature.geometry),path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name,newGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){console.error("handleMoveToDestination line prep error:",e);}}
                     const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}let ok=0;for(const{layer,updates:batch}of byLayer.values()){try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}catch(e){console.error("applyEdits error:",e);}}for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}
-                    let msg=`✅ Moved ${selectedVertex.isEndpoint?"endpoint":"vertex"} on ${ok} line(s)!`;if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig.name}`:`point in ${snapInfo.layerConfig.name}`}.`;updateStatus(msg);
+                    let msg=`✅ Moved ${selectedVertex.isEndpoint?"endpoint":"vertex"} on ${ok} line(s)!`;if(snapInfo)msg+=` Snapped to ${snapInfo.snapType==='lineVertex'?`vertex in ${snapInfo.layerConfig?.name??'layer'}`:`point in ${snapInfo.layerConfig?.name??'layer'}`}.`;updateStatus(msg);
                 }
                 selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();if(cancelBtn)cancelBtn.disabled=true;if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
             } catch(e) { console.error("handleMoveToDestination error:", e); updateStatus("❌ Error moving feature."); }
