@@ -18,6 +18,9 @@
         const ARROW_LABEL_OFFSET_PX = 18, DELETE_FIELD = 'delete_feature', MAX_QUERIED_EXTENTS = 10, MAX_UNDO = 10;
         const BORE_LAYER_ID = 42050, BORE_INSTALL_FIELD = 'installation_method', BORE_INSTALL_VALUE = 'BORE';
         const MIN_BORE_LEN_FT = 5, BORE_CLICK_TOL_MULT = 3;
+        const RIGHT_ANGLE_TOL_DEG = 8;   // ±degrees from 90° that still triggers
+        const RIGHT_ANGLE_ARC_PX  = 14;  // arc radius in screen pixels
+
         function makeExt(cx,cy,half,sr){return{type:'extent',xmin:cx-half,ymin:cy-half,xmax:cx+half,ymax:cy+half,spatialReference:sr};}
 
         let pointLayers=[],lineLayers=[],polygonLayers=[];
@@ -147,7 +150,7 @@
         let arcHighlightGraphics=[],arcPreviewGraphic=null,arcMoveHandler=null;
         let arcAnchorMode=false,arcAnchorPt=null,arcAnchorSegInfo=null,arcAnchorGraphic=null,arcActiveSide='left';
         let arcRightClickHandler=null,arcContextMenuHandler=null;
-        let movePreviewGraphics=[],movePreviewHandler=null,moveSnapGraphic=null,previewSnapGeneration=0;
+        let movePreviewGraphics=[],movePreviewHandler=null,moveSnapGraphic=null,moveRightAngleGraphics=[],previewSnapGeneration=0;
         let copyMode=false,copyPlacementMode=false;
         let cutMode=false,cutPreviewMode=false,cutProcessing=false;
         let cutSelectedPoint=null,cutSelectedPointLayer=null,cutLinesToCut=[];
@@ -211,13 +214,94 @@
         function showArcAnchorGraphic(pt){clearArcAnchorGraphic();mapView.graphics.add({geometry:{type:'point',x:pt.x,y:pt.y,spatialReference:pt.spatialReference||mapView.spatialReference},symbol:{type:'simple-marker',style:'diamond',color:[167,139,250,1],size:13,outline:{color:[255,255,255,1],width:2}}});arcAnchorGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function clearArcAnchorGraphic(){if(arcAnchorGraphic){mapView.graphics.remove(arcAnchorGraphic);arcAnchorGraphic=null;}}
 
-        // Move preview
-        const PREVIEW_SYM={type:'simple-line',color:[167,139,250,0.75],width:1.5,style:'dash'};
+        // ─── Move preview symbols ───────────────────────────────────────────────────
+        const PREVIEW_SYM       = {type:'simple-line',color:[167,139,250,0.75],width:1.5,style:'dash'};
+        const PREVIEW_SYM_ORTHO = {type:'simple-line',color:[255,215,0,0.92],width:2,style:'dash'};
+
         function clearMovePreviewGraphics(){for(const g of movePreviewGraphics)mapView.graphics.remove(g);movePreviewGraphics=[];}
-        function addMovePreviewGraphic(geometry){mapView.graphics.add({geometry,symbol:PREVIEW_SYM});movePreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));}
+
+        // FIX: accept optional sym parameter so the gold ortho style is actually applied
+        function addMovePreviewGraphic(geometry, sym){
+            mapView.graphics.add({geometry, symbol: sym || PREVIEW_SYM});
+            movePreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
+        }
+
         function showMoveSnapIndicator(point,snapType){hideMoveSnapIndicator();if(!point)return;const color=snapType==='pointFeature'?[255,140,0,0.9]:[167,139,250,0.9];mapView.graphics.add({geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference||mapView.spatialReference},symbol:{type:'simple-marker',style:'cross',color,size:18,outline:{color:[255,255,255,0.85],width:2}}});moveSnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function hideMoveSnapIndicator(){if(moveSnapGraphic){mapView.graphics.remove(moveSnapGraphic);moveSnapGraphic=null;}}
+
+        let movePreviewLabelGraphics=[];
+
+        // Add one label to the map and track it for later cleanup
+        function addMovePreviewLabel(pt,text){
+            if(!pt||!text)return;
+            mapView.graphics.add({geometry:{type:'point',x:pt.x,y:pt.y,spatialReference:pt.spatialReference||mapView.spatialReference},symbol:{type:'text',text:text,color:[255,255,0],haloColor:[0,0,0],haloSize:2,font:{size:12,weight:'bold'},horizontalAlignment:'center',xoffset:0,yoffset:10}});
+            movePreviewLabelGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
+        }
+
+        // Remove all active preview labels
+        function clearMovePreviewLabels(){
+            for(const g of movePreviewLabelGraphics)mapView.graphics.remove(g);
+            movePreviewLabelGraphics=[];
+        }
+
+        // Returns the map-coordinate midpoint of a polyline geometry (used for label placement)
+        function getPolylineMidpoint(geom){
+            if(!geom?.paths?.length)return null;
+            let totalLen=0;
+            const segs=[];
+            for(const path of geom.paths){
+                for(let i=0;i<path.length-1;i++){
+                    const dx=path[i+1][0]-path[i][0],dy=path[i+1][1]-path[i][1],d=Math.sqrt(dx*dx+dy*dy);
+                    segs.push({x0:path[i][0],y0:path[i][1],x1:path[i+1][0],y1:path[i+1][1],d});
+                    totalLen+=d;
+                }
+            }
+            if(!segs.length)return{x:geom.paths[0][0][0],y:geom.paths[0][0][1],spatialReference:geom.spatialReference};
+            let walked=0,half=totalLen/2;
+            for(const seg of segs){
+                if(walked+seg.d>=half){const t=seg.d>0?(half-walked)/seg.d:0;return{x:seg.x0+t*(seg.x1-seg.x0),y:seg.y0+t*(seg.y1-seg.y0),spatialReference:geom.spatialReference};}
+                walked+=seg.d;
+            }
+            const last=segs[segs.length-1];return{x:last.x1,y:last.y1,spatialReference:geom.spatialReference};
+        }
+
+        function clearMoveRightAngleGraphics(){
+            for(const g of moveRightAngleGraphics)mapView.graphics.remove(g);
+            moveRightAngleGraphics=[];
+        }
+
+        // Returns true if the angle at vertexPt (between directions to ptA and ptB) is ~90°
+        function checkRightAngle(vertexPt,ptA,ptB){
+            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y;
+            const dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
+            const lenA=Math.sqrt(dAx*dAx+dAy*dAy),lenB=Math.sqrt(dBx*dBx+dBy*dBy);
+            if(lenA<1e-9||lenB<1e-9)return false;
+            const dot=Math.max(-1,Math.min(1,(dAx*dBx+dAy*dBy)/(lenA*lenB)));
+            return Math.abs(Math.acos(dot)*180/Math.PI-90)<=RIGHT_ANGLE_TOL_DEG;
+        }
+
+        // Draws a gold circular arc centered at vertexPt sweeping between the ptA and ptB directions
+        function drawRightAngleArc(vertexPt,ptA,ptB,sr){
+            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y;
+            const dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
+            const lenA=Math.sqrt(dAx*dAx+dAy*dAy),lenB=Math.sqrt(dBx*dBx+dBy*dBy);
+            if(lenA<1e-9||lenB<1e-9)return;
+            const r=RIGHT_ANGLE_ARC_PX*(mapView.resolution||1);
+            const a0=Math.atan2(dAy/lenA,dAx/lenA),a1=Math.atan2(dBy/lenB,dBx/lenB);
+            let sweep=a1-a0;
+            while(sweep>Math.PI)sweep-=2*Math.PI;
+            while(sweep<-Math.PI)sweep+=2*Math.PI;
+            const N=10,pts=[];
+            for(let i=0;i<=N;i++){const a=a0+(sweep*i/N);pts.push([vertexPt.x+r*Math.cos(a),vertexPt.y+r*Math.sin(a)]);}
+            mapView.graphics.add({
+                geometry:{type:'polyline',paths:[pts],spatialReference:sr},
+                symbol:{type:'simple-line',color:[255,215,0,1],width:2.5,style:'solid'}
+            });
+            moveRightAngleGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
+        }
+
         function findNearestSnapInCache(mp,excludeOids=new Set()){const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1);let nearest=null,minD=Infinity,snapType='lineVertex';for(const[key,geom]of vertexGeomCache){if(!geom?.paths)continue;const oid=Number(key.split(':')[1]);if(excludeOids.has(oid)||excludeOids.has(String(oid)))continue;for(const path of geom.paths)for(const coord of path){const d=calcDist(mp,{x:coord[0],y:coord[1]});if(d<minD&&d<tol){minD=d;nearest={x:coord[0],y:coord[1],spatialReference:geom.spatialReference};snapType='lineVertex';}}const seg=findClosestSeg(geom,mp);if(seg&&seg.distance<minD&&seg.distance<tol){minD=seg.distance;nearest={x:seg.point.x,y:seg.point.y,spatialReference:geom.spatialReference};snapType='lineSegment';}}return nearest?{geometry:nearest,snapType,dist:minD}:null;}
+
         function startMovePreview(fromPt,excludeOids=new Set(),options={}){
             stopMovePreview();
             let resolvedConnected=options.connectedLines||null;
@@ -236,12 +320,107 @@
                     if(ptLayerObjs.length>0&&cacheDist>tol*0.25){mapView.hitTest({x:e.x,y:e.y},{include:ptLayerObjs}).then(hit=>{if(gen!==previewSnapGeneration)return;for(const r of hit.results){if(r.graphic?.geometry?.type!=='point')continue;const oid=getOid(r.graphic);if(oid!=null&&excludeOids.has(oid))continue;const d=calcDist(mp,r.graphic.geometry);if(d<tol&&d<=cacheDist)showMoveSnapIndicator(r.graphic.geometry,'pointFeature');break;}}).catch(()=>{});}
                 }
                 clearMovePreviewGraphics();
-                if(options.mode==='vertex'&&options.coincidentLines?.length){for(const li of options.coincidentLines){const geom=li.feature.geometry;if(!geom?.paths)continue;const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));const path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[toPt.x,toPt.y];addMovePreviewGraphic({type:'polyline',paths:newPaths,spatialReference:geom.spatialReference});}}
-                else if(options.mode==='point'&&resolvedConnected?.length){for(const info of resolvedConnected){const geom=info.feature.geometry;if(!geom?.paths)continue;const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));const path=newPaths[info.connection.pathIndex];if(path?.[info.connection.pointIndex]!==undefined)path[info.connection.pointIndex]=[toPt.x,toPt.y];addMovePreviewGraphic({type:'polyline',paths:newPaths,spatialReference:geom.spatialReference});}}
-                else{addMovePreviewGraphic({type:'polyline',paths:[[[fromPt.x,fromPt.y],[toPt.x,toPt.y]]],spatialReference:fromPt.spatialReference||mapView.spatialReference});}
+                clearMovePreviewLabels();
+                clearMoveRightAngleGraphics();
+
+                if(options.mode==='vertex'&&options.coincidentLines?.length){
+                    // ── Ortho check ──────────────────────────────────────────────────
+                    let isOrtho=false,orthoA=null,orthoB=null,orthoSr=null;
+                    for(const li of options.coincidentLines){
+                        if(isOrtho)break;
+                        const geom=li.feature.geometry;if(!geom?.paths)continue;
+                        const pi=li.vertex.pointIndex,origPath=geom.paths[li.vertex.pathIndex];
+                        if(pi>0&&pi<origPath.length-1){
+                            const prevPt={x:origPath[pi-1][0],y:origPath[pi-1][1]};
+                            const nextPt={x:origPath[pi+1][0],y:origPath[pi+1][1]};
+                            if(checkRightAngle(toPt,prevPt,nextPt)){isOrtho=true;orthoA=prevPt;orthoB=nextPt;orthoSr=geom.spatialReference;}
+                        }
+                    }
+                    const sym=isOrtho?PREVIEW_SYM_ORTHO:undefined;
+
+                    // ── Draw updated preview lines ────────────────────────────────────
+                    for(const li of options.coincidentLines){
+                        const geom=li.feature.geometry;if(!geom?.paths)continue;
+                        const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));
+                        const path=newPaths[li.vertex.pathIndex];
+                        if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[toPt.x,toPt.y];
+                        addMovePreviewGraphic({type:'polyline',paths:newPaths,spatialReference:geom.spatialReference},sym);
+                    }
+                    if(isOrtho&&orthoA&&orthoB)drawRightAngleArc(toPt,orthoA,orthoB,orthoSr);
+
+                    // ── Rubber-band leg labels (from the first coincident line only) ──
+                    // Shows the length of each leg adjacent to the moving vertex so the
+                    // user knows the resulting segment lengths before committing.
+                    const firstLi=options.coincidentLines[0];
+                    const fGeom=firstLi.feature.geometry;
+                    if(fGeom?.paths){
+                        const pi=firstLi.vertex.pointIndex;
+                        const origPath=fGeom.paths[firstLi.vertex.pathIndex];
+                        const sr=fGeom.spatialReference;
+                        // Left leg: previous vertex → toPt
+                        if(pi>0){
+                            const prevPt={x:origPath[pi-1][0],y:origPath[pi-1][1],spatialReference:sr};
+                            const d=geodeticDist(prevPt,toPt);
+                            const mid={x:(prevPt.x+toPt.x)/2,y:(prevPt.y+toPt.y)/2,spatialReference:sr};
+                            addMovePreviewLabel(mid,Math.round(d)+' ft');
+                        }
+                        // Right leg: toPt → next vertex
+                        if(pi<origPath.length-1){
+                            const nextPt={x:origPath[pi+1][0],y:origPath[pi+1][1],spatialReference:sr};
+                            const d=geodeticDist(toPt,nextPt);
+                            const mid={x:(toPt.x+nextPt.x)/2,y:(toPt.y+nextPt.y)/2,spatialReference:sr};
+                            addMovePreviewLabel(mid,Math.round(d)+' ft');
+                        }
+                    }
+                }
+                else if(options.mode==='point'&&resolvedConnected?.length){
+                    // ── Ortho check ──────────────────────────────────────────────────
+                    let isOrtho=false,orthoA=null,orthoB=null,orthoSr=null;
+                    if(resolvedConnected.length>=2){
+                        const connDir=(info)=>{
+                            const path=info.feature.geometry.paths[info.connection.pathIndex];
+                            const pi=info.connection.pointIndex;
+                            if(pi===0&&path.length>1)return{x:path[1][0],y:path[1][1]};
+                            if(pi===path.length-1&&path.length>1)return{x:path[path.length-2][0],y:path[path.length-2][1]};
+                            return null;
+                        };
+                        const dA=connDir(resolvedConnected[0]),dB=connDir(resolvedConnected[1]);
+                        if(dA&&dB&&checkRightAngle(toPt,dA,dB)){
+                            isOrtho=true;orthoA=dA;orthoB=dB;
+                            orthoSr=resolvedConnected[0].feature.geometry.spatialReference;
+                        }
+                    }
+                    const sym=isOrtho?PREVIEW_SYM_ORTHO:undefined;
+
+                    // ── Draw updated lines + show new total length of each ────────────
+                    // Each connected line gets a label at its geometric midpoint showing
+                    // what the full line length will be after the move is committed.
+                    for(const info of resolvedConnected){
+                        const geom=info.feature.geometry;if(!geom?.paths)continue;
+                        const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));
+                        const path=newPaths[info.connection.pathIndex];
+                        if(path?.[info.connection.pointIndex]!==undefined)path[info.connection.pointIndex]=[toPt.x,toPt.y];
+                        const newGeom={type:'polyline',paths:newPaths,spatialReference:geom.spatialReference};
+                        addMovePreviewGraphic(newGeom,sym);
+                        const totalLen=geodeticLength(newGeom);
+                        const midPt=getPolylineMidpoint(newGeom);
+                        if(midPt)addMovePreviewLabel(midPt,Math.round(totalLen)+' ft');
+                    }
+                    if(isOrtho&&orthoA&&orthoB)drawRightAngleArc(toPt,orthoA,orthoB,orthoSr);
+                }
+                else{
+                    // ── Simple fallback: lone point with no connected lines ───────────
+                    // Show a rubber-band line and the distance the point will move.
+                    addMovePreviewGraphic({type:'polyline',paths:[[[fromPt.x,fromPt.y],[toPt.x,toPt.y]]],spatialReference:fromPt.spatialReference||mapView.spatialReference});
+                    const dist=geodeticDist(fromPt,toPt);
+                    const mid={x:(fromPt.x+toPt.x)/2,y:(fromPt.y+toPt.y)/2,spatialReference:fromPt.spatialReference||mapView.spatialReference};
+                    addMovePreviewLabel(mid,Math.round(dist)+' ft');
+                }
             });
         }
-        function stopMovePreview(){previewSnapGeneration++;if(movePreviewHandler){movePreviewHandler.remove();movePreviewHandler=null;}clearMovePreviewGraphics();hideMoveSnapIndicator();}
+
+        function stopMovePreview(){previewSnapGeneration++;if(movePreviewHandler){movePreviewHandler.remove();movePreviewHandler=null;}clearMovePreviewGraphics();hideMoveSnapIndicator();clearMovePreviewLabels();clearMoveRightAngleGraphics();}
+
         function clearOptimisticGraphic(){if(optimisticGraphic){mapView.graphics.remove(optimisticGraphic);optimisticGraphic=null;}}
         function showPickerHoverHighlight(geometry){clearPickerHoverHighlight();if(!geometry)return;const isLine=geometry.type==='polyline';mapView.graphics.add({geometry,symbol:isLine?{type:'simple-line',color:[0,120,255,0.9],width:4,style:'solid'}:{type:'simple-marker',style:'circle',color:[0,120,255,0.3],size:22,outline:{color:[0,80,200,0.9],width:2.5}}});pickerHoverGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function clearPickerHoverHighlight(){if(pickerHoverGraphic){mapView.graphics.remove(pickerHoverGraphic);pickerHoverGraphic=null;}}
@@ -251,7 +430,7 @@
         function updateUndoBtn(){if(!undoBtn)return;const has=undoStack.length>0;undoBtn.disabled=!has||undoProcessing;undoBtn.textContent=undoProcessing?'Undoing..':has?'Undo ('+undoStack.length+')':'Undo';undoBtn.classList.toggle('smt-footer-on',has&&!undoProcessing);}
         async function executeUndo(){if(!undoStack.length||undoProcessing)return;undoProcessing=true;const entry=undoStack.pop();updateUndoBtn();updateStatus('Undoing: '+entry.label+'...');let ok=0,fail=0;const byLayer=new Map();for(const r of entry.restores){const lid=layerKey(r.layer,r.layerConfig);if(!byLayer.has(lid))byLayer.set(lid,{layer:r.layer,layerConfig:r.layerConfig,items:[]});byLayer.get(lid).items.push(r);}for(const{layer,layerConfig,items}of byLayer.values()){const oidField=layer.objectIdField||'OBJECTID';const features=items.map(r=>{const attrs={[oidField]:r.oid};if(r.attributes)Object.assign(attrs,r.attributes);const f={attributes:attrs};if(r.geometry!=null)f.geometry=r.geometry;return f;});try{await layer.applyEdits({updateFeatures:features});ok+=features.length;const lid=layerKey(layer,layerConfig);for(const r of items)if(r.geometry?.paths)updateVertexCacheGeom(lid,r.oid,r.geometry);}catch(e){console.error('undo restore error:',e);fail+=features.length;}}for(const d of entry.deletes){try{await d.layer.applyEdits({deleteFeatures:[{objectId:d.oid}]});ok++;}catch(e){console.error('undo delete error:',e);fail++;}}undoProcessing=false;updateUndoBtn();updateStatus(fail===0?'Undone: '+entry.label+'.':'Undo partial -- '+ok+' ok, '+fail+' failed.');if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>{if(!undoStack.length&&toolActive)updateStatus('Ready.');},3000);}
 
-        // Bore Split -- all strings are plain ASCII, no template literals with special chars
+        // Bore Split
         const BORE_SYM_SEL  = {type:'simple-line',color:[124,58,237,0.85],width:3,style:'solid'};
         const BORE_SYM_PLOW = {type:'simple-line',color:[99,102,241,0.9],width:2.5,style:'solid'};
         const BORE_SYM_BORE = {type:'simple-line',color:[251,191,36,0.95],width:3,style:'solid'};
@@ -285,45 +464,32 @@
                         mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
                         boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
                     }
-                // Replace the entire  } else if(boreSplitStep===2&&boreSplitVtx1){  block with this:
-
-} else if(boreSplitStep===2&&boreSplitVtx1){
-    if(nearest.pathIdx!==boreSplitVtx1.pathIdx)return;
-    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx];
-    const i1=boreSplitVtx1.vtxIdx;
-    const borePts=[];
-
-    // Determine whether cursor is forward or backward along the path from vtx1
-    const goForward = nearest.segIdx >= i1;
-
-    if(goForward){
-        // Cursor is ahead of vtx1: collect vtx1 → nearest cursor position
-        for(let i=i1; i<=nearest.segIdx && i<path.length; i++){
-            borePts.push([path[i][0],path[i][1]]);
-        }
-        borePts.push([nearest.point.x,nearest.point.y]);
-    } else {
-        // Cursor is behind vtx1: collect cursor position → vtx1 (reversed so
-        // the geometry still reads start→end along the path direction)
-        borePts.push([nearest.point.x,nearest.point.y]);
-        for(let i=nearest.segIdx+1; i<=i1 && i<path.length; i++){
-            borePts.push([path[i][0],path[i][1]]);
-        }
-    }
-
-    if(borePts.length>=2){
-        const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference};
-        const boreLen=geodeticLength(borePreviewGeom);
-        addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);
-        addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);
-        updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');
-        if(nearest.distance<tol){
-            mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
-            boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
-            showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');
-        }
-    }
-}
+                } else if(boreSplitStep===2&&boreSplitVtx1){
+                    if(nearest.pathIdx!==boreSplitVtx1.pathIdx)return;
+                    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx];
+                    const i1=boreSplitVtx1.vtxIdx;
+                    const borePts=[];
+                    const goForward=nearest.segIdx>=i1;
+                    if(goForward){
+                        for(let i=i1;i<=nearest.segIdx&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);
+                        borePts.push([nearest.point.x,nearest.point.y]);
+                    }else{
+                        borePts.push([nearest.point.x,nearest.point.y]);
+                        for(let i=nearest.segIdx+1;i<=i1&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);
+                    }
+                    if(borePts.length>=2){
+                        const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference};
+                        const boreLen=geodeticLength(borePreviewGeom);
+                        addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);
+                        addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);
+                        updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');
+                        if(nearest.distance<tol){
+                            mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
+                            boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
+                            showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');
+                        }
+                    }
+                }
             });
         }
 
