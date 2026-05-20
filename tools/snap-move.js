@@ -18,8 +18,8 @@
         const ARROW_LABEL_OFFSET_PX = 18, DELETE_FIELD = 'delete_feature', MAX_QUERIED_EXTENTS = 10, MAX_UNDO = 10;
         const BORE_LAYER_ID = 42050, BORE_INSTALL_FIELD = 'installation_method', BORE_INSTALL_VALUE = 'BORE';
         const MIN_BORE_LEN_FT = 5, BORE_CLICK_TOL_MULT = 3;
-        const RIGHT_ANGLE_TOL_DEG = 8;   // ±degrees from 90° that still triggers
-        const RIGHT_ANGLE_ARC_PX  = 14;  // arc radius in screen pixels
+        const RIGHT_ANGLE_TOL_DEG = 8;
+        const RIGHT_ANGLE_ARC_PX  = 14;
 
         function makeExt(cx,cy,half,sr){return{type:'extent',xmin:cx-half,ymin:cy-half,xmax:cx+half,ymax:cy+half,spatialReference:sr};}
 
@@ -94,8 +94,8 @@
 <div id="smtModeStrip">
 <button class="smt-mb" id="pointMode" data-tip="Move point features [E]"><span class="mi">&#x1F4CD;</span><span class="ml">Point</span></button>
 <button class="smt-mb" id="lineMode" data-tip="Move line vertices [Q]"><span class="mi">&#x3030;</span><span class="ml">Line</span></button>
-<button class="smt-mb" id="addVertexMode" data-tip="Add vertex [Space]"><span class="mi">+</span><span class="ml">Add Vtx</span></button>
-<button class="smt-mb" id="deleteVertexMode" data-tip="Delete vertex [Shift]"><span class="mi">-</span><span class="ml">Del Vtx</span></button>
+<button class="smt-mb" id="addVertexMode" data-tip="Add vertex -- or hold Z"><span class="mi">+</span><span class="ml">Add Vtx</span></button>
+<button class="smt-mb" id="deleteVertexMode" data-tip="Delete vertex -- or hold X"><span class="mi">-</span><span class="ml">Del Vtx</span></button>
 <button class="smt-mb" id="flipModeBtn" data-tip="Flip line direction [F]"><span class="mi">&#x1F504;</span><span class="ml">Flip</span></button>
 <button class="smt-mb" id="arcModeBtn" data-tip="Arc Fit [A]"><span class="mi">&#x2322;</span><span class="ml">Arc</span></button>
 <button class="smt-mb" id="cutModeBtn" data-tip="Cut and split lines [C]. Cannot be undone."><span class="mi">&#x2702;</span><span class="ml">Cut</span></button>
@@ -103,7 +103,7 @@
 <button class="smt-mb" id="deleteModeBtn" data-tip="Soft delete features [D]"><span class="mi">&#x1F5D1;</span><span class="ml">Delete</span></button>
 <button class="smt-mb" id="boreSplitBtn" data-tip="Bore Split [B] - select underground span, pick 2 points to carve out bore section."><span class="mi">&#x26CF;</span><span class="ml">Bore</span></button>
 </div>
-<div id="smtLockRow"><span id="smtLockInfo">No lock active</span><button id="lockFeatureBtn" data-tip="Lock to one feature [Z]">Pick [Z]</button><button id="releaseFeatureBtn" data-tip="Release locked feature [X]" disabled>Unlock [X]</button></div>
+<div id="smtLockRow"><span id="smtLockInfo">No lock active</span><button id="lockFeatureBtn" data-tip="Lock all edits to one feature">Pick</button><button id="releaseFeatureBtn" data-tip="Release locked feature" disabled>Unlock</button></div>
 <div id="smtCtxDefault" class="smt-ctx"><button id="cancelMove" disabled>Cancel Current Move</button></div>
 <div id="smtCtxCut" class="smt-ctx hidden"><div id="cutModeInfo"></div></div>
 <div id="smtCtxCopy" class="smt-ctx hidden"><button id="clearCopyTemplateBtn" disabled>Clear Template</button><div id="copyTemplateInfo" style="display:none;"><div id="copyTemplateDetails"></div></div><div id="copyCountInfo"></div></div>
@@ -145,7 +145,10 @@
         let vertexHighlightActive=false,directionArrowsActive=false,vertexHighlightLayer=null;
         let extentWatchHandle=null,highlightDebounceTimer=null;
         let pickerPopup=null,pickerHoverGraphic=null;
-        let hotkeyHandler=null,ctrlKeyUpHandler=null,flipMode=false,ctrlSnapSuppressed=false;
+        let hotkeyHandler=null,vtxKeyUpHandler=null,ctrlKeyUpHandler=null,flipMode=false,ctrlSnapSuppressed=false;
+        // Held-key state for add/delete vertex (Z and X keys)
+        let addVtxKeyHeld=false,delVtxKeyHeld=false;
+        let addVtxActivatedByKey=false,delVtxActivatedByKey=false;
         let arcMode=false,arcWaitingForMidpoint=false,arcSelectedLines=[],arcStartPt=null,arcEndPt=null;
         let arcHighlightGraphics=[],arcPreviewGraphic=null,arcMoveHandler=null;
         let arcAnchorMode=false,arcAnchorPt=null,arcAnchorSegInfo=null,arcAnchorGraphic=null,arcActiveSide='left';
@@ -214,89 +217,53 @@
         function showArcAnchorGraphic(pt){clearArcAnchorGraphic();mapView.graphics.add({geometry:{type:'point',x:pt.x,y:pt.y,spatialReference:pt.spatialReference||mapView.spatialReference},symbol:{type:'simple-marker',style:'diamond',color:[167,139,250,1],size:13,outline:{color:[255,255,255,1],width:2}}});arcAnchorGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function clearArcAnchorGraphic(){if(arcAnchorGraphic){mapView.graphics.remove(arcAnchorGraphic);arcAnchorGraphic=null;}}
 
-        // ─── Move preview symbols ───────────────────────────────────────────────────
+        // ─── Move preview ──────────────────────────────────────────────────────────
         const PREVIEW_SYM       = {type:'simple-line',color:[167,139,250,0.75],width:1.5,style:'dash'};
         const PREVIEW_SYM_ORTHO = {type:'simple-line',color:[255,215,0,0.92],width:2,style:'dash'};
 
         function clearMovePreviewGraphics(){for(const g of movePreviewGraphics)mapView.graphics.remove(g);movePreviewGraphics=[];}
-
-        // FIX: accept optional sym parameter so the gold ortho style is actually applied
-        function addMovePreviewGraphic(geometry, sym){
-            mapView.graphics.add({geometry, symbol: sym || PREVIEW_SYM});
-            movePreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
-        }
-
+        function addMovePreviewGraphic(geometry,sym){mapView.graphics.add({geometry,symbol:sym||PREVIEW_SYM});movePreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));}
         function showMoveSnapIndicator(point,snapType){hideMoveSnapIndicator();if(!point)return;const color=snapType==='pointFeature'?[255,140,0,0.9]:[167,139,250,0.9];mapView.graphics.add({geometry:{type:'point',x:point.x,y:point.y,spatialReference:point.spatialReference||mapView.spatialReference},symbol:{type:'simple-marker',style:'cross',color,size:18,outline:{color:[255,255,255,0.85],width:2}}});moveSnapGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function hideMoveSnapIndicator(){if(moveSnapGraphic){mapView.graphics.remove(moveSnapGraphic);moveSnapGraphic=null;}}
 
         let movePreviewLabelGraphics=[];
-
-        // Add one label to the map and track it for later cleanup
         function addMovePreviewLabel(pt,text){
             if(!pt||!text)return;
             mapView.graphics.add({geometry:{type:'point',x:pt.x,y:pt.y,spatialReference:pt.spatialReference||mapView.spatialReference},symbol:{type:'text',text:text,color:[255,255,0],haloColor:[0,0,0],haloSize:2,font:{size:12,weight:'bold'},horizontalAlignment:'center',xoffset:0,yoffset:10}});
             movePreviewLabelGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
         }
+        function clearMovePreviewLabels(){for(const g of movePreviewLabelGraphics)mapView.graphics.remove(g);movePreviewLabelGraphics=[];}
 
-        // Remove all active preview labels
-        function clearMovePreviewLabels(){
-            for(const g of movePreviewLabelGraphics)mapView.graphics.remove(g);
-            movePreviewLabelGraphics=[];
-        }
-
-        // Returns the map-coordinate midpoint of a polyline geometry (used for label placement)
         function getPolylineMidpoint(geom){
             if(!geom?.paths?.length)return null;
-            let totalLen=0;
-            const segs=[];
-            for(const path of geom.paths){
-                for(let i=0;i<path.length-1;i++){
-                    const dx=path[i+1][0]-path[i][0],dy=path[i+1][1]-path[i][1],d=Math.sqrt(dx*dx+dy*dy);
-                    segs.push({x0:path[i][0],y0:path[i][1],x1:path[i+1][0],y1:path[i+1][1],d});
-                    totalLen+=d;
-                }
-            }
+            let totalLen=0;const segs=[];
+            for(const path of geom.paths){for(let i=0;i<path.length-1;i++){const dx=path[i+1][0]-path[i][0],dy=path[i+1][1]-path[i][1],d=Math.sqrt(dx*dx+dy*dy);segs.push({x0:path[i][0],y0:path[i][1],x1:path[i+1][0],y1:path[i+1][1],d});totalLen+=d;}}
             if(!segs.length)return{x:geom.paths[0][0][0],y:geom.paths[0][0][1],spatialReference:geom.spatialReference};
             let walked=0,half=totalLen/2;
-            for(const seg of segs){
-                if(walked+seg.d>=half){const t=seg.d>0?(half-walked)/seg.d:0;return{x:seg.x0+t*(seg.x1-seg.x0),y:seg.y0+t*(seg.y1-seg.y0),spatialReference:geom.spatialReference};}
-                walked+=seg.d;
-            }
+            for(const seg of segs){if(walked+seg.d>=half){const t=seg.d>0?(half-walked)/seg.d:0;return{x:seg.x0+t*(seg.x1-seg.x0),y:seg.y0+t*(seg.y1-seg.y0),spatialReference:geom.spatialReference};}walked+=seg.d;}
             const last=segs[segs.length-1];return{x:last.x1,y:last.y1,spatialReference:geom.spatialReference};
         }
 
-        function clearMoveRightAngleGraphics(){
-            for(const g of moveRightAngleGraphics)mapView.graphics.remove(g);
-            moveRightAngleGraphics=[];
-        }
+        function clearMoveRightAngleGraphics(){for(const g of moveRightAngleGraphics)mapView.graphics.remove(g);moveRightAngleGraphics=[];}
 
-        // Returns true if the angle at vertexPt (between directions to ptA and ptB) is ~90°
         function checkRightAngle(vertexPt,ptA,ptB){
-            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y;
-            const dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
+            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y,dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
             const lenA=Math.sqrt(dAx*dAx+dAy*dAy),lenB=Math.sqrt(dBx*dBx+dBy*dBy);
             if(lenA<1e-9||lenB<1e-9)return false;
             const dot=Math.max(-1,Math.min(1,(dAx*dBx+dAy*dBy)/(lenA*lenB)));
             return Math.abs(Math.acos(dot)*180/Math.PI-90)<=RIGHT_ANGLE_TOL_DEG;
         }
 
-        // Draws a gold circular arc centered at vertexPt sweeping between the ptA and ptB directions
         function drawRightAngleArc(vertexPt,ptA,ptB,sr){
-            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y;
-            const dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
+            const dAx=ptA.x-vertexPt.x,dAy=ptA.y-vertexPt.y,dBx=ptB.x-vertexPt.x,dBy=ptB.y-vertexPt.y;
             const lenA=Math.sqrt(dAx*dAx+dAy*dAy),lenB=Math.sqrt(dBx*dBx+dBy*dBy);
             if(lenA<1e-9||lenB<1e-9)return;
             const r=RIGHT_ANGLE_ARC_PX*(mapView.resolution||1);
             const a0=Math.atan2(dAy/lenA,dAx/lenA),a1=Math.atan2(dBy/lenB,dBx/lenB);
-            let sweep=a1-a0;
-            while(sweep>Math.PI)sweep-=2*Math.PI;
-            while(sweep<-Math.PI)sweep+=2*Math.PI;
+            let sweep=a1-a0;while(sweep>Math.PI)sweep-=2*Math.PI;while(sweep<-Math.PI)sweep+=2*Math.PI;
             const N=10,pts=[];
             for(let i=0;i<=N;i++){const a=a0+(sweep*i/N);pts.push([vertexPt.x+r*Math.cos(a),vertexPt.y+r*Math.sin(a)]);}
-            mapView.graphics.add({
-                geometry:{type:'polyline',paths:[pts],spatialReference:sr},
-                symbol:{type:'simple-line',color:[255,215,0,1],width:2.5,style:'solid'}
-            });
+            mapView.graphics.add({geometry:{type:'polyline',paths:[pts],spatialReference:sr},symbol:{type:'simple-line',color:[255,215,0,1],width:2.5,style:'solid'}});
             moveRightAngleGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
         }
 
@@ -324,7 +291,6 @@
                 clearMoveRightAngleGraphics();
 
                 if(options.mode==='vertex'&&options.coincidentLines?.length){
-                    // ── Ortho check ──────────────────────────────────────────────────
                     let isOrtho=false,orthoA=null,orthoB=null,orthoSr=null;
                     for(const li of options.coincidentLines){
                         if(isOrtho)break;
@@ -337,8 +303,6 @@
                         }
                     }
                     const sym=isOrtho?PREVIEW_SYM_ORTHO:undefined;
-
-                    // ── Draw updated preview lines ────────────────────────────────────
                     for(const li of options.coincidentLines){
                         const geom=li.feature.geometry;if(!geom?.paths)continue;
                         const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));
@@ -347,54 +311,23 @@
                         addMovePreviewGraphic({type:'polyline',paths:newPaths,spatialReference:geom.spatialReference},sym);
                     }
                     if(isOrtho&&orthoA&&orthoB)drawRightAngleArc(toPt,orthoA,orthoB,orthoSr);
-
-                    // ── Rubber-band leg labels (from the first coincident line only) ──
-                    // Shows the length of each leg adjacent to the moving vertex so the
-                    // user knows the resulting segment lengths before committing.
+                    // Rubber-band leg length labels (from the first coincident line)
                     const firstLi=options.coincidentLines[0];
                     const fGeom=firstLi.feature.geometry;
                     if(fGeom?.paths){
-                        const pi=firstLi.vertex.pointIndex;
-                        const origPath=fGeom.paths[firstLi.vertex.pathIndex];
-                        const sr=fGeom.spatialReference;
-                        // Left leg: previous vertex → toPt
-                        if(pi>0){
-                            const prevPt={x:origPath[pi-1][0],y:origPath[pi-1][1],spatialReference:sr};
-                            const d=geodeticDist(prevPt,toPt);
-                            const mid={x:(prevPt.x+toPt.x)/2,y:(prevPt.y+toPt.y)/2,spatialReference:sr};
-                            addMovePreviewLabel(mid,Math.round(d)+' ft');
-                        }
-                        // Right leg: toPt → next vertex
-                        if(pi<origPath.length-1){
-                            const nextPt={x:origPath[pi+1][0],y:origPath[pi+1][1],spatialReference:sr};
-                            const d=geodeticDist(toPt,nextPt);
-                            const mid={x:(toPt.x+nextPt.x)/2,y:(toPt.y+nextPt.y)/2,spatialReference:sr};
-                            addMovePreviewLabel(mid,Math.round(d)+' ft');
-                        }
+                        const pi=firstLi.vertex.pointIndex,origPath=fGeom.paths[firstLi.vertex.pathIndex],sr=fGeom.spatialReference;
+                        if(pi>0){const prevPt={x:origPath[pi-1][0],y:origPath[pi-1][1],spatialReference:sr};addMovePreviewLabel({x:(prevPt.x+toPt.x)/2,y:(prevPt.y+toPt.y)/2,spatialReference:sr},Math.round(geodeticDist(prevPt,toPt))+' ft');}
+                        if(pi<origPath.length-1){const nextPt={x:origPath[pi+1][0],y:origPath[pi+1][1],spatialReference:sr};addMovePreviewLabel({x:(toPt.x+nextPt.x)/2,y:(toPt.y+nextPt.y)/2,spatialReference:sr},Math.round(geodeticDist(toPt,nextPt))+' ft');}
                     }
                 }
                 else if(options.mode==='point'&&resolvedConnected?.length){
-                    // ── Ortho check ──────────────────────────────────────────────────
                     let isOrtho=false,orthoA=null,orthoB=null,orthoSr=null;
                     if(resolvedConnected.length>=2){
-                        const connDir=(info)=>{
-                            const path=info.feature.geometry.paths[info.connection.pathIndex];
-                            const pi=info.connection.pointIndex;
-                            if(pi===0&&path.length>1)return{x:path[1][0],y:path[1][1]};
-                            if(pi===path.length-1&&path.length>1)return{x:path[path.length-2][0],y:path[path.length-2][1]};
-                            return null;
-                        };
+                        const connDir=(info)=>{const path=info.feature.geometry.paths[info.connection.pathIndex],pi=info.connection.pointIndex;if(pi===0&&path.length>1)return{x:path[1][0],y:path[1][1]};if(pi===path.length-1&&path.length>1)return{x:path[path.length-2][0],y:path[path.length-2][1]};return null;};
                         const dA=connDir(resolvedConnected[0]),dB=connDir(resolvedConnected[1]);
-                        if(dA&&dB&&checkRightAngle(toPt,dA,dB)){
-                            isOrtho=true;orthoA=dA;orthoB=dB;
-                            orthoSr=resolvedConnected[0].feature.geometry.spatialReference;
-                        }
+                        if(dA&&dB&&checkRightAngle(toPt,dA,dB)){isOrtho=true;orthoA=dA;orthoB=dB;orthoSr=resolvedConnected[0].feature.geometry.spatialReference;}
                     }
                     const sym=isOrtho?PREVIEW_SYM_ORTHO:undefined;
-
-                    // ── Draw updated lines + show new total length of each ────────────
-                    // Each connected line gets a label at its geometric midpoint showing
-                    // what the full line length will be after the move is committed.
                     for(const info of resolvedConnected){
                         const geom=info.feature.geometry;if(!geom?.paths)continue;
                         const newPaths=geom.paths.map(p=>p.map(c=>c.slice()));
@@ -402,25 +335,19 @@
                         if(path?.[info.connection.pointIndex]!==undefined)path[info.connection.pointIndex]=[toPt.x,toPt.y];
                         const newGeom={type:'polyline',paths:newPaths,spatialReference:geom.spatialReference};
                         addMovePreviewGraphic(newGeom,sym);
-                        const totalLen=geodeticLength(newGeom);
                         const midPt=getPolylineMidpoint(newGeom);
-                        if(midPt)addMovePreviewLabel(midPt,Math.round(totalLen)+' ft');
+                        if(midPt)addMovePreviewLabel(midPt,Math.round(geodeticLength(newGeom))+' ft');
                     }
                     if(isOrtho&&orthoA&&orthoB)drawRightAngleArc(toPt,orthoA,orthoB,orthoSr);
                 }
                 else{
-                    // ── Simple fallback: lone point with no connected lines ───────────
-                    // Show a rubber-band line and the distance the point will move.
                     addMovePreviewGraphic({type:'polyline',paths:[[[fromPt.x,fromPt.y],[toPt.x,toPt.y]]],spatialReference:fromPt.spatialReference||mapView.spatialReference});
                     const dist=geodeticDist(fromPt,toPt);
-                    const mid={x:(fromPt.x+toPt.x)/2,y:(fromPt.y+toPt.y)/2,spatialReference:fromPt.spatialReference||mapView.spatialReference};
-                    addMovePreviewLabel(mid,Math.round(dist)+' ft');
+                    addMovePreviewLabel({x:(fromPt.x+toPt.x)/2,y:(fromPt.y+toPt.y)/2,spatialReference:fromPt.spatialReference||mapView.spatialReference},Math.round(dist)+' ft');
                 }
             });
         }
-
         function stopMovePreview(){previewSnapGeneration++;if(movePreviewHandler){movePreviewHandler.remove();movePreviewHandler=null;}clearMovePreviewGraphics();hideMoveSnapIndicator();clearMovePreviewLabels();clearMoveRightAngleGraphics();}
-
         function clearOptimisticGraphic(){if(optimisticGraphic){mapView.graphics.remove(optimisticGraphic);optimisticGraphic=null;}}
         function showPickerHoverHighlight(geometry){clearPickerHoverHighlight();if(!geometry)return;const isLine=geometry.type==='polyline';mapView.graphics.add({geometry,symbol:isLine?{type:'simple-line',color:[0,120,255,0.9],width:4,style:'solid'}:{type:'simple-marker',style:'circle',color:[0,120,255,0.3],size:22,outline:{color:[0,80,200,0.9],width:2.5}}});pickerHoverGraphic=mapView.graphics.getItemAt(mapView.graphics.length-1);}
         function clearPickerHoverHighlight(){if(pickerHoverGraphic){mapView.graphics.remove(pickerHoverGraphic);pickerHoverGraphic=null;}}
@@ -456,39 +383,16 @@
                 const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1)*BORE_CLICK_TOL_MULT;
                 const nearest=findNearestPointOnLineGeom(boreSplitWorkingGeom,mp);
                 if(!nearest)return;
-                clearBoreSplitPreview();
-                clearBoreLengthLabel();
+                clearBoreSplitPreview();clearBoreLengthLabel();
                 if(boreSplitStep===1){
                     addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_SEL);
-                    if(nearest.distance<tol){
-                        mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
-                        boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
-                    }
-                } else if(boreSplitStep===2&&boreSplitVtx1){
+                    if(nearest.distance<tol){mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));}
+                }else if(boreSplitStep===2&&boreSplitVtx1){
                     if(nearest.pathIdx!==boreSplitVtx1.pathIdx)return;
-                    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx];
-                    const i1=boreSplitVtx1.vtxIdx;
-                    const borePts=[];
-                    const goForward=nearest.segIdx>=i1;
-                    if(goForward){
-                        for(let i=i1;i<=nearest.segIdx&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);
-                        borePts.push([nearest.point.x,nearest.point.y]);
-                    }else{
-                        borePts.push([nearest.point.x,nearest.point.y]);
-                        for(let i=nearest.segIdx+1;i<=i1&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);
-                    }
-                    if(borePts.length>=2){
-                        const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference};
-                        const boreLen=geodeticLength(borePreviewGeom);
-                        addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);
-                        addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);
-                        updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');
-                        if(nearest.distance<tol){
-                            mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});
-                            boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));
-                            showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');
-                        }
-                    }
+                    const path=boreSplitWorkingGeom.paths[boreSplitVtx1.pathIdx],i1=boreSplitVtx1.vtxIdx,borePts=[],goForward=nearest.segIdx>=i1;
+                    if(goForward){for(let i=i1;i<=nearest.segIdx&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);borePts.push([nearest.point.x,nearest.point.y]);}
+                    else{borePts.push([nearest.point.x,nearest.point.y]);for(let i=nearest.segIdx+1;i<=i1&&i<path.length;i++)borePts.push([path[i][0],path[i][1]]);}
+                    if(borePts.length>=2){const borePreviewGeom={type:'polyline',paths:[borePts],spatialReference:boreSplitWorkingGeom.spatialReference},boreLen=geodeticLength(borePreviewGeom);addBoreGraphic(boreSplitFeature.geometry,BORE_SYM_DIM);addBoreGraphic(borePreviewGeom,BORE_SYM_BORE);updateStatus('Bore: '+boreLen+' ft -- click to set second cut point.');if(nearest.distance<tol){mapView.graphics.add({geometry:{type:'point',x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},symbol:{type:'simple-marker',style:'cross',color:[251,191,36,0.9],size:16,outline:{color:[255,255,255,0.9],width:2}}});boreSplitPreviewGraphics.push(mapView.graphics.getItemAt(mapView.graphics.length-1));showBoreLengthLabel({x:nearest.point.x,y:nearest.point.y,spatialReference:boreSplitWorkingGeom.spatialReference},boreLen+' ft');}}
                 }
             });
         }
@@ -498,50 +402,11 @@
         function disableBoreSplitMode(){boreSplitMode=false;resetBoreSplitState();setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(toolActive)updateStatus('Ready.');}
 
         async function handleBoreSplitClick(event){
-            const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);
-            const tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1)*BORE_CLICK_TOL_MULT;
+            const sp={x:event.x,y:event.y},mp=mapView.toMap(sp),tol=POINT_SNAP_TOLERANCE*(mapView.resolution||1)*BORE_CLICK_TOL_MULT;
             if(boreSplitStep===3)return;
-            if(boreSplitStep===0){
-                updateStatus('Finding underground span...');
-                const result=await findBoreLine(sp,mp);
-                if(!result){updateStatus('No underground span found here. Click directly on a line.');return;}
-                boreSplitFeature=result.feature;boreSplitLayer=result.layer;boreSplitLayerConfig=result.layerConfig;
-                boreSplitWorkingGeom=cloneGeom(result.feature.geometry);
-                boreSplitStep=1;
-                const len=geodeticLength(boreSplitFeature.geometry);
-                if(boreSplitStatusEl)boreSplitStatusEl.textContent=result.layerConfig.name+' -- '+len+' ft -- click first cut point.';
-                startBoreSplitMoveHandler();
-                updateStatus('Line selected ('+len+' ft). Click the first cut point.');
-            } else if(boreSplitStep===1){
-                const nearest=findNearestPointOnLineGeom(boreSplitWorkingGeom,mp);
-                if(!nearest||nearest.distance>tol){updateStatus('Click closer to the line for the first cut point.');return;}
-                const res=insertVertexAtSegment(boreSplitWorkingGeom,nearest.pathIdx,nearest.segIdx,nearest.point);
-                boreSplitWorkingGeom=res.newGeom;boreSplitVtx1={pathIdx:nearest.pathIdx,vtxIdx:res.vtxIdx};
-                boreSplitStep=2;
-                if(boreSplitStatusEl)boreSplitStatusEl.textContent='First point set -- click second cut point.';
-                updateStatus('First point set. Click the second cut point.');
-            } else if(boreSplitStep===2){
-                const nearest=findNearestPointOnLineGeom(boreSplitWorkingGeom,mp);
-                if(!nearest||nearest.distance>tol){updateStatus('Click closer to the line for the second cut point.');return;}
-                if(nearest.pathIdx!==boreSplitVtx1.pathIdx){updateStatus('Both points must be on the same path. Try again.');return;}
-                const res=insertVertexAtSegment(boreSplitWorkingGeom,nearest.pathIdx,nearest.segIdx,nearest.point);
-                boreSplitWorkingGeom=res.newGeom;boreSplitVtx2={pathIdx:nearest.pathIdx,vtxIdx:res.vtxIdx};
-                if(res.vtxIdx<=boreSplitVtx1.vtxIdx)boreSplitVtx1=Object.assign({},boreSplitVtx1,{vtxIdx:boreSplitVtx1.vtxIdx+1});
-                if(boreSplitMoveHandler){boreSplitMoveHandler.remove();boreSplitMoveHandler=null;}
-                clearBoreLengthLabel();
-                const splits=splitGeomAtTwoVertices(boreSplitWorkingGeom,boreSplitVtx1.pathIdx,boreSplitVtx1.vtxIdx,boreSplitVtx2.vtxIdx);
-                if(!splits){updateStatus('Invalid cut points -- segments too short. Try again.');boreSplitStep=1;boreSplitVtx2=null;startBoreSplitMoveHandler();return;}
-                const[s1g,bg,s2g]=splits;
-                const len1=geodeticLength(s1g),lenBore=geodeticLength(bg),len2=geodeticLength(s2g);
-                const boreWarn=lenBore<MIN_BORE_LEN_FT?' (WARNING: < '+MIN_BORE_LEN_FT+' ft)':'';
-                clearBoreSplitPreview();
-                addBoreGraphic(s1g,BORE_SYM_PLOW);addBoreGraphic(bg,BORE_SYM_BORE);addBoreGraphic(s2g,BORE_SYM_PLOW);
-                if(boreSplitLengthsEl){boreSplitLengthsEl.style.display='block';boreSplitLengthsEl.innerHTML='<div style="color:#a78bfa;">Plow 1: '+len1+' ft</div><div style="color:#fbbf24;">Bore: '+lenBore+' ft'+boreWarn+'</div><div style="color:#a78bfa;">Plow 2: '+len2+' ft</div>';}
-                if(boreSplitStatusEl)boreSplitStatusEl.textContent='Review segments, then confirm.';
-                if(boreSplitConfirmBtn)boreSplitConfirmBtn.disabled=false;
-                boreSplitStep=3;
-                updateStatus('Review: '+len1+'ft plow / '+lenBore+'ft bore'+boreWarn+' / '+len2+'ft plow -- confirm or cancel.');
-            }
+            if(boreSplitStep===0){updateStatus('Finding underground span...');const result=await findBoreLine(sp,mp);if(!result){updateStatus('No underground span found here. Click directly on a line.');return;}boreSplitFeature=result.feature;boreSplitLayer=result.layer;boreSplitLayerConfig=result.layerConfig;boreSplitWorkingGeom=cloneGeom(result.feature.geometry);boreSplitStep=1;const len=geodeticLength(boreSplitFeature.geometry);if(boreSplitStatusEl)boreSplitStatusEl.textContent=result.layerConfig.name+' -- '+len+' ft -- click first cut point.';startBoreSplitMoveHandler();updateStatus('Line selected ('+len+' ft). Click the first cut point.');}
+            else if(boreSplitStep===1){const nearest=findNearestPointOnLineGeom(boreSplitWorkingGeom,mp);if(!nearest||nearest.distance>tol){updateStatus('Click closer to the line for the first cut point.');return;}const res=insertVertexAtSegment(boreSplitWorkingGeom,nearest.pathIdx,nearest.segIdx,nearest.point);boreSplitWorkingGeom=res.newGeom;boreSplitVtx1={pathIdx:nearest.pathIdx,vtxIdx:res.vtxIdx};boreSplitStep=2;if(boreSplitStatusEl)boreSplitStatusEl.textContent='First point set -- click second cut point.';updateStatus('First point set. Click the second cut point.');}
+            else if(boreSplitStep===2){const nearest=findNearestPointOnLineGeom(boreSplitWorkingGeom,mp);if(!nearest||nearest.distance>tol){updateStatus('Click closer to the line for the second cut point.');return;}if(nearest.pathIdx!==boreSplitVtx1.pathIdx){updateStatus('Both points must be on the same path. Try again.');return;}const res=insertVertexAtSegment(boreSplitWorkingGeom,nearest.pathIdx,nearest.segIdx,nearest.point);boreSplitWorkingGeom=res.newGeom;boreSplitVtx2={pathIdx:nearest.pathIdx,vtxIdx:res.vtxIdx};if(res.vtxIdx<=boreSplitVtx1.vtxIdx)boreSplitVtx1=Object.assign({},boreSplitVtx1,{vtxIdx:boreSplitVtx1.vtxIdx+1});if(boreSplitMoveHandler){boreSplitMoveHandler.remove();boreSplitMoveHandler=null;}clearBoreLengthLabel();const splits=splitGeomAtTwoVertices(boreSplitWorkingGeom,boreSplitVtx1.pathIdx,boreSplitVtx1.vtxIdx,boreSplitVtx2.vtxIdx);if(!splits){updateStatus('Invalid cut points -- segments too short. Try again.');boreSplitStep=1;boreSplitVtx2=null;startBoreSplitMoveHandler();return;}const[s1g,bg,s2g]=splits,len1=geodeticLength(s1g),lenBore=geodeticLength(bg),len2=geodeticLength(s2g),boreWarn=lenBore<MIN_BORE_LEN_FT?' (WARNING: < '+MIN_BORE_LEN_FT+' ft)':'';clearBoreSplitPreview();addBoreGraphic(s1g,BORE_SYM_PLOW);addBoreGraphic(bg,BORE_SYM_BORE);addBoreGraphic(s2g,BORE_SYM_PLOW);if(boreSplitLengthsEl){boreSplitLengthsEl.style.display='block';boreSplitLengthsEl.innerHTML='<div style="color:#a78bfa;">Plow 1: '+len1+' ft</div><div style="color:#fbbf24;">Bore: '+lenBore+' ft'+boreWarn+'</div><div style="color:#a78bfa;">Plow 2: '+len2+' ft</div>';}if(boreSplitStatusEl)boreSplitStatusEl.textContent='Review segments, then confirm.';if(boreSplitConfirmBtn)boreSplitConfirmBtn.disabled=false;boreSplitStep=3;updateStatus('Review: '+len1+'ft plow / '+lenBore+'ft bore'+boreWarn+' / '+len2+'ft plow -- confirm or cancel.');}
         }
 
         async function executeBoreSplit(){
@@ -597,8 +462,69 @@
         function enableFlipMode(){if(cutMode)disableCutMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();if(boreSplitMode)disableBoreSplitMode();flipMode=true;setActiveModeBtn('flipModeBtn');showCtxPanel(null);if(toolActive)updateStatus('Flip mode -- click any line to reverse its direction.');}
         function disableFlipMode(){flipMode=false;setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');}
 
-        // Hotkeys
-        function handleHotkey(e){if(!toolActive)return;const tag=e.target?.tagName;if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable)return;switch(e.key){case 'e':case 'E':e.preventDefault();setPointMode();break;case 'q':case 'Q':e.preventDefault();setLineMode();break;case ' ':e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode&&!boreSplitMode)setAddVertexMode();break;case 'c':case 'C':e.preventDefault();cutMode?disableCutMode():enableCutMode();break;case 'Shift':e.preventDefault();if(!cutMode&&!copyMode&&!flipMode&&!deleteMode&&!boreSplitMode)setDeleteVertexMode();break;case 'f':case 'F':e.preventDefault();flipMode?disableFlipMode():enableFlipMode();break;case 'a':case 'A':e.preventDefault();arcMode?disableArcMode():enableArcMode();break;case 'd':case 'D':e.preventDefault();deleteMode?disableDeleteMode():enableDeleteMode();break;case 'b':case 'B':e.preventDefault();boreSplitMode?disableBoreSplitMode():enableBoreSplitMode();break;case 'z':case 'Z':e.preventDefault();if(e.ctrlKey||e.metaKey){executeUndo();break;}if(!cutMode&&!copyMode&&!deleteMode&&!boreSplitMode){if(pickingFeatureMode){pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick [Z]';updateStatus(lockedFeature?'Locked: '+lockedFeature.layerConfig.name+'. Pick cancelled.':'Pick cancelled.');}else{pickingFeatureMode=true;if(selectedFeature)cancelMove();lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.classList.add('smt-picking');lockFeatureBtn.textContent='Click feature...';updateStatus('Click any feature to lock all edits to it.');}}break;case 'x':case 'X':e.preventDefault();if(lockedFeature)releaseLockedFeature();break;case 'Control':if(snappingEnabled&&!ctrlSnapSuppressed){ctrlSnapSuppressed=true;snappingEnabled=false;snappingToggleBtn.classList.remove('smt-footer-on');snappingToggleBtn.textContent='Snap (ctrl)';}break;case 'Escape':e.preventDefault();if(copyPlacementMode)clearCopyTemplate();else if(cutPreviewMode)resetCutSelection();else if(arcMode&&arcAnchorMode){clearArcAnchor();updateStatus('Anchor cleared.');}else if(arcMode&&arcWaitingForMidpoint){resetArcState();updateStatus('Arc Fit -- click a line segment to begin.');}else if(arcMode)disableArcMode();else if(boreSplitMode&&boreSplitStep>0)resetBoreSplitState();else if(boreSplitMode)disableBoreSplitMode();else if(deleteMode&&delCtxMenu.style.display!=='none'){hideDelContextMenu();clearPickerHoverHighlight();}else if(deleteMode)disableDeleteMode();else if(flipMode)disableFlipMode();else if(selectedFeature)cancelMove();break;}}
+        // ─── Hotkeys ────────────────────────────────────────────────────────────────
+        function handleHotkey(e){
+            if(!toolActive)return;
+            const tag=e.target?.tagName;
+            if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target?.isContentEditable)return;
+            switch(e.key){
+                case 'e':case 'E':e.preventDefault();setPointMode();break;
+                case 'q':case 'Q':e.preventDefault();setLineMode();break;
+                case 'c':case 'C':e.preventDefault();cutMode?disableCutMode():enableCutMode();break;
+                case 'f':case 'F':e.preventDefault();flipMode?disableFlipMode():enableFlipMode();break;
+                case 'a':case 'A':e.preventDefault();arcMode?disableArcMode():enableArcMode();break;
+                case 'd':case 'D':e.preventDefault();deleteMode?disableDeleteMode():enableDeleteMode();break;
+                case 'b':case 'B':e.preventDefault();boreSplitMode?disableBoreSplitMode():enableBoreSplitMode();break;
+                // Z held = add vertex mode (non-ctrl); Ctrl+Z = undo
+                case 'z':case 'Z':
+                    e.preventDefault();
+                    if(e.ctrlKey||e.metaKey){executeUndo();break;}
+                    if(!cutMode&&!copyMode&&!flipMode&&!deleteMode&&!boreSplitMode&&!addVtxKeyHeld){
+                        addVtxKeyHeld=true;
+                        if(vertexMode!=='add'){
+                            addVtxActivatedByKey=true;
+                            if(selectedFeature)cancelMove();
+                            vertexMode='add';
+                            setActiveModeBtn('addVertexMode');
+                            showCtxPanel(null);
+                            updateStatus('Add Vertex -- click a line segment to insert a vertex.');
+                        }
+                    }
+                    break;
+                // X held = delete vertex mode
+                case 'x':case 'X':
+                    e.preventDefault();
+                    if(!cutMode&&!copyMode&&!flipMode&&!deleteMode&&!boreSplitMode&&!delVtxKeyHeld){
+                        delVtxKeyHeld=true;
+                        if(vertexMode!=='delete'){
+                            delVtxActivatedByKey=true;
+                            if(selectedFeature)cancelMove();
+                            vertexMode='delete';
+                            setActiveModeBtn('deleteVertexMode');
+                            showCtxPanel(null);
+                            updateStatus('Delete Vertex -- click any vertex to remove it.');
+                        }
+                    }
+                    break;
+                case 'Control':
+                    if(snappingEnabled&&!ctrlSnapSuppressed){ctrlSnapSuppressed=true;snappingEnabled=false;snappingToggleBtn.classList.remove('smt-footer-on');snappingToggleBtn.textContent='Snap (ctrl)';}
+                    break;
+                case 'Escape':
+                    e.preventDefault();
+                    if(copyPlacementMode)clearCopyTemplate();
+                    else if(cutPreviewMode)resetCutSelection();
+                    else if(arcMode&&arcAnchorMode){clearArcAnchor();updateStatus('Anchor cleared.');}
+                    else if(arcMode&&arcWaitingForMidpoint){resetArcState();updateStatus('Arc Fit -- click a line segment to begin.');}
+                    else if(arcMode)disableArcMode();
+                    else if(boreSplitMode&&boreSplitStep>0)resetBoreSplitState();
+                    else if(boreSplitMode)disableBoreSplitMode();
+                    else if(deleteMode&&delCtxMenu.style.display!=='none'){hideDelContextMenu();clearPickerHoverHighlight();}
+                    else if(deleteMode)disableDeleteMode();
+                    else if(flipMode)disableFlipMode();
+                    else if(selectedFeature)cancelMove();
+                    break;
+            }
+        }
 
         // Cut context menu
         function showCutContextMenu(mapPoint){const screen=mapView.toScreen(mapPoint),rect=mapView.container.getBoundingClientRect();let left=rect.left+screen.x+14,top=rect.top+screen.y-10;if(left+220>window.innerWidth)left=rect.left+screen.x-220;if(top+280>window.innerHeight)top=window.innerHeight-280;cutCtxMenu.style.left=left+'px';cutCtxMenu.style.top=top+'px';cutCtxMenu.style.display='block';}
@@ -632,12 +558,12 @@
 
         // Feature picker popup
         function dismissPickerPopup(){if(pickerPopup){pickerPopup.remove();pickerPopup=null;}clearPickerHoverHighlight();}
-        function showFeaturePickerPopup(candidates,pageX,pageY){dismissPickerPopup();const popup=document.createElement('div');pickerPopup=popup;popup.style.cssText='position:fixed;z-index:'+(z+1)+';background:#0f0d1a;border:1px solid #3a3060;border-radius:4px;box-shadow:0 4px 18px rgba(0,0,0,0.5);font:12px/1.4 Arial,sans-serif;min-width:220px;max-width:300px;max-height:320px;overflow-y:auto;color:#e2d9f3;';let left=pageX+12,top=pageY-10;if(left+310>window.innerWidth)left=pageX-310;if(top+340>window.innerHeight)top=window.innerHeight-340-12;if(top<12)top=12;popup.style.left=left+'px';popup.style.top=top+'px';const header=document.createElement('div');header.style.cssText='padding:7px 10px 5px;font-weight:bold;font-size:11px;color:#d4bbff;border-bottom:1px solid #2d2550;display:flex;justify-content:space-between;align-items:center;background:#2d1b69;';header.innerHTML=candidates.length+' overlapping features';const closeX=document.createElement('span');closeX.textContent='X';closeX.style.cssText='cursor:pointer;color:#9b8ec4;font-size:13px;padding:0 2px;';closeX.onclick=()=>{dismissPickerPopup();pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick [Z]';};header.appendChild(closeX);popup.appendChild(header);candidates.forEach(c=>{const row=document.createElement('div');row.style.cssText='padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;';row.onmouseenter=()=>{row.style.background='#2d1b69';showPickerHoverHighlight(c.feature.geometry);};row.onmouseleave=()=>{row.style.background='';clearPickerHoverHighlight();};const oid=getOid(c.feature)??'?',typeIcon=c.featureType==='point'?'(pt)':'(ln)',title=document.createElement('div'),meta=document.createElement('div');title.style.cssText='font-weight:bold;color:#e2d9f3;font-size:11px;';title.textContent=typeIcon+' '+c.layerConfig.name;meta.style.cssText='color:#7a6d96;font-size:10px;';if(c.featureType==='line'){const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0);meta.textContent='OID: '+oid+' / '+vtxCount+' vertices';}else meta.textContent='OID: '+oid+' / Point feature';row.appendChild(title);row.appendChild(meta);row.onclick=()=>{dismissPickerPopup();applyLock(c.feature,c.layer,c.layerConfig,c.featureType,true);};popup.appendChild(row);});document.body.appendChild(popup);setTimeout(()=>{document.addEventListener('click',function outsideClick(e){if(!popup.contains(e.target)&&!delCtxMenu.contains(e.target)){dismissPickerPopup();document.removeEventListener('click',outsideClick);}});},0);}
+        function showFeaturePickerPopup(candidates,pageX,pageY){dismissPickerPopup();const popup=document.createElement('div');pickerPopup=popup;popup.style.cssText='position:fixed;z-index:'+(z+1)+';background:#0f0d1a;border:1px solid #3a3060;border-radius:4px;box-shadow:0 4px 18px rgba(0,0,0,0.5);font:12px/1.4 Arial,sans-serif;min-width:220px;max-width:300px;max-height:320px;overflow-y:auto;color:#e2d9f3;';let left=pageX+12,top=pageY-10;if(left+310>window.innerWidth)left=pageX-310;if(top+340>window.innerHeight)top=window.innerHeight-340-12;if(top<12)top=12;popup.style.left=left+'px';popup.style.top=top+'px';const header=document.createElement('div');header.style.cssText='padding:7px 10px 5px;font-weight:bold;font-size:11px;color:#d4bbff;border-bottom:1px solid #2d2550;display:flex;justify-content:space-between;align-items:center;background:#2d1b69;';header.innerHTML=candidates.length+' overlapping features';const closeX=document.createElement('span');closeX.textContent='X';closeX.style.cssText='cursor:pointer;color:#9b8ec4;font-size:13px;padding:0 2px;';closeX.onclick=()=>{dismissPickerPopup();pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick';};header.appendChild(closeX);popup.appendChild(header);candidates.forEach(c=>{const row=document.createElement('div');row.style.cssText='padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;';row.onmouseenter=()=>{row.style.background='#2d1b69';showPickerHoverHighlight(c.feature.geometry);};row.onmouseleave=()=>{row.style.background='';clearPickerHoverHighlight();};const oid=getOid(c.feature)??'?',typeIcon=c.featureType==='point'?'(pt)':'(ln)',title=document.createElement('div'),meta=document.createElement('div');title.style.cssText='font-weight:bold;color:#e2d9f3;font-size:11px;';title.textContent=typeIcon+' '+c.layerConfig.name;meta.style.cssText='color:#7a6d96;font-size:10px;';if(c.featureType==='line'){const vtxCount=(c.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0);meta.textContent='OID: '+oid+' / '+vtxCount+' vertices';}else meta.textContent='OID: '+oid+' / Point feature';row.appendChild(title);row.appendChild(meta);row.onclick=()=>{dismissPickerPopup();applyLock(c.feature,c.layer,c.layerConfig,c.featureType,true);};popup.appendChild(row);});document.body.appendChild(popup);setTimeout(()=>{document.addEventListener('click',function outsideClick(e){if(!popup.contains(e.target)&&!delCtxMenu.contains(e.target)){dismissPickerPopup();document.removeEventListener('click',outsideClick);}});},0);}
 
         // Locked feature helpers
         function syncLockedFeature(newGeom){if(!lockedFeature||!newGeom)return;try{if(lockedFeature.feature?.clone){const c=lockedFeature.feature.clone();c.geometry=newGeom;lockedFeature.feature=c;}else if(lockedFeature.feature)lockedFeature.feature.geometry=newGeom;}catch(e){}}
         async function applyLock(feature,layer,cfg,featureType='line',explicitPick=false){lockedFeature={feature,layer,layerConfig:cfg,featureType};pickingFeatureMode=false;const typeIcon=featureType==='point'?'(pt)':'(ln)';if(lockedFeatureInfo){lockedFeatureInfo.textContent=typeIcon+' '+cfg.name+' OID '+(getOid(feature)??'?');lockedFeatureInfo.className='smt-locked';}if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent='Re-Pick';}if(releaseFeatureBtn)releaseFeatureBtn.disabled=false;if(vertexHighlightActive)scheduleHighlightRefresh();if(featureType==='line'){if(flipMode){updateStatus('Locked to '+cfg.name+'. Click anywhere to flip its direction.');return;}setLineMode();updateStatus('Locked to '+cfg.name+'. Click any vertex to select it, then click the destination.');}else{setPointMode();if(toolActive){updateStatus('Locked to '+cfg.name+'. Preparing...');const[preFetchedConnected,preFetchedColocated]=await Promise.all([findConnectedLines(feature.geometry),explicitPick?Promise.resolve([]):findColocatedPoints(feature.geometry,getOid(feature))]);lockedFeature.preloaded={connectedFeatures:preFetchedConnected,colocatedPoints:preFetchedColocated};selectedFeature=feature;selectedLayer=layer;selectedLayerConfig=cfg;selectedVertex=null;waitingForDestination=true;connectedFeatures=preFetchedConnected;colocatedPoints=preFetchedColocated;if(feature.geometry?.clone)originalGeometries.set(getOid(feature)??'locked',feature.geometry.clone());for(const info of preFetchedConnected)if(info.feature.geometry?.clone)originalGeometries.set(info.feature.attributes.objectid,info.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;startMovePreview({x:feature.geometry.x,y:feature.geometry.y,spatialReference:feature.geometry.spatialReference},new Set([getOid(feature),...preFetchedColocated.map(p=>getOid(p.feature))].filter(Boolean)),{mode:'point',connectedLines:preFetchedConnected});const connNote=preFetchedConnected.length?' / '+preFetchedConnected.length+' connected':'',colocNote=preFetchedColocated.length?' / '+preFetchedColocated.length+' co-located':'';updateStatus('Locked to '+cfg.name+connNote+colocNote+'. Click destination.');}else{updateStatus('Locked to '+cfg.name+'. Enable the tool then click the destination.');}}}
-        function releaseLockedFeature(){dismissPickerPopup();lockedFeature=null;pickingFeatureMode=false;if(lockedFeatureInfo){lockedFeatureInfo.textContent='No lock active';lockedFeatureInfo.className='';}if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking','smt-locked-btn');lockFeatureBtn.textContent='Pick [Z]';}if(releaseFeatureBtn)releaseFeatureBtn.disabled=true;if(vertexHighlightActive)scheduleHighlightRefresh();updateStatus(toolActive?'Feature released. Click on a '+(currentMode==='point'?'point feature':'line vertex')+'.':'Feature released.');}
+        function releaseLockedFeature(){dismissPickerPopup();lockedFeature=null;pickingFeatureMode=false;if(lockedFeatureInfo){lockedFeatureInfo.textContent='No lock active';lockedFeatureInfo.className='';}if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking','smt-locked-btn');lockFeatureBtn.textContent='Pick';}if(releaseFeatureBtn)releaseFeatureBtn.disabled=true;if(vertexHighlightActive)scheduleHighlightRefresh();updateStatus(toolActive?'Feature released. Click on a '+(currentMode==='point'?'point feature':'line vertex')+'.':'Feature released.');}
         async function pickFeature(event){const sp={x:event.x,y:event.y};updateStatus('Looking for feature...');try{const candidates=[],seenOids=new Set();if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});for(const r of hit.results){const gtype=r.graphic?.geometry?.type;if(gtype==='polyline'){const cfg=lineLayers.find(l=>l.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'line'});}else if(gtype==='point'||gtype==='multipoint'){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(!cfg)continue;const oid=getOid(r.graphic);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:r.graphic,layer:r.layer,layerConfig:cfg,featureType:'point'});}}}if(candidates.length===0){const mp=mapView.toMap(sp),ext=makeExt(mp.x,mp.y,30,mapView.spatialReference);await Promise.all([...lineLayers,...pointLayers].filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:20});const ft=lineLayers.includes(cfg)?'line':'point';for(const f of res.features){const oid=getOid(f);if(oid!=null&&seenOids.has(oid))continue;if(oid!=null)seenOids.add(oid);candidates.push({feature:f,layer:cfg.layer,layerConfig:cfg,featureType:ft});}}catch(e){}}))}if(candidates.length===0){updateStatus('No feature found. Click directly on a point or line feature.');return;}if(candidates.length===1)applyLock(candidates[0].feature,candidates[0].layer,candidates[0].layerConfig,candidates[0].featureType);else{const rect=mapView.container.getBoundingClientRect();showFeaturePickerPopup(candidates,rect.left+sp.x,rect.top+sp.y);}}catch(e){console.error('pickFeature error:',e);updateStatus('Error picking feature.');}}
 
         // Layer query helpers
@@ -652,17 +578,102 @@
         async function findConnectedLines(ptGeom){const connected=[],bufM=10/3.28084,buf={type:'polygon',spatialReference:ptGeom.spatialReference,rings:[[[ptGeom.x-bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y-bufM],[ptGeom.x+bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y+bufM],[ptGeom.x-bufM,ptGeom.y-bufM]]]},results=await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:buf,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:100,outSpatialReference:mapView.spatialReference});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));for(const{cfg,features}of results)for(const f of features){if(!f.geometry?.paths)continue;for(let pi=0;pi<f.geometry.paths.length;pi++){const path=f.geometry.paths[pi];if(path.length<2)continue;const start={x:path[0][0],y:path[0][1]},end={x:path[path.length-1][0],y:path[path.length-1][1]},sd=calcDist(ptGeom,start),ed=calcDist(ptGeom,end);let conn=null;if(sd<bufM)conn={pathIndex:pi,pointIndex:0,isStart:true};else if(ed<bufM)conn={pathIndex:pi,pointIndex:path.length-1,isStart:false};if(conn){connected.push({feature:f,layer:cfg.layer,layerConfig:cfg,connection:conn});if(f.geometry.clone)originalGeometries.set(f.attributes.objectid,f.geometry.clone());}}}return connected;}
         async function updateConnectedLines(newPt){const byLayer=new Map(),cacheUpdates=[];for(const info of connectedFeatures){const orig=originalGeometries.get(info.feature.attributes.objectid);if(!orig?.clone)continue;const newGeom=orig.clone();newGeom.paths[info.connection.pathIndex][info.connection.pointIndex]=[newPt.x,newPt.y];const upd=info.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);const lid=layerKey(info.layer,info.layerConfig);if(!byLayer.has(lid))byLayer.set(lid,{layer:info.layer,features:[]});byLayer.get(lid).features.push(upd);cacheUpdates.push({lid,oid:getOid(info.feature),geom:newGeom});}for(const{layer,features}of byLayer.values())try{if(layer.applyEdits)await layer.applyEdits({updateFeatures:features});}catch(e){}for(const{lid,oid,geom}of cacheUpdates)updateVertexCacheGeom(lid,oid,geom);}
 
-        // Vertex operations
+        // ─── Vertex operations (background-save pattern) ────────────────────────────
         function lockedReadyStatus(){if(!lockedFeature)return currentMode==='point'?'Click on a point feature to select it.':'Line mode -- click a vertex to select it.';if(lockedFeature.featureType==='point')return 'Locked: '+lockedFeature.layerConfig.name+' (point). Click the locked point to move it.';return 'Locked: '+lockedFeature.layerConfig.name+'. Click a vertex to move it.';}
-        async function addVertexToLine(event){const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);updateStatus('Adding vertex to line...');try{const lines=await findCoincidentLinesForVertexCreation(sp,mp);if(!lines.length){updateStatus('No lines found to add vertex to.');return;}const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;for(const li of lines){try{const beforeGeom=cloneGeom(li.feature.geometry),newPaths=clonePaths(li.feature.geometry);newPaths[li.segmentInfo.pathIndex].splice(li.segmentInfo.insertIndex,0,[li.segmentInfo.point.x,li.segmentInfo.point.y]);const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,layerConfig:li.layerConfig,feature:upd,layerName:li.layerConfig.name,newGeom,beforeGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){}}if(!updates.length){updateStatus('No vertices could be added.');return;}const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}for(const{layer,updates:batch}of byLayer.values())if(layer.applyEdits)await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}const names=[...new Set(updates.map(u=>u.layerName))];recordUndo('Added vertex -- '+names.join(', '),updates.map(u=>({layer:u.layer,layerConfig:u.layerConfig,oid:u.oid,geometry:u.beforeGeom})));updateStatus('Added vertex to '+updates.length+' line(s): '+names.join(', ')+'!');if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}catch(e){updateStatus('Error adding vertex.');}}
-        async function deleteVertexFromLine(event){const sp={x:event.x,y:event.y};updateStatus('Deleting vertex from line...');try{const results=await findCoincidentLineVertices(sp);if(!results.length){updateStatus('No line vertex found to delete.');return;}const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;for(const li of results){try{const srcGeom=li.feature.geometry;if(!srcGeom?.paths)continue;const beforeGeom=cloneGeom(srcGeom),newPaths=clonePaths(srcGeom),totalVertices=newPaths.reduce((s,p)=>s+p.length,0);if(totalVertices<=2)continue;const path=newPaths[li.vertex.pathIndex];if(!path||path.length<=2)continue;path.splice(li.vertex.pointIndex,1);const newGeom=buildPolyline(srcGeom,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,layerConfig:li.layerConfig,feature:upd,layerName:li.layerConfig.name,newGeom,beforeGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){}}if(!updates.length){updateStatus('No vertices deleted (lines with only 2 vertices cannot be reduced further).');return;}const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}for(const{layer,updates:batch}of byLayer.values())if(layer.applyEdits)await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}const names=[...new Set(updates.map(u=>u.layerName))];recordUndo('Deleted vertex -- '+names.join(', '),updates.map(u=>({layer:u.layer,layerConfig:u.layerConfig,oid:u.oid,geometry:u.beforeGeom})));updateStatus('Deleted vertex from '+updates.length+' line(s): '+names.join(', ')+'!');if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}catch(e){updateStatus('Error deleting vertex.');}}
+        function vtxReadyStatus(){if(vertexMode==='add'||addVtxKeyHeld)return 'Add Vertex -- click a line segment to insert a vertex.';if(vertexMode==='delete'||delVtxKeyHeld)return 'Delete Vertex -- click any vertex to remove it.';return lockedReadyStatus();}
+
+        async function addVertexToLine(event){
+            const sp={x:event.x,y:event.y},mp=mapView.toMap(sp);
+            updateStatus('Finding line...');
+            const lines=await findCoincidentLinesForVertexCreation(sp,mp);
+            if(!lines.length){updateStatus('No lines found to add vertex to.');return;}
+            const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;
+            for(const li of lines){
+                try{
+                    const beforeGeom=cloneGeom(li.feature.geometry);
+                    const newPaths=clonePaths(li.feature.geometry);
+                    newPaths[li.segmentInfo.pathIndex].splice(li.segmentInfo.insertIndex,0,[li.segmentInfo.point.x,li.segmentInfo.point.y]);
+                    const newGeom=buildPolyline(li.feature.geometry,newPaths);
+                    const upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);
+                    updates.push({layer:li.layer,layerConfig:li.layerConfig,feature:upd,layerName:li.layerConfig.name,newGeom,beforeGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});
+                }catch(e){}
+            }
+            if(!updates.length){updateStatus('No vertices could be added.');return;}
+            // Optimistic: update cache & highlight immediately so user sees the result now
+            for(const u of updates){
+                updateVertexCacheGeom(u.lid,u.oid,u.newGeom);
+                if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);
+            }
+            if(vertexHighlightActive)scheduleHighlightRefresh();
+            const names=[...new Set(updates.map(u=>u.layerName))];
+            updateStatus('Vertex added to '+updates.length+' line(s) (saving...)');
+            // Background save — user is free to keep clicking
+            (async()=>{
+                const byLayer=new Map();
+                for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}
+                let ok=0,fail=0;
+                for(const{layer,updates:batch}of byLayer.values()){
+                    try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}
+                    catch(e){fail+=batch.length;for(const u of batch)updateVertexCacheGeom(u.lid,u.oid,u.beforeGeom);}
+                }
+                if(ok>0)recordUndo('Added vertex -- '+names.join(', '),updates.slice(0,ok).map(u=>({layer:u.layer,layerConfig:u.layerConfig,oid:u.oid,geometry:u.beforeGeom})));
+                if(fail>0&&vertexHighlightActive)scheduleHighlightRefresh();
+                updateStatus(fail===0?'Added vertex: '+names.join(', ')+'!':'Vertex add: '+ok+' ok, '+fail+' failed.');
+                setTimeout(()=>updateStatus(vtxReadyStatus()),2000);
+            })();
+        }
+
+        async function deleteVertexFromLine(event){
+            const sp={x:event.x,y:event.y};
+            updateStatus('Finding vertex...');
+            const results=await findCoincidentLineVertices(sp);
+            if(!results.length){updateStatus('No line vertex found to delete.');return;}
+            const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;
+            for(const li of results){
+                try{
+                    const srcGeom=li.feature.geometry;if(!srcGeom?.paths)continue;
+                    const beforeGeom=cloneGeom(srcGeom),newPaths=clonePaths(srcGeom);
+                    const totalVertices=newPaths.reduce((s,p)=>s+p.length,0);
+                    if(totalVertices<=2)continue;
+                    const path=newPaths[li.vertex.pathIndex];
+                    if(!path||path.length<=2)continue;
+                    path.splice(li.vertex.pointIndex,1);
+                    const newGeom=buildPolyline(srcGeom,newPaths);
+                    const upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);
+                    updates.push({layer:li.layer,layerConfig:li.layerConfig,feature:upd,layerName:li.layerConfig.name,newGeom,beforeGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});
+                }catch(e){}
+            }
+            if(!updates.length){updateStatus('No vertices deleted (lines with only 2 vertices cannot be reduced further).');return;}
+            // Optimistic: update cache & highlight immediately
+            for(const u of updates){
+                updateVertexCacheGeom(u.lid,u.oid,u.newGeom);
+                if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);
+            }
+            if(vertexHighlightActive)scheduleHighlightRefresh();
+            const names=[...new Set(updates.map(u=>u.layerName))];
+            updateStatus('Vertex deleted from '+updates.length+' line(s) (saving...)');
+            // Background save
+            (async()=>{
+                const byLayer=new Map();
+                for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}
+                let ok=0,fail=0;
+                for(const{layer,updates:batch}of byLayer.values()){
+                    try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}
+                    catch(e){fail+=batch.length;for(const u of batch)updateVertexCacheGeom(u.lid,u.oid,u.beforeGeom);}
+                }
+                if(ok>0)recordUndo('Deleted vertex -- '+names.join(', '),updates.slice(0,ok).map(u=>({layer:u.layer,layerConfig:u.layerConfig,oid:u.oid,geometry:u.beforeGeom})));
+                if(fail>0&&vertexHighlightActive)scheduleHighlightRefresh();
+                updateStatus(fail===0?'Deleted vertex: '+names.join(', ')+'!':'Vertex delete: '+ok+' ok, '+fail+' failed.');
+                setTimeout(()=>updateStatus(vtxReadyStatus()),2000);
+            })();
+        }
 
         // Feature selection and movement
         async function handleFeatureSelection(event){const sp={x:event.x,y:event.y};updateStatus('Searching for feature...');if(currentMode==='point'){if(lockedFeature?.featureType==='point'){const r=await findPointFeatureAtLocation(sp);if(!r||(getOid(lockedFeature.feature)!=null&&getOid(r.feature)!==getOid(lockedFeature.feature))){updateStatus('Locked to '+lockedFeature.layerConfig.name+'. Click directly on the locked point.');return;}selectedFeature=lockedFeature.feature;selectedLayer=lockedFeature.layer;selectedLayerConfig=lockedFeature.layerConfig;selectedVertex=null;connectedFeatures=lockedFeature.preloaded?.connectedFeatures||[];colocatedPoints=lockedFeature.preloaded?.colocatedPoints||[];if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());for(const info of connectedFeatures)if(info.feature.geometry?.clone)originalGeometries.set(info.feature.attributes.objectid,info.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;startMovePreview({x:selectedFeature.geometry.x,y:selectedFeature.geometry.y,spatialReference:selectedFeature.geometry.spatialReference},new Set([getOid(selectedFeature),...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean)),{mode:'point',connectedLines:connectedFeatures});updateStatus('Locked '+lockedFeature.layerConfig.name+' selected. Click destination.');return;}const r=await findPointFeatureAtLocation(sp);if(r){selectedFeature=r.feature;selectedLayer=r.layer;selectedLayerConfig=r.layerConfig;selectedVertex=null;if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;const connectedPromise=findConnectedLines(selectedFeature.geometry);startMovePreview({x:selectedFeature.geometry.x,y:selectedFeature.geometry.y,spatialReference:selectedFeature.geometry.spatialReference},new Set([getOid(selectedFeature)].filter(Boolean)),{mode:'point',connectedPromise});updateStatus(r.layerConfig.name+' selected. Click destination to move.');}else updateStatus('No point feature found.');}else{const results=await findCoincidentLineVertices(sp);if(results.length>0){selectedCoincidentLines=results;selectedFeature=results[0].feature;selectedLayer=results[0].layer;selectedLayerConfig=results[0].layerConfig;selectedVertex=results[0].vertex;for(const li of results)if(li.feature.geometry?.clone)originalGeometries.set(li.feature.attributes.objectid,li.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;startMovePreview({x:selectedVertex.coordinates.x,y:selectedVertex.coordinates.y,spatialReference:selectedFeature.geometry.spatialReference},new Set(results.map(r=>getOid(r.feature)).filter(Boolean)),{mode:'vertex',coincidentLines:results});const vType=results[0].vertex.isEndpoint?'endpoint':'vertex',lock=lockedFeature?.featureType==='line'?' [locked]':'';updateStatus('Selected '+vType+' on '+results.length+' line(s): '+results.map(r=>r.layerConfig.name).join(', ')+lock+'. Click destination.');}else updateStatus('No line vertex found.');}}
         async function handleMoveToDestination(event){if(!selectedFeature){updateStatus('No feature selected.');return;}let dst=mapView.toMap({x:event.x,y:event.y});const evtScreen={x:event.x,y:event.y};stopMovePreview();updateStatus('Moving feature...');try{if(currentMode==='point'){const isLockedPoint=lockedFeature?.featureType==='point';if(isLockedPoint){colocatedPoints=lockedFeature.preloaded?.colocatedPoints||colocatedPoints;connectedFeatures=[];}else{updateStatus('Moving feature -- finding connected features...');[connectedFeatures,colocatedPoints]=await Promise.all([findConnectedLines(selectedFeature.geometry),findColocatedPoints(selectedFeature.geometry,getOid(selectedFeature))]);}const ptOid=getOid(selectedFeature);const undoRestores=[{layer:selectedLayer,layerConfig:selectedLayerConfig,oid:ptOid,geometry:cloneGeom(originalGeometries.get(ptOid??'locked')||selectedFeature.geometry)}];if(!isLockedPoint)for(const info of connectedFeatures){const lineOid=getOid(info.feature),lineGeom=originalGeometries.get(lineOid);if(lineGeom)undoRestores.push({layer:info.layer,layerConfig:info.layerConfig,oid:lineOid,geometry:cloneGeom(lineGeom)});}for(const cp of colocatedPoints)undoRestores.push({layer:cp.layer,layerConfig:cp.layerConfig,oid:getOid(cp.feature),geometry:cloneGeom(cp.feature.geometry)});const excludeOids=new Set([ptOid,...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean));const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;if(snapInfo)dst=toTypedPoint(snapInfo.geometry,mapView.spatialReference);if(!isLockedPoint)await updateConnectedLines(dst);const upd=selectedFeature.clone();upd.geometry=dst;if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});if(isLockedPoint)syncLockedFeature(dst);const colocByLayer=new Map();for(const cp of colocatedPoints){const coUpd=cp.feature.clone();coUpd.geometry=dst;const lid=layerKey(cp.layer,cp.layerConfig);if(!colocByLayer.has(lid))colocByLayer.set(lid,{layer:cp.layer,features:[],names:new Set()});colocByLayer.get(lid).features.push(coUpd);colocByLayer.get(lid).names.add(cp.layerConfig.name);}let colocOk=0,colocFail=0;for(const{layer,features}of colocByLayer.values()){try{await layer.applyEdits({updateFeatures:features});colocOk+=features.length;}catch(e){colocFail+=features.length;}}recordUndo('Moved '+selectedLayerConfig.name,undoRestores);let msg='Moved '+selectedLayerConfig.name;if(colocOk>0){const allNames=[...new Set([...colocByLayer.values()].flatMap(v=>[...v.names]))];msg+=' + '+colocOk+' co-located ('+allNames.join(', ')+')';}if(colocFail>0)msg+=' / '+colocFail+' co-located failed';if(!isLockedPoint&&connectedFeatures.length>0)msg+=' + '+connectedFeatures.length+' line(s)';msg+='!';if(snapInfo)msg+=' Snapped.';updateStatus(msg);}else{const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));const undoRestores=selectedCoincidentLines.map(li=>({layer:li.layer,layerConfig:li.layerConfig,oid:getOid(li.feature),geometry:cloneGeom(originalGeometries.get(getOid(li.feature))||li.feature.geometry)}));const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;if(snapInfo)dst=snapInfo.geometry;const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;for(const li of selectedCoincidentLines){try{const newPaths=clonePaths(li.feature.geometry),path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name,newGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){}}const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}let ok=0;for(const{layer,updates:batch}of byLayer.values()){try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}catch(e){}}for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}if(ok>0)recordUndo('Moved '+( selectedVertex.isEndpoint?'endpoint':'vertex')+' -- '+[...new Set(selectedCoincidentLines.map(l=>l.layerConfig.name))].join(', '),undoRestores);let msg='Moved '+(selectedVertex.isEndpoint?'endpoint':'vertex')+' on '+ok+' line(s)!';if(snapInfo)msg+=' Snapped.';updateStatus(msg);}selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();if(cancelBtn)cancelBtn.disabled=true;if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}catch(e){console.error('handleMoveToDestination error:',e);updateStatus('Error moving feature.');}}
 
         // Click dispatcher
-        async function handleClick(event){if(!toolActive)return;if(event.button!==0)return;if(isProcessingClick)return;isProcessingClick=true;event.stopPropagation();try{if(cutMode)await handleCutClick(event);else if(copyMode)await handleCopyClick(event);else if(flipMode)await handleFlipClick(event);else if(arcMode)await handleArcClick(event);else if(deleteMode)await handleDeleteClick(event);else if(boreSplitMode)await handleBoreSplitClick(event);else if(pickingFeatureMode)await pickFeature(event);else if(vertexMode==='add')await addVertexToLine(event);else if(vertexMode==='delete')await deleteVertexFromLine(event);else if(!selectedFeature)await handleFeatureSelection(event);else await handleMoveToDestination(event);}finally{isProcessingClick=false;}}
+        async function handleClick(event){if(!toolActive)return;if(event.button!==0)return;if(isProcessingClick)return;isProcessingClick=true;event.stopPropagation();try{if(cutMode)await handleCutClick(event);else if(copyMode)await handleCopyClick(event);else if(flipMode)await handleFlipClick(event);else if(arcMode)await handleArcClick(event);else if(deleteMode)await handleDeleteClick(event);else if(boreSplitMode)await handleBoreSplitClick(event);else if(pickingFeatureMode)await pickFeature(event);else if(vertexMode==='add'||addVtxKeyHeld)await addVertexToLine(event);else if(vertexMode==='delete'||delVtxKeyHeld)await deleteVertexFromLine(event);else if(!selectedFeature)await handleFeatureSelection(event);else await handleMoveToDestination(event);}finally{isProcessingClick=false;}}
 
         // Vertex highlight + direction arrows
         function makeVertexGraphic(x,y,sr,endpoint){return new _Graphic({geometry:{type:'point',x,y,spatialReference:sr},symbol:{type:'simple-marker',style:endpoint?'circle':'square',color:endpoint?[255,120,0,220]:[30,130,255,200],size:endpoint?10:7,outline:{color:[255,255,255,230],width:1.5}}});}
@@ -692,24 +703,120 @@
         function cancelMove(){stopMovePreview();selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();isProcessingClick=false;if(cancelBtn)cancelBtn.disabled=true;if(lockedFeature)updateStatus(lockedReadyStatus());else if(vertexMode==='add')updateStatus('Add Vertex mode -- click a line segment.');else if(vertexMode==='delete')updateStatus('Delete Vertex mode -- click a vertex.');else updateStatus('Move cancelled.');}
         function setPointMode(){exitSpecialMode();currentMode='point';vertexMode='none';setActiveModeBtn('pointMode');showCtxPanel('default');if(toolActive)updateStatus('Point mode -- click a point feature to select it.');if(selectedFeature)cancelMove();}
         function setLineMode(){exitSpecialMode();currentMode='line';vertexMode='none';setActiveModeBtn('lineMode');showCtxPanel('default');if(toolActive)updateStatus(lockedReadyStatus());if(selectedFeature)cancelMove();}
-        function setAddVertexMode(){exitSpecialMode();const wasAdd=vertexMode==='add';vertexMode=wasAdd?'none':'add';if(vertexMode==='add'){setActiveModeBtn('addVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==='add'?'Add Vertex -- click a line segment to insert a vertex.':'Add Vertex off.');}
-        function setDeleteVertexMode(){exitSpecialMode();const wasDel=vertexMode==='delete';vertexMode=wasDel?'none':'delete';if(vertexMode==='delete'){setActiveModeBtn('deleteVertexMode');showCtxPanel(null);}else{setActiveModeBtn('lineMode');showCtxPanel('default');}if(selectedFeature)cancelMove();if(toolActive)updateStatus(vertexMode==='delete'?'Delete Vertex -- click any vertex to remove it.':'Delete Vertex off.');}
-        function enableTool(){toolActive=true;clickHandler=mapView.on('click',handleClick);hotkeyHandler=e=>handleHotkey(e);document.addEventListener('keydown',hotkeyHandler,true);ctrlKeyUpHandler=e=>{if(e.key!=='Control'||!ctrlSnapSuppressed)return;ctrlSnapSuppressed=false;snappingEnabled=true;snappingToggleBtn.classList.add('smt-footer-on');snappingToggleBtn.textContent='Snap ON';};document.addEventListener('keyup',ctrlKeyUpHandler,true);if(toggleToolBtn){toggleToolBtn.textContent='Disable';toggleToolBtn.classList.remove('smt-off');toggleToolBtn.classList.add('smt-on');toggleToolBtn.onclick=disableTool;}if(mapView.container)mapView.container.style.cursor='crosshair';updateStatus('Tool enabled -- click a '+(currentMode==='point'?'point feature':'line vertex')+' to begin.');}
-        function disableTool(){toolActive=false;pickingFeatureMode=false;isProcessingClick=false;selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();vertexMode='none';stopMovePreview();exitSpecialMode();if(hotkeyHandler){document.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}if(ctrlKeyUpHandler){document.removeEventListener('keyup',ctrlKeyUpHandler,true);ctrlKeyUpHandler=null;}if(ctrlSnapSuppressed){ctrlSnapSuppressed=false;snappingEnabled=true;snappingToggleBtn.classList.add('smt-footer-on');snappingToggleBtn.textContent='Snap ON';}setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');else lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick [Z]';}if(clickHandler)clickHandler.remove();if(cancelBtn)cancelBtn.disabled=true;if(mapView.container)mapView.container.style.cursor='default';if(toggleToolBtn){toggleToolBtn.textContent='Enable';toggleToolBtn.classList.remove('smt-on');toggleToolBtn.classList.add('smt-off');toggleToolBtn.onclick=enableTool;}updateStatus('Tool disabled -- click Enable to start.');}
+        function setAddVertexMode(){
+            exitSpecialMode();
+            const wasAdd=vertexMode==='add';
+            vertexMode=wasAdd?'none':'add';
+            if(vertexMode==='add'){setActiveModeBtn('addVertexMode');showCtxPanel(null);}
+            else{setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');}
+            if(selectedFeature)cancelMove();
+            if(toolActive)updateStatus(vertexMode==='add'?'Add Vertex -- click a line segment to insert a vertex.':'Add Vertex off.');
+        }
+        function setDeleteVertexMode(){
+            exitSpecialMode();
+            const wasDel=vertexMode==='delete';
+            vertexMode=wasDel?'none':'delete';
+            if(vertexMode==='delete'){setActiveModeBtn('deleteVertexMode');showCtxPanel(null);}
+            else{setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');}
+            if(selectedFeature)cancelMove();
+            if(toolActive)updateStatus(vertexMode==='delete'?'Delete Vertex -- click any vertex to remove it.':'Delete Vertex off.');
+        }
 
-        // Wire up
+        function enableTool(){
+            toolActive=true;
+            clickHandler=mapView.on('click',handleClick);
+            hotkeyHandler=e=>handleHotkey(e);
+            document.addEventListener('keydown',hotkeyHandler,true);
+            // Unified keyup handler: Ctrl restores snapping; Z/X release deactivates held vertex modes
+            ctrlKeyUpHandler=e=>{
+                if(e.key==='Control'&&ctrlSnapSuppressed){
+                    ctrlSnapSuppressed=false;snappingEnabled=true;
+                    snappingToggleBtn.classList.add('smt-footer-on');snappingToggleBtn.textContent='Snap ON';
+                }
+                if(!toolActive)return;
+                if((e.key==='z'||e.key==='Z')&&addVtxKeyHeld){
+                    addVtxKeyHeld=false;
+                    if(addVtxActivatedByKey){
+                        addVtxActivatedByKey=false;
+                        vertexMode='none';
+                        setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');
+                        showCtxPanel('default');
+                        updateStatus(lockedReadyStatus());
+                    }
+                }
+                if((e.key==='x'||e.key==='X')&&delVtxKeyHeld){
+                    delVtxKeyHeld=false;
+                    if(delVtxActivatedByKey){
+                        delVtxActivatedByKey=false;
+                        vertexMode='none';
+                        setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');
+                        showCtxPanel('default');
+                        updateStatus(lockedReadyStatus());
+                    }
+                }
+            };
+            document.addEventListener('keyup',ctrlKeyUpHandler,true);
+            if(toggleToolBtn){toggleToolBtn.textContent='Disable';toggleToolBtn.classList.remove('smt-off');toggleToolBtn.classList.add('smt-on');toggleToolBtn.onclick=disableTool;}
+            if(mapView.container)mapView.container.style.cursor='crosshair';
+            updateStatus('Tool enabled -- click a '+(currentMode==='point'?'point feature':'line vertex')+' to begin.');
+        }
+
+        function disableTool(){
+            toolActive=false;pickingFeatureMode=false;isProcessingClick=false;
+            selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;
+            selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];
+            originalGeometries.clear();vertexMode='none';
+            // Reset held-key state
+            addVtxKeyHeld=false;delVtxKeyHeld=false;addVtxActivatedByKey=false;delVtxActivatedByKey=false;
+            stopMovePreview();exitSpecialMode();
+            if(hotkeyHandler){document.removeEventListener('keydown',hotkeyHandler,true);hotkeyHandler=null;}
+            if(ctrlKeyUpHandler){document.removeEventListener('keyup',ctrlKeyUpHandler,true);ctrlKeyUpHandler=null;}
+            if(ctrlSnapSuppressed){ctrlSnapSuppressed=false;snappingEnabled=true;snappingToggleBtn.classList.add('smt-footer-on');snappingToggleBtn.textContent='Snap ON';}
+            setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');
+            if(lockFeatureBtn){lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');else lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick';}
+            if(clickHandler)clickHandler.remove();
+            if(cancelBtn)cancelBtn.disabled=true;
+            if(mapView.container)mapView.container.style.cursor='default';
+            if(toggleToolBtn){toggleToolBtn.textContent='Enable';toggleToolBtn.classList.remove('smt-on');toggleToolBtn.classList.add('smt-off');toggleToolBtn.onclick=enableTool;}
+            updateStatus('Tool disabled -- click Enable to start.');
+        }
+
+        // Wire up buttons
         toggleToolBtn.onclick=enableTool;
-        pointModeBtn.onclick=setPointMode;lineModeBtn.onclick=setLineMode;addVertexBtn.onclick=setAddVertexMode;deleteVertexBtn.onclick=setDeleteVertexMode;
-        flipModeBtn.onclick=enableFlipMode;arcModeBtn.onclick=enableArcMode;showVerticesToggleBtn.onclick=toggleVertexHighlight;directionToggleBtn.onclick=toggleDirectionArrows;
-        refreshVerticesBtn.onclick=()=>{clearVertexCache();renderVertexHighlights();};releaseFeatureBtn.onclick=releaseLockedFeature;cancelBtn.onclick=cancelMove;
-        cutModeBtn.onclick=enableCutMode;copyModeBtn.onclick=enableCopyMode;clearCopyTemplateBtn.onclick=clearCopyTemplate;deleteModeBtn.onclick=enableDeleteMode;
-        undoBtn.onclick=executeUndo;boreSplitBtn.onclick=()=>boreSplitMode?disableBoreSplitMode():enableBoreSplitMode();
-        boreSplitConfirmBtn.onclick=executeBoreSplit;boreSplitCancelBtn.onclick=()=>{resetBoreSplitState();if(boreSplitMode)updateStatus('Bore Split -- click an underground span to select it.');};
-        lockFeatureBtn.onclick=()=>{if(pickingFeatureMode){pickingFeatureMode=false;lockFeatureBtn.classList.remove('smt-picking');if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick [Z]';updateStatus(lockedFeature?'Locked: '+lockedFeature.layerConfig.name+'. Pick cancelled.':'Pick cancelled.');}else{pickingFeatureMode=true;if(selectedFeature)cancelMove();lockFeatureBtn.classList.remove('smt-locked-btn');lockFeatureBtn.classList.add('smt-picking');lockFeatureBtn.textContent='Click feature...';updateStatus('Click any point or line feature to lock all edits to it.');}};
+        pointModeBtn.onclick=setPointMode;lineModeBtn.onclick=setLineMode;
+        addVertexBtn.onclick=setAddVertexMode;deleteVertexBtn.onclick=setDeleteVertexMode;
+        flipModeBtn.onclick=enableFlipMode;arcModeBtn.onclick=enableArcMode;
+        showVerticesToggleBtn.onclick=toggleVertexHighlight;directionToggleBtn.onclick=toggleDirectionArrows;
+        refreshVerticesBtn.onclick=()=>{clearVertexCache();renderVertexHighlights();};
+        releaseFeatureBtn.onclick=releaseLockedFeature;cancelBtn.onclick=cancelMove;
+        cutModeBtn.onclick=enableCutMode;copyModeBtn.onclick=enableCopyMode;
+        clearCopyTemplateBtn.onclick=clearCopyTemplate;deleteModeBtn.onclick=enableDeleteMode;
+        undoBtn.onclick=executeUndo;
+        boreSplitBtn.onclick=()=>boreSplitMode?disableBoreSplitMode():enableBoreSplitMode();
+        boreSplitConfirmBtn.onclick=executeBoreSplit;
+        boreSplitCancelBtn.onclick=()=>{resetBoreSplitState();if(boreSplitMode)updateStatus('Bore Split -- click an underground span to select it.');};
+        lockFeatureBtn.onclick=()=>{
+            if(pickingFeatureMode){
+                pickingFeatureMode=false;
+                lockFeatureBtn.classList.remove('smt-picking');
+                if(lockedFeature)lockFeatureBtn.classList.add('smt-locked-btn');
+                lockFeatureBtn.textContent=lockedFeature?'Re-Pick':'Pick';
+                updateStatus(lockedFeature?'Locked: '+lockedFeature.layerConfig.name+'. Pick cancelled.':'Pick cancelled.');
+            }else{
+                pickingFeatureMode=true;
+                if(selectedFeature)cancelMove();
+                lockFeatureBtn.classList.remove('smt-locked-btn');
+                lockFeatureBtn.classList.add('smt-picking');
+                lockFeatureBtn.textContent='Click feature...';
+                updateStatus('Click any point or line feature to lock all edits to it.');
+            }
+        };
         snappingToggleBtn.onclick=()=>{snappingEnabled=!snappingEnabled;snappingToggleBtn.classList.toggle('smt-footer-on',snappingEnabled);snappingToggleBtn.textContent=snappingEnabled?'Snap ON':'Snap OFF';};
         snappingToggleBtn.classList.add('smt-footer-on');
-        cutCtxMenu.querySelector('#cutCtxExecute').onclick=executeCut;cutCtxMenu.querySelector('#cutCtxCancel').onclick=resetCutSelection;
-        delCtxMenu.querySelector('#delCtxExecute').onclick=executeDelete;delCtxMenu.querySelector('#delCtxCancel').onclick=()=>{hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();};
+        cutCtxMenu.querySelector('#cutCtxExecute').onclick=executeCut;
+        cutCtxMenu.querySelector('#cutCtxCancel').onclick=resetCutSelection;
+        delCtxMenu.querySelector('#delCtxExecute').onclick=executeDelete;
+        delCtxMenu.querySelector('#delCtxCancel').onclick=()=>{hideDelContextMenu();clearPickerHoverHighlight();deleteCandidates=[];deleteSelectedIndices.clear();};
         const refreshLayersBtn=toolBox.querySelector('#refreshLayers');
         if(refreshLayersBtn){refreshLayersBtn.onclick=async()=>{refreshLayersBtn.disabled=true;refreshLayersBtn.textContent='...';if(lockedFeature)releaseLockedFeature();if(selectedFeature)cancelMove();exitSpecialMode();updateStatus('Refreshing layers...');await loadLayers();updateLayerBadge();undoStack.length=0;updateUndoBtn();refreshLayersBtn.disabled=false;refreshLayersBtn.textContent='Refresh';updateStatus('Layers refreshed: '+pointLayers.length+' point, '+lineLayers.length+' line, '+polygonLayers.length+' polygon.');};}
         if(closeBtn){closeBtn.onclick=()=>{dismissPickerPopup();dismissCopyPickerPopup();disableTool();clearVertexHighlights();clearVertexCache();clearTimeout(highlightDebounceTimer);if(extentWatchHandle){extentWatchHandle.remove();extentWatchHandle=null;}if(cutGraphicsLayer){mapView.map.remove(cutGraphicsLayer);cutGraphicsLayer=null;}hideCopySnapIndicator();hideDelContextMenu();if(smtTip)smtTip.remove();cutCtxMenu.remove();delCtxMenu.remove();toolBox.remove();if(window.gisToolHost?.activeTools instanceof Set)window.gisToolHost.activeTools.delete('snap-move-tool');};}
