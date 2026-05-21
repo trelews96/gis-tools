@@ -16,9 +16,6 @@
         const mapView = utils.getMapView();
         const z = 99999;
 
-        // Draw-based selection — replaces SketchViewModel entirely.
-        // Draw is lighter, doesn't register drawn shapes as editable map objects,
-        // and initialises lazily only when the user first picks polygon/line mode.
         let drawInstance         = null;
         let activeDrawAction     = null;
         let drawPreviewGraphics  = [];
@@ -309,7 +306,6 @@
         toolBox.querySelectorAll('.modeCard').forEach(card=>{
             card.addEventListener('click',()=>{
                 card.querySelector('input').checked=true;selectionMode=card.dataset.mode;updateModeCards();
-                // Cancel any active draw action and clear its preview graphics
                 if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
                 clearDrawPreview();
                 if(selectionGraphic){selectionGraphic=null;}
@@ -324,10 +320,6 @@
         updateModeCards();
 
         // ── Draw-based selection ──────────────────────────────────────────────
-        // Replaces SketchViewModel. Draw is purpose-built for geometry capture —
-        // it never registers shapes as map features so nothing in the viewer
-        // treats the selection boundary as an editable object.
-
         function clearDrawPreview(){
             drawPreviewGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});
             drawPreviewGraphics=[];
@@ -343,16 +335,12 @@
             window.require(['esri/Graphic'],Graphic=>{
                 if(type==='polygon'){
                     if(vertices.length>=3){
-                        // Proper polygon class instance — plain JSON fails isPolygon() check
-                        // inside drawSolidFill and throws "Unexpected geometry type!"
                         const g=new Graphic({
                             geometry: new PolygonConstructor({rings:[[...vertices,vertices[0]]],spatialReference:mapView.spatialReference}),
                             symbol:{type:'simple-fill',color:[255,255,0,.15],outline:{color:[203,166,247,1],width:2}}
                         });
                         mapView.graphics.add(g);drawPreviewGraphics.push(g);
                     }else{
-                        // Only 2 vertices (1 click + cursor) — not enough for a fill.
-                        // Show a dashed line until the polygon becomes renderable.
                         const g=new Graphic({
                             geometry: new PolylineConstructor({paths:[vertices],spatialReference:mapView.spatialReference}),
                             symbol:{type:'simple-line',color:[203,166,247,.8],width:2,style:'dash'}
@@ -366,7 +354,6 @@
                     });
                     mapView.graphics.add(g);drawPreviewGraphics.push(g);
                 }
-                // Vertex dots — points are fine as plain JSON objects
                 vertices.forEach(v=>{
                     const dot=new Graphic({
                         geometry:{type:'point',x:v[0],y:v[1],spatialReference:mapView.spatialReference},
@@ -377,7 +364,6 @@
             });
         }
 
-        // Lazy initialisation — loads only when user first picks polygon/line mode.
         function initializeDraw(callback){
             if(!window.require){updateStatus('Cannot load drawing tools.');return;}
             if(drawInstance){if(callback)callback();return;}
@@ -870,13 +856,33 @@
                         const btnTxt=document.createElement('span');btnTxt.textContent=currentOpt?currentOpt.name:'— Select —';
                         const btnArr=document.createElement('span');btnArr.textContent='▼';btnArr.style.fontSize='10px';
                         btn.appendChild(btnTxt);btn.appendChild(btnArr);
-                        const panel=document.createElement('div');panel.style.cssText='display:none;margin-top:2px;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+
+                        // ── FIX: use position:fixed appended to body so the panel
+                        //    escapes the toolbox overflow:hidden clipping context.
+                        const panel=document.createElement('div');
+                        panel.className='pe-filter-panel';
+                        panel.style.cssText='display:none;position:fixed;z-index:999999;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+                        function positionValuePanel(){
+                            const r=btn.getBoundingClientRect();
+                            panel.style.left=r.left+'px';
+                            panel.style.top=(r.bottom+2)+'px';
+                            panel.style.width=r.width+'px';
+                        }
+                        panel._reposition=positionValuePanel;
+
                         const srch=document.createElement('input');srch.type='text';srch.placeholder='Search values…';srch.style.cssText='width:100%;padding:7px 10px;background:#313244;border:none;border-bottom:1px solid #45475a;color:#cdd6f4;font-size:12px;outline:none;box-sizing:border-box;';
                         const list=document.createElement('div');list.style.cssText='max-height:160px;overflow-y:auto;';
                         function renderOpts(ft=''){list.innerHTML='';[{code:'',name:'— Select —'},...field.domain.codedValues].filter(cv=>!ft||String(cv.name).toLowerCase().includes(ft.toLowerCase())||String(cv.code).toLowerCase().includes(ft.toLowerCase())).forEach(cv=>{const row=document.createElement('div');const isSel=String(cv.code)===String(selCode);row.style.cssText=`padding:6px 10px;cursor:pointer;font-size:11px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #1e1e2e;`;row.textContent=cv.name;row.addEventListener('mouseenter',()=>{if(String(cv.code)!==String(selCode))row.style.background='#313244';});row.addEventListener('mouseleave',()=>{row.style.background=String(cv.code)===String(selCode)?'#2a1f3d':'transparent';});row.addEventListener('mousedown',e=>{e.preventDefault();selCode=cv.code;if(isSecond)cond.value2=cv.code;else cond.value=cv.code;btnTxt.textContent=cv.name||'— Select —';panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';});list.appendChild(row);});}
-                        btn.addEventListener('click',()=>{const isOpen=panel.style.display==='block';if(!isOpen){panel.style.display='block';btn.classList.add('open');btnArr.textContent='▲';srch.value='';renderOpts('');setTimeout(()=>{srch.focus();panel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}else{panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';}});
-                        srch.addEventListener('input',()=>renderOpts(srch.value));renderOpts();
-                        wrap.appendChild(btn);wrap.appendChild(panel);return wrap;
+                        btn.addEventListener('click',()=>{
+                            const isOpen=panel.style.display==='block';
+                            if(!isOpen){positionValuePanel();panel.style.display='block';btn.classList.add('open');btnArr.textContent='▲';srch.value='';renderOpts('');setTimeout(()=>srch.focus(),50);}
+                            else{panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';}
+                        });
+                        srch.addEventListener('input',()=>renderOpts(srch.value));
+                        panel.appendChild(srch);panel.appendChild(list);
+                        wrap.appendChild(btn);
+                        document.body.appendChild(panel); // appended to body, not wrap
+                        return wrap;
                     }
                     let inp;
                     if(field.type==='date'){inp=document.createElement('input');inp.type='date';inp.className='input-ctrl';if(currentVal)inp.value=currentVal;}
@@ -896,26 +902,51 @@
 
             function createConditionRow(cond){
                 const row=document.createElement('div');row.style.cssText='background:#0f0f17;border:1px solid #313244;border-radius:6px;padding:8px;margin-bottom:6px;';
+
                 const fLbl=document.createElement('div');fLbl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:3px;';fLbl.textContent='Field';
                 const fpWrap=document.createElement('div');fpWrap.style.cssText='position:relative;margin-bottom:6px;';
                 const fBtn=document.createElement('button');fBtn.type='button';fBtn.className='domain-btn';
                 const fBtnTxt=document.createElement('span');const initF=editableFields.find(f=>f.name===cond.field);fBtnTxt.textContent=initF?(initF.alias||initF.name):'— Select a field —';
                 const fBtnArr=document.createElement('span');fBtnArr.textContent='▼';fBtnArr.style.fontSize='10px';fBtn.appendChild(fBtnTxt);fBtn.appendChild(fBtnArr);
-                const fPanel=document.createElement('div');fPanel.style.cssText='display:none;margin-top:2px;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+
+                // ── FIX: use position:fixed appended to body so the panel
+                //    escapes the toolbox overflow:hidden clipping context.
+                const fPanel=document.createElement('div');
+                fPanel.className='pe-filter-panel';
+                fPanel.style.cssText='display:none;position:fixed;z-index:999999;background:#1e1e2e;border:1px solid #45475a;border-radius:6px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,.5);';
+                function positionFPanel(){
+                    const r=fBtn.getBoundingClientRect();
+                    fPanel.style.left=r.left+'px';
+                    fPanel.style.top=(r.bottom+2)+'px';
+                    fPanel.style.width=r.width+'px';
+                }
+                fPanel._reposition=positionFPanel;
+
                 const fSrch=document.createElement('input');fSrch.type='text';fSrch.placeholder='Search fields…';fSrch.style.cssText='width:100%;padding:7px 10px;background:#313244;border:none;border-bottom:1px solid #45475a;color:#cdd6f4;font-size:12px;outline:none;box-sizing:border-box;';
                 const fList=document.createElement('div');fList.style.cssText='max-height:160px;overflow-y:auto;';
                 function renderFOpts(ft=''){fList.innerHTML='';const f=ft.toLowerCase();const filtered=editableFields.filter(fld=>!f||(fld.alias||fld.name).toLowerCase().includes(f));if(!filtered.length){const em=document.createElement('div');em.style.cssText='padding:10px;font-size:11px;color:#6c7086;text-align:center;';em.textContent='No matches';fList.appendChild(em);return;}filtered.forEach(fld=>{const it=document.createElement('div');const isSel=fld.name===cond.field;it.style.cssText=`padding:7px 10px;cursor:pointer;font-size:12px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #313244;display:flex;justify-content:space-between;align-items:center;gap:6px;`;const nm=document.createElement('span');nm.textContent=fld.alias||fld.name;nm.style.flex='1';const tp=document.createElement('span');tp.className='fieldBadge';tp.textContent=getFieldTypeLabel(fld);it.addEventListener('mouseenter',()=>{if(fld.name!==cond.field)it.style.background='#313244';});it.addEventListener('mouseleave',()=>{it.style.background=fld.name===cond.field?'#2a1f3d':'transparent';});it.addEventListener('mousedown',e=>{e.preventDefault();cond.field=fld.name;cond.operator='';cond.value='';cond.value2='';cond.values=[];fBtnTxt.textContent=fld.alias||fld.name;fPanel.style.display='none';fBtn.classList.remove('open');fBtnArr.textContent='▼';refreshOps();});it.appendChild(nm);it.appendChild(tp);fList.appendChild(it);});}
                 renderFOpts();fPanel.appendChild(fSrch);fPanel.appendChild(fList);
-                fBtn.addEventListener('click',()=>{const isOpen=fPanel.style.display==='block';if(!isOpen){fPanel.style.display='block';fBtn.classList.add('open');fBtnArr.textContent='▲';fSrch.value='';renderFOpts('');setTimeout(()=>{fSrch.focus();fPanel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}else{fPanel.style.display='none';fBtn.classList.remove('open');fBtnArr.textContent='▼';}});
+                fBtn.addEventListener('click',()=>{
+                    const isOpen=fPanel.style.display==='block';
+                    if(!isOpen){positionFPanel();fPanel.style.display='block';fBtn.classList.add('open');fBtnArr.textContent='▲';fSrch.value='';renderFOpts('');setTimeout(()=>fSrch.focus(),50);}
+                    else{fPanel.style.display='none';fBtn.classList.remove('open');fBtnArr.textContent='▼';}
+                });
                 fSrch.addEventListener('input',()=>renderFOpts(fSrch.value));
-                fpWrap.appendChild(fBtn);fpWrap.appendChild(fPanel);
+                fpWrap.appendChild(fBtn);
+                document.body.appendChild(fPanel); // appended to body, not fpWrap
+
                 const opLbl=document.createElement('div');opLbl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:3px;';opLbl.textContent='Condition';
                 const opSel=document.createElement('select');opSel.className='input-ctrl';opSel.style.marginBottom='6px';
                 const valLbl=document.createElement('div');valLbl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:3px;';valLbl.textContent='Value';
                 const valueArea=document.createElement('div');
                 function refreshOps(){const field=editableFields.find(f=>f.name===cond.field);opSel.innerHTML='';if(!field)return;getOperatorsForField(field).forEach(op=>{const o=document.createElement('option');o.value=op.value;o.textContent=op.label;if(op.value===cond.operator)o.selected=true;opSel.appendChild(o);});cond.operator=opSel.value;valLbl.style.display=['blank','notblank'].includes(cond.operator)?'none':'block';makeValueArea(cond,valueArea);}
                 opSel.addEventListener('change',()=>{cond.operator=opSel.value;cond.value='';cond.value2='';cond.values=[];valLbl.style.display=['blank','notblank'].includes(cond.operator)?'none':'block';makeValueArea(cond,valueArea);});
-                const rmBtn=document.createElement('button');rmBtn.type='button';rmBtn.className='btn btn-danger';rmBtn.style.cssText='width:100%;margin-top:6px;font-size:11px;padding:4px;';rmBtn.textContent='× Remove';rmBtn.onclick=()=>{const idx=filterConditions.indexOf(cond);if(idx>-1)filterConditions.splice(idx,1);row.remove();};
+                const rmBtn=document.createElement('button');rmBtn.type='button';rmBtn.className='btn btn-danger';rmBtn.style.cssText='width:100%;margin-top:6px;font-size:11px;padding:4px;';rmBtn.textContent='× Remove';
+                rmBtn.onclick=()=>{
+                    const idx=filterConditions.indexOf(cond);
+                    if(idx>-1)filterConditions.splice(idx,1);
+                    row.remove();
+                };
                 row.appendChild(fLbl);row.appendChild(fpWrap);row.appendChild(opLbl);row.appendChild(opSel);row.appendChild(valLbl);row.appendChild(valueArea);row.appendChild(rmBtn);
                 refreshOps();return row;
             }
@@ -1604,6 +1635,8 @@
             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
             clearHighlights();clearBulkHighlights();clearSelectionHighlights();
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
+            // Clean up any orphaned filter panels that were appended to document.body
+            document.querySelectorAll('.pe-filter-panel').forEach(p=>{try{p.remove();}catch(e){}});
             toolBox.remove();
             const ps=document.getElementById('peStyles');if(ps)ps.remove();
         }
@@ -1631,10 +1664,9 @@
 
         setPhase('selection');
         setupFileUpload();
+        const peBody=document.getElementById('peBody');
+        if(peBody)peBody.addEventListener('scroll',()=>{document.querySelectorAll('.pe-filter-panel').forEach(p=>{if(p.style.display==='block'&&p._reposition)p._reposition();});});
         startSelection();
-        // Pre-warm Draw modules in the background while the user is still in the
-        // selection phase. By the time they click polygon/line, the AMD modules
-        // are cached and initializeDraw returns instantly instead of taking 4-5s.
         initializeDraw(null);
         window.gisToolHost.activeTools.set('path-editor', { cleanup, toolBox });
 
