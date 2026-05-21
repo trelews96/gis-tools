@@ -154,6 +154,7 @@
         let arcAnchorMode=false,arcAnchorPt=null,arcAnchorSegInfo=null,arcAnchorGraphic=null,arcActiveSide='left';
         let arcRightClickHandler=null,arcContextMenuHandler=null;
         let movePreviewGraphics=[],movePreviewHandler=null,moveSnapGraphic=null,moveRightAngleGraphics=[],previewSnapGeneration=0;
+        let lastPreviewSnapPt=null; // most recently resolved snap point — used by commit to guarantee consistency
         let copyMode=false,copyPlacementMode=false;
         let cutMode=false,cutPreviewMode=false,cutProcessing=false;
         let cutSelectedPoint=null,cutSelectedPointLayer=null,cutLinesToCut=[];
@@ -323,7 +324,7 @@
                 else if(options.mode==='point'&&resolvedConnected?.length){
                     let isOrtho=false,orthoA=null,orthoB=null,orthoSr=null;
                     if(resolvedConnected.length>=2){
-                        const connDir=(info)=>{const path=info.feature.geometry.paths[info.connection.pathIndex],pi=info.connection.pointIndex;if(pi===0&&path.length>1)return{x:path[1][0],y:path[1][1]};if(pi===path.length-1&&path.length>1)return{x:path[path.length-2][0],y:path[path.length-2][1]};return null;};
+                        const connDir=(info)=>{const g=info.feature.geometry,path=g.paths[info.connection.pathIndex],pi=info.connection.pointIndex,csr=g.spatialReference;if(pi===0&&path.length>1)return{x:path[1][0],y:path[1][1],spatialReference:csr};if(pi===path.length-1&&path.length>1)return{x:path[path.length-2][0],y:path[path.length-2][1],spatialReference:csr};return null;};
                         const dA=connDir(resolvedConnected[0]),dB=connDir(resolvedConnected[1]);
                         if(dA&&dB&&checkRightAngle(toPt,dA,dB)){isOrtho=true;orthoA=dA;orthoB=dB;orthoSr=resolvedConnected[0].feature.geometry.spatialReference;}
                     }
@@ -670,7 +671,73 @@
 
         // Feature selection and movement
         async function handleFeatureSelection(event){const sp={x:event.x,y:event.y};updateStatus('Searching for feature...');if(currentMode==='point'){if(lockedFeature?.featureType==='point'){const r=await findPointFeatureAtLocation(sp);if(!r||(getOid(lockedFeature.feature)!=null&&getOid(r.feature)!==getOid(lockedFeature.feature))){updateStatus('Locked to '+lockedFeature.layerConfig.name+'. Click directly on the locked point.');return;}selectedFeature=lockedFeature.feature;selectedLayer=lockedFeature.layer;selectedLayerConfig=lockedFeature.layerConfig;selectedVertex=null;connectedFeatures=lockedFeature.preloaded?.connectedFeatures||[];colocatedPoints=lockedFeature.preloaded?.colocatedPoints||[];if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());for(const info of connectedFeatures)if(info.feature.geometry?.clone)originalGeometries.set(info.feature.attributes.objectid,info.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;startMovePreview({x:selectedFeature.geometry.x,y:selectedFeature.geometry.y,spatialReference:selectedFeature.geometry.spatialReference},new Set([getOid(selectedFeature),...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean)),{mode:'point',connectedLines:connectedFeatures});updateStatus('Locked '+lockedFeature.layerConfig.name+' selected. Click destination.');return;}const r=await findPointFeatureAtLocation(sp);if(r){selectedFeature=r.feature;selectedLayer=r.layer;selectedLayerConfig=r.layerConfig;selectedVertex=null;if(selectedFeature.geometry?.clone)originalGeometries.set(selectedFeature.attributes.objectid,selectedFeature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;const connectedPromise=findConnectedLines(selectedFeature.geometry);startMovePreview({x:selectedFeature.geometry.x,y:selectedFeature.geometry.y,spatialReference:selectedFeature.geometry.spatialReference},new Set([getOid(selectedFeature)].filter(Boolean)),{mode:'point',connectedPromise});updateStatus(r.layerConfig.name+' selected. Click destination to move.');}else updateStatus('No point feature found.');}else{const results=await findCoincidentLineVertices(sp);if(results.length>0){selectedCoincidentLines=results;selectedFeature=results[0].feature;selectedLayer=results[0].layer;selectedLayerConfig=results[0].layerConfig;selectedVertex=results[0].vertex;for(const li of results)if(li.feature.geometry?.clone)originalGeometries.set(li.feature.attributes.objectid,li.feature.geometry.clone());if(cancelBtn)cancelBtn.disabled=false;waitingForDestination=true;startMovePreview({x:selectedVertex.coordinates.x,y:selectedVertex.coordinates.y,spatialReference:selectedFeature.geometry.spatialReference},new Set(results.map(r=>getOid(r.feature)).filter(Boolean)),{mode:'vertex',coincidentLines:results});const vType=results[0].vertex.isEndpoint?'endpoint':'vertex',lock=lockedFeature?.featureType==='line'?' [locked]':'';updateStatus('Selected '+vType+' on '+results.length+' line(s): '+results.map(r=>r.layerConfig.name).join(', ')+lock+'. Click destination.');}else updateStatus('No line vertex found.');}}
-        async function handleMoveToDestination(event){if(!selectedFeature){updateStatus('No feature selected.');return;}let dst=mapView.toMap({x:event.x,y:event.y});const evtScreen={x:event.x,y:event.y};stopMovePreview();updateStatus('Moving feature...');try{if(currentMode==='point'){const isLockedPoint=lockedFeature?.featureType==='point';if(isLockedPoint){colocatedPoints=lockedFeature.preloaded?.colocatedPoints||colocatedPoints;connectedFeatures=[];}else{updateStatus('Moving feature -- finding connected features...');[connectedFeatures,colocatedPoints]=await Promise.all([findConnectedLines(selectedFeature.geometry),findColocatedPoints(selectedFeature.geometry,getOid(selectedFeature))]);}const ptOid=getOid(selectedFeature);const undoRestores=[{layer:selectedLayer,layerConfig:selectedLayerConfig,oid:ptOid,geometry:cloneGeom(originalGeometries.get(ptOid??'locked')||selectedFeature.geometry)}];if(!isLockedPoint)for(const info of connectedFeatures){const lineOid=getOid(info.feature),lineGeom=originalGeometries.get(lineOid);if(lineGeom)undoRestores.push({layer:info.layer,layerConfig:info.layerConfig,oid:lineOid,geometry:cloneGeom(lineGeom)});}for(const cp of colocatedPoints)undoRestores.push({layer:cp.layer,layerConfig:cp.layerConfig,oid:getOid(cp.feature),geometry:cloneGeom(cp.feature.geometry)});const excludeOids=new Set([ptOid,...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean));const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;if(snapInfo)dst=toTypedPoint(snapInfo.geometry,mapView.spatialReference);if(!isLockedPoint)await updateConnectedLines(dst);const upd=selectedFeature.clone();upd.geometry=dst;if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});if(isLockedPoint)syncLockedFeature(dst);const colocByLayer=new Map();for(const cp of colocatedPoints){const coUpd=cp.feature.clone();coUpd.geometry=dst;const lid=layerKey(cp.layer,cp.layerConfig);if(!colocByLayer.has(lid))colocByLayer.set(lid,{layer:cp.layer,features:[],names:new Set()});colocByLayer.get(lid).features.push(coUpd);colocByLayer.get(lid).names.add(cp.layerConfig.name);}let colocOk=0,colocFail=0;for(const{layer,features}of colocByLayer.values()){try{await layer.applyEdits({updateFeatures:features});colocOk+=features.length;}catch(e){colocFail+=features.length;}}recordUndo('Moved '+selectedLayerConfig.name,undoRestores);let msg='Moved '+selectedLayerConfig.name;if(colocOk>0){const allNames=[...new Set([...colocByLayer.values()].flatMap(v=>[...v.names]))];msg+=' + '+colocOk+' co-located ('+allNames.join(', ')+')';}if(colocFail>0)msg+=' / '+colocFail+' co-located failed';if(!isLockedPoint&&connectedFeatures.length>0)msg+=' + '+connectedFeatures.length+' line(s)';msg+='!';if(snapInfo)msg+=' Snapped.';updateStatus(msg);}else{const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));const undoRestores=selectedCoincidentLines.map(li=>({layer:li.layer,layerConfig:li.layerConfig,oid:getOid(li.feature),geometry:cloneGeom(originalGeometries.get(getOid(li.feature))||li.feature.geometry)}));const snapInfo=snappingEnabled?await findSnapTarget(dst,excludeOids,evtScreen):null;if(snapInfo)dst=snapInfo.geometry;const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;for(const li of selectedCoincidentLines){try{const newPaths=clonePaths(li.feature.geometry),path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name,newGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){}}const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}let ok=0;for(const{layer,updates:batch}of byLayer.values()){try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}catch(e){}}for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}if(ok>0)recordUndo('Moved '+( selectedVertex.isEndpoint?'endpoint':'vertex')+' -- '+[...new Set(selectedCoincidentLines.map(l=>l.layerConfig.name))].join(', '),undoRestores);let msg='Moved '+(selectedVertex.isEndpoint?'endpoint':'vertex')+' on '+ok+' line(s)!';if(snapInfo)msg+=' Snapped.';updateStatus(msg);}selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];originalGeometries.clear();if(cancelBtn)cancelBtn.disabled=true;if(vertexHighlightActive)scheduleHighlightRefresh();setTimeout(()=>updateStatus(lockedReadyStatus()),3000);}catch(e){console.error('handleMoveToDestination error:',e);updateStatus('Error moving feature.');}}
+        async function handleMoveToDestination(event){
+            if(!selectedFeature){updateStatus('No feature selected.');return;}
+            let dst=mapView.toMap({x:event.x,y:event.y});
+            const evtScreen={x:event.x,y:event.y};
+            // Capture the resolved preview snap BEFORE stopMovePreview() clears graphics
+            // (the generation increment inside stopMovePreview would make it hard to
+            // distinguish stale vs. fresh snaps, so we save it first).
+            const savedSnap=snappingEnabled?lastPreviewSnapPt:null;
+            stopMovePreview();
+            lastPreviewSnapPt=null;
+            updateStatus('Moving feature...');
+            try{
+                if(currentMode==='point'){
+                    const isLockedPoint=lockedFeature?.featureType==='point';
+                    if(isLockedPoint){colocatedPoints=lockedFeature.preloaded?.colocatedPoints||colocatedPoints;connectedFeatures=[];}
+                    else{updateStatus('Moving feature -- finding connected features...');[connectedFeatures,colocatedPoints]=await Promise.all([findConnectedLines(selectedFeature.geometry),findColocatedPoints(selectedFeature.geometry,getOid(selectedFeature))]);}
+                    const ptOid=getOid(selectedFeature);
+                    const undoRestores=[{layer:selectedLayer,layerConfig:selectedLayerConfig,oid:ptOid,geometry:cloneGeom(originalGeometries.get(ptOid??'locked')||selectedFeature.geometry)}];
+                    if(!isLockedPoint)for(const info of connectedFeatures){const lineOid=getOid(info.feature),lineGeom=originalGeometries.get(lineOid);if(lineGeom)undoRestores.push({layer:info.layer,layerConfig:info.layerConfig,oid:lineOid,geometry:cloneGeom(lineGeom)});}
+                    for(const cp of colocatedPoints)undoRestores.push({layer:cp.layer,layerConfig:cp.layerConfig,oid:getOid(cp.feature),geometry:cloneGeom(cp.feature.geometry)});
+                    const excludeOids=new Set([ptOid,...colocatedPoints.map(p=>getOid(p.feature))].filter(Boolean));
+                    // Use the exact snap position from the preview if available;
+                    // fall back to a fresh query only when no preview snap was stored.
+                    let snapped=false;
+                    if(savedSnap){dst=toTypedPoint(savedSnap,mapView.spatialReference);snapped=true;}
+                    else if(snappingEnabled){const si=await findSnapTarget(dst,excludeOids,evtScreen);if(si){dst=toTypedPoint(si.geometry,mapView.spatialReference);snapped=true;}}
+                    if(!isLockedPoint)await updateConnectedLines(dst);
+                    const upd=selectedFeature.clone();upd.geometry=dst;
+                    if(selectedLayer.applyEdits)await selectedLayer.applyEdits({updateFeatures:[upd]});
+                    if(isLockedPoint)syncLockedFeature(dst);
+                    const colocByLayer=new Map();
+                    for(const cp of colocatedPoints){const coUpd=cp.feature.clone();coUpd.geometry=dst;const lid=layerKey(cp.layer,cp.layerConfig);if(!colocByLayer.has(lid))colocByLayer.set(lid,{layer:cp.layer,features:[],names:new Set()});colocByLayer.get(lid).features.push(coUpd);colocByLayer.get(lid).names.add(cp.layerConfig.name);}
+                    let colocOk=0,colocFail=0;
+                    for(const{layer,features}of colocByLayer.values()){try{await layer.applyEdits({updateFeatures:features});colocOk+=features.length;}catch(e){colocFail+=features.length;}}
+                    recordUndo('Moved '+selectedLayerConfig.name,undoRestores);
+                    let msg='Moved '+selectedLayerConfig.name;
+                    if(colocOk>0){const allNames=[...new Set([...colocByLayer.values()].flatMap(v=>[...v.names]))];msg+=' + '+colocOk+' co-located ('+allNames.join(', ')+')';}
+                    if(colocFail>0)msg+=' / '+colocFail+' co-located failed';
+                    if(!isLockedPoint&&connectedFeatures.length>0)msg+=' + '+connectedFeatures.length+' line(s)';
+                    msg+='!';if(snapped)msg+=' Snapped.';
+                    updateStatus(msg);
+                }else{
+                    const excludeOids=new Set(selectedCoincidentLines.map(li=>getOid(li.feature)).filter(Boolean));
+                    const undoRestores=selectedCoincidentLines.map(li=>({layer:li.layer,layerConfig:li.layerConfig,oid:getOid(li.feature),geometry:cloneGeom(originalGeometries.get(getOid(li.feature))||li.feature.geometry)}));
+                    // Use saved preview snap for exact coordinates; fall back to query only if needed.
+                    let snapped=false;
+                    if(savedSnap){dst=savedSnap;snapped=true;}
+                    else if(snappingEnabled){const si=await findSnapTarget(dst,excludeOids,evtScreen);if(si){dst=si.geometry;snapped=true;}}
+                    const updates=[],lockedOid=lockedFeature?.featureType==='line'?getOid(lockedFeature.feature):null;
+                    for(const li of selectedCoincidentLines){
+                        try{const newPaths=clonePaths(li.feature.geometry),path=newPaths[li.vertex.pathIndex];if(path?.[li.vertex.pointIndex])path[li.vertex.pointIndex]=[dst.x,dst.y];const newGeom=buildPolyline(li.feature.geometry,newPaths),upd=li.feature.clone();upd.geometry=newGeom;upd.attributes.calculated_length=geodeticLength(newGeom);updates.push({layer:li.layer,feature:upd,layerName:li.layerConfig.name,newGeom,oid:getOid(li.feature),lid:layerKey(li.layer,li.layerConfig)});}catch(e){}
+                    }
+                    const byLayer=new Map();for(const u of updates){if(!byLayer.has(u.lid))byLayer.set(u.lid,{layer:u.layer,updates:[]});byLayer.get(u.lid).updates.push(u);}
+                    let ok=0;
+                    for(const{layer,updates:batch}of byLayer.values()){try{if(layer.applyEdits){await layer.applyEdits({updateFeatures:batch.map(u=>u.feature)});ok+=batch.length;}}catch(e){}}
+                    for(const u of updates){updateVertexCacheGeom(u.lid,u.oid,u.newGeom);if(lockedOid!=null&&u.oid===lockedOid)syncLockedFeature(u.newGeom);}
+                    if(ok>0)recordUndo('Moved '+(selectedVertex.isEndpoint?'endpoint':'vertex')+' -- '+[...new Set(selectedCoincidentLines.map(l=>l.layerConfig.name))].join(', '),undoRestores);
+                    let msg='Moved '+(selectedVertex.isEndpoint?'endpoint':'vertex')+' on '+ok+' line(s)!';if(snapped)msg+=' Snapped.';
+                    updateStatus(msg);
+                }
+                selectedFeature=null;selectedLayer=null;selectedLayerConfig=null;selectedVertex=null;
+                selectedCoincidentLines=[];waitingForDestination=false;connectedFeatures=[];colocatedPoints=[];
+                originalGeometries.clear();if(cancelBtn)cancelBtn.disabled=true;
+                if(vertexHighlightActive)scheduleHighlightRefresh();
+                setTimeout(()=>updateStatus(lockedReadyStatus()),3000);
+            }catch(e){console.error('handleMoveToDestination error:',e);updateStatus('Error moving feature.');}
+        }
 
         // Click dispatcher
         async function handleClick(event){if(!toolActive)return;if(event.button!==0)return;if(isProcessingClick)return;isProcessingClick=true;event.stopPropagation();try{if(cutMode)await handleCutClick(event);else if(copyMode)await handleCopyClick(event);else if(flipMode)await handleFlipClick(event);else if(arcMode)await handleArcClick(event);else if(deleteMode)await handleDeleteClick(event);else if(boreSplitMode)await handleBoreSplitClick(event);else if(pickingFeatureMode)await pickFeature(event);else if(vertexMode==='add'||addVtxKeyHeld)await addVertexToLine(event);else if(vertexMode==='delete'||delVtxKeyHeld)await deleteVertexFromLine(event);else if(!selectedFeature)await handleFeatureSelection(event);else await handleMoveToDestination(event);}finally{isProcessingClick=false;}}
