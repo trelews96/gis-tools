@@ -16,10 +16,16 @@
         const mapView = utils.getMapView();
         const z = 99999;
 
-        let sketchViewModel      = null;
-        let sketchLayer          = null;
+        // Draw-based selection — replaces SketchViewModel entirely.
+        // Draw is lighter, doesn't register drawn shapes as editable map objects,
+        // and initialises lazily only when the user first picks polygon/line mode.
+        let drawInstance         = null;
+        let activeDrawAction     = null;
+        let drawPreviewGraphics  = [];
+        let PolygonConstructor   = null;
+        let PolylineConstructor  = null;
+
         let selectionGraphic     = null;
-        let activeQueryController = null;  // cancels in-flight selections if user aborts
         let selectionGraphics    = [];
         let accumulateMode       = false;
         let selectedFeaturesByLayer = new Map();
@@ -35,8 +41,7 @@
         let mapClickHandler      = null;
         let filesToUpload        = [];
         let lastSubmittedValues  = null;
-        // Persists textarea heights within a session, keyed by field name.
-        // Cleared on startOver so a fresh session starts without stale sizes.
+        let activeQueryController = null;
         const textareaHeights    = new Map();
 
         function layerKey(layer) {
@@ -63,7 +68,6 @@
             return '📎';
         }
 
-        // ── Auto-calculation rules ────────────────────────────────────────────
         const AUTO_CALC_RULES = [
             {
                 layerMatch: 'fiber cable',
@@ -211,7 +215,6 @@
         <div id="toolStatus" style="padding:5px 14px;font-size:10px;color:#89dceb;background:#181825;border-top:1px solid #313244;border-radius:0 0 10px 10px;min-height:22px;flex-shrink:0;"></div>
         `;
 
-        // ── CSS ───────────────────────────────────────────────────────────────
         if (!document.getElementById('peStyles')) {
             const s = document.createElement('style'); s.id='peStyles';
             s.textContent = `
@@ -306,9 +309,10 @@
         toolBox.querySelectorAll('.modeCard').forEach(card=>{
             card.addEventListener('click',()=>{
                 card.querySelector('input').checked=true;selectionMode=card.dataset.mode;updateModeCards();
-                if(sketchViewModel){try{sketchViewModel.cancel();}catch(e){}}
-                if(sketchLayer){try{sketchLayer.removeAll();}catch(e){sketchLayer.graphics&&sketchLayer.graphics.removeAll();}}
-                if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
+                // Cancel any active draw action and clear its preview graphics
+                if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
+                clearDrawPreview();
+                if(selectionGraphic){selectionGraphic=null;}
                 selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
                 if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
                 selectedFeaturesByLayer.clear();$('#selectionResults').innerHTML='';
@@ -319,6 +323,144 @@
         });
         updateModeCards();
 
+        // ── Draw-based selection ──────────────────────────────────────────────
+        // Replaces SketchViewModel. Draw is purpose-built for geometry capture —
+        // it never registers shapes as map features so nothing in the viewer
+        // treats the selection boundary as an editable object.
+
+        function clearDrawPreview(){
+            drawPreviewGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});
+            drawPreviewGraphics=[];
+        }
+
+        function setDrawCursor(active){
+            try{ if(mapView.surface) mapView.surface.style.cursor=active?'crosshair':''; }catch(e){}
+        }
+
+        function renderDrawPreview(vertices, type){
+            clearDrawPreview();
+            if(!vertices||vertices.length<2) return;
+            window.require(['esri/Graphic'],Graphic=>{
+                if(type==='polygon'){
+                    if(vertices.length>=3){
+                        // Proper polygon class instance — plain JSON fails isPolygon() check
+                        // inside drawSolidFill and throws "Unexpected geometry type!"
+                        const g=new Graphic({
+                            geometry: new PolygonConstructor({rings:[[...vertices,vertices[0]]],spatialReference:mapView.spatialReference}),
+                            symbol:{type:'simple-fill',color:[255,255,0,.15],outline:{color:[203,166,247,1],width:2}}
+                        });
+                        mapView.graphics.add(g);drawPreviewGraphics.push(g);
+                    }else{
+                        // Only 2 vertices (1 click + cursor) — not enough for a fill.
+                        // Show a dashed line until the polygon becomes renderable.
+                        const g=new Graphic({
+                            geometry: new PolylineConstructor({paths:[vertices],spatialReference:mapView.spatialReference}),
+                            symbol:{type:'simple-line',color:[203,166,247,.8],width:2,style:'dash'}
+                        });
+                        mapView.graphics.add(g);drawPreviewGraphics.push(g);
+                    }
+                }else if(type==='polyline'){
+                    const g=new Graphic({
+                        geometry: new PolylineConstructor({paths:[vertices],spatialReference:mapView.spatialReference}),
+                        symbol:{type:'simple-line',color:[203,166,247,1],width:3}
+                    });
+                    mapView.graphics.add(g);drawPreviewGraphics.push(g);
+                }
+                // Vertex dots — points are fine as plain JSON objects
+                vertices.forEach(v=>{
+                    const dot=new Graphic({
+                        geometry:{type:'point',x:v[0],y:v[1],spatialReference:mapView.spatialReference},
+                        symbol:{type:'simple-marker',color:[203,166,247,.9],size:7,outline:{color:[255,255,255,1],width:1.5}}
+                    });
+                    mapView.graphics.add(dot);drawPreviewGraphics.push(dot);
+                });
+            });
+        }
+
+        // Lazy initialisation — loads only when user first picks polygon/line mode.
+        function initializeDraw(callback){
+            if(!window.require){updateStatus('Cannot load drawing tools.');return;}
+            if(drawInstance){if(callback)callback();return;}
+            window.require([
+                'esri/views/draw/Draw',
+                'esri/geometry/Polygon',
+                'esri/geometry/Polyline',
+            ],(Draw,Polygon,Polyline)=>{
+                drawInstance=new Draw({view:mapView});
+                PolygonConstructor=Polygon;
+                PolylineConstructor=Polyline;
+                if(callback)callback();
+            });
+        }
+
+        function enablePolygonDrawing(){
+            initializeDraw(()=>{
+                if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
+                clearDrawPreview();
+                setDrawCursor(true);
+                activeDrawAction=drawInstance.create('polygon',{mode:'click'});
+                updateStatus('Draw polygon — click points, double-click to finish. Esc to cancel.');
+
+                activeDrawAction.on(['vertex-add','cursor-update','undo','redo'],evt=>{
+                    renderDrawPreview(evt.vertices,'polygon');
+                });
+
+                const escH=mapView.on('key-down',e=>{
+                    if(e.key!=='Escape')return;
+                    if(activeDrawAction){try{activeDrawAction.destroy();}catch(e2){} activeDrawAction=null;}
+                    clearDrawPreview();setDrawCursor(false);escH.remove();updateStatus('Drawing cancelled.');
+                });
+
+                activeDrawAction.on('draw-complete',async evt=>{
+                    clearDrawPreview();setDrawCursor(false);escH.remove();activeDrawAction=null;
+                    if(evt.vertices.length<3){updateStatus('Polygon needs at least 3 points.');return;}
+                    const polygon=new PolygonConstructor({rings:[evt.vertices],spatialReference:mapView.spatialReference});
+                    selectionGraphic={geometry:polygon};
+                    $('#clearSelectionBtn').disabled=false;
+                    try{await selectFeaturesInPolygon(polygon);}
+                    catch(err){
+                        updateStatus('Selection error: '+err.message);
+                        console.error('Polygon selection error:',err);
+                        selectionGraphic=null;$('#clearSelectionBtn').disabled=true;
+                    }
+                });
+            });
+        }
+
+        function enableLineDrawing(){
+            initializeDraw(()=>{
+                if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
+                clearDrawPreview();
+                setDrawCursor(true);
+                activeDrawAction=drawInstance.create('polyline',{mode:'click'});
+                updateStatus('Draw path — click points, double-click to finish. Esc to cancel.');
+
+                activeDrawAction.on(['vertex-add','cursor-update','undo','redo'],evt=>{
+                    renderDrawPreview(evt.vertices,'polyline');
+                });
+
+                const escH=mapView.on('key-down',e=>{
+                    if(e.key!=='Escape')return;
+                    if(activeDrawAction){try{activeDrawAction.destroy();}catch(e2){} activeDrawAction=null;}
+                    clearDrawPreview();setDrawCursor(false);escH.remove();updateStatus('Drawing cancelled.');
+                });
+
+                activeDrawAction.on('draw-complete',async evt=>{
+                    clearDrawPreview();setDrawCursor(false);escH.remove();activeDrawAction=null;
+                    if(evt.vertices.length<2){updateStatus('Path needs at least 2 points.');return;}
+                    const polyline=new PolylineConstructor({paths:[evt.vertices],spatialReference:mapView.spatialReference});
+                    selectionGraphic={geometry:polyline};
+                    $('#clearSelectionBtn').disabled=false;
+                    try{await selectFeaturesAlongLine(polyline);}
+                    catch(err){
+                        updateStatus('Selection error: '+err.message);
+                        console.error('Line selection error:',err);
+                        selectionGraphic=null;$('#clearSelectionBtn').disabled=true;
+                    }
+                });
+            });
+        }
+
         // ── Selection ─────────────────────────────────────────────────────────
         function startSelection(){
             clearSelection();
@@ -326,8 +468,6 @@
             else if(selectionMode==='line') enableLineDrawing();
             else enableSingleFeatureSelection();
         }
-        function enablePolygonDrawing(){initializeSketchViewModel(()=>{sketchViewModel.create('polygon');updateStatus('Draw polygon — click points, double-click to finish.');});}
-        function enableLineDrawing(){initializeSketchViewModel(()=>{sketchViewModel.create('polyline');updateStatus('Draw path — click points, double-click to finish.');});}
 
         function enableSingleFeatureSelection(){
             updateStatus(accumulateMode
@@ -389,39 +529,11 @@
             });
         }
 
-        function initializeSketchViewModel(callback){
-            if(!window.require){updateStatus('Cannot load drawing tools.');return;}
-            if(sketchViewModel){if(callback)callback();return;}
-            window.require(['esri/widgets/Sketch/SketchViewModel','esri/layers/GraphicsLayer'],(SVM,GraphicsLayer)=>{
-                sketchLayer=new GraphicsLayer({listMode:'hide',legendEnabled:false,title:'__pathEditorSketch'});
-                mapView.map.add(sketchLayer);
-                sketchViewModel=new SVM({
-                    view:mapView,layer:sketchLayer,
-                    polygonSymbol:{type:'simple-fill',color:[255,255,0,.25],outline:{color:[203,166,247,1],width:2}},
-                    polylineSymbol:{type:'simple-line',color:[203,166,247,1],width:3}
-                });
-                sketchViewModel.on('create',async evt=>{
-                    if(evt.state!=='complete')return;
-                    selectionGraphic=evt.graphic;
-                    try{
-                        if(selectionMode==='polygon')await selectFeaturesInPolygon(selectionGraphic.geometry);
-                        else if(selectionMode==='line')await selectFeaturesAlongLine(selectionGraphic.geometry);
-                    }catch(err){
-                        updateStatus('Selection error: '+err.message);
-                        console.error('Sketch selection error:',err);
-                        // Reset sketch state so the tool isn't stuck
-                        try{sketchViewModel.cancel();}catch(e){}
-                        if(sketchLayer)try{sketchLayer.removeAll();}catch(e){}
-                        selectionGraphic=null;
-                        $('#clearSelectionBtn').disabled=true;
-                    }
-                    $('#clearSelectionBtn').disabled=false;
-                });
-                if(callback)callback();
-            });
-        }
-
         async function queryAllLayers(geometry,spatialRel,lineForOrder){
+            if(activeQueryController) activeQueryController.abort();
+            activeQueryController = new AbortController();
+            const signal = activeQueryController.signal;
+
             const s=mapView.scale;
             const allVisible=mapView.map.allLayers.filter(l=>{
                 if(l.type!=='feature'||!l.visible)return false;
@@ -430,9 +542,6 @@
                 return true;
             }).toArray();
 
-            // If a saved config is loaded, only query those specific layers rather than
-            // all visible feature layers. At 200-1000 users this is the single biggest
-            // lever for reducing aggregate server load — most users will have a config.
             let allFL = allVisible;
             const configId = $('#savedConfigSelect')?.value;
             if(configId){
@@ -444,13 +553,12 @@
                 }
             }
 
-            // Process layers in small batches instead of all at once with Promise.all.
-            // This prevents hammering the server with N simultaneous requests and is the
-            // main cause of the heavy server load observed with polygon/line selections.
             const BATCH_SIZE = 3;
             for(let i=0;i<allFL.length;i+=BATCH_SIZE){
+                if(signal.aborted) return;
                 const batch=allFL.slice(i,i+BATCH_SIZE);
                 await Promise.all(batch.map(async layer=>{
+                    if(signal.aborted) return;
                     try{
                         await layer.load();
                         let lv=null;try{lv=await mapView.whenLayerView(layer);}catch(e){}
@@ -459,16 +567,16 @@
                             spatialRelationship:spatialRel,
                             returnGeometry:true,
                             outFields:['*'],
-                            num:2000,               // cap results per layer — prevents unbounded payloads
-                            geometryPrecision:6,    // reduces geometry payload size without affecting usability
+                            num:2000,
+                            geometryPrecision:6,
                         };
                         if(lv?.filter?.where)qp.where=lv.filter.where;else if(layer.definitionExpression)qp.where=layer.definitionExpression;
                         const res=await layer.queryFeatures(qp);
-                        if(!res.features.length)return;
+                        if(signal.aborted||!res.features.length)return;
                         let features=res.features,orderedByLine=false;
                         if(lineForOrder){features=orderFeaturesAlongLine(features,lineForOrder);orderedByLine=true;}
                         selectedFeaturesByLayer.set(layerKey(layer),{layer,features,orderedByLine});
-                    }catch(e){console.warn('Layer query error:',layer.title,e);}
+                    }catch(e){ if(!signal.aborted) console.warn('Layer query error:',layer.title,e); }
                 }));
             }
         }
@@ -487,14 +595,13 @@
         async function selectFeaturesInPolygon(polygon){
             updateStatus('Selecting features in polygon…');
             selectedFeaturesByLayer.clear();
-            // Load geometryEngine if not already available — same guard as selectFeaturesAlongLine.
-            // Without this, generalize() throws if polygon fires before line has ever run.
             if(!window.geometryEngine)await new Promise(r=>window.require(['esri/geometry/geometryEngine'],ge=>{window.geometryEngine=ge;r();}));
             const tol=(mapView.extent.width/mapView.width)*2;
             const geom=window.geometryEngine.generalize(polygon,tol,true,'meters')||polygon;
             await queryAllLayers(geom,'intersects',null);
             displaySelectionResults();
         }
+
         async function selectFeaturesAlongLine(line){
             updateStatus('Selecting features along line…');
             selectedFeaturesByLayer.clear();
@@ -528,8 +635,10 @@
 
         function clearSelection(){
             if(activeQueryController){activeQueryController.abort();activeQueryController=null;}
-            if(sketchViewModel){try{sketchViewModel.cancel();}catch(e){}}
-            if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
+            if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
+            if(drawInstance){try{drawInstance.reset();}catch(e){}}
+            clearDrawPreview();
+            selectionGraphic=null;
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
             if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
             clearHighlights();clearSelectionHighlights();$('#clearSelectionBtn').disabled=true;
@@ -613,7 +722,7 @@
             accumulateMode=false;
             const msChk=$('#multiSelectChk');if(msChk)msChk.checked=false;
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
-            if(selectionGraphic){mapView.graphics.remove(selectionGraphic);selectionGraphic=null;}
+            selectionGraphic=null;
             clearSelectionHighlights();
             const c=$('#layerConfigContainer');c.innerHTML='';let order=1;
             for(const[,data]of selectedFeaturesByLayer)c.appendChild(await createLayerConfigSection(data.layer,data.features,order++));
@@ -649,8 +758,6 @@
                 const sortBtn=document.createElement('button');sortBtn.className='btn btn-secondary';sortBtn.style.cssText='font-size:10px;padding:4px 8px;white-space:nowrap;';sortBtn.textContent='A→Z';let sortAsc=true;
                 ssRow.appendChild(fsearch);ssRow.appendChild(sortBtn);
                 const flc=document.createElement('div');flc.className='fieldListContainer';
-                // Persistent set tracks checked state independently of what's currently
-                // visible in the list — fixes selections being lost when search text changes.
                 const checkedFields=new Set();
                 function renderFieldList(ft='',asc=true){
                     flc.innerHTML='';
@@ -668,7 +775,6 @@
             const optDiv=document.createElement('div');optDiv.style.cssText='display:flex;gap:12px;margin-top:8px;margin-bottom:8px;';
             optDiv.innerHTML=`<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="popup_${lid}" checked style="accent-color:#cba6f7;"> Show Popup</label><label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:#a6adc8;"><input type="checkbox" id="allowskip_${lid}" checked style="accent-color:#cba6f7;"> Allow Skip</label>`;
 
-            // ── Visual Filter Builder ─────────────────────────────────────────
             const filterDiv=document.createElement('div');filterDiv.style.cssText='border-top:1px solid #313244;padding-top:8px;margin-top:4px;';
             let filterConditions=[],filterConjunction='AND';
             const enLbl=document.createElement('label');enLbl.style.cssText='display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;color:#a6adc8;margin-bottom:6px;';
@@ -699,18 +805,11 @@
                 const field=editableFields.find(f=>f.name===cond.field);if(!field||!cond.operator)return null;
                 const fn=cond.field,op=cond.operator,v=cond.value,v2=cond.value2;
                 const isStr=field.type==='string',isDate=field.type==='date',isDomain=field.domain?.type==='coded-value';
-
                 if(op==='includes'||op==='excludes'){
                     if(!Array.isArray(cond.values)||!cond.values.length)return null;
                     let needsQuotes=isStr;
-                    if(isDomain&&field.domain.codedValues.length>0){
-                        needsQuotes=typeof field.domain.codedValues[0].code==='string';
-                    }
-                    const list=cond.values.map(x=>{
-                        if(needsQuotes)return`'${String(x).replace(/'/g,"''")}'`;
-                        const n=Number(x);
-                        return isNaN(n)?`'${String(x).replace(/'/g,"''")}'`:n;
-                    }).join(', ');
+                    if(isDomain&&field.domain.codedValues.length>0){needsQuotes=typeof field.domain.codedValues[0].code==='string';}
+                    const list=cond.values.map(x=>{if(needsQuotes)return`'${String(x).replace(/'/g,"''")}'`;const n=Number(x);return isNaN(n)?`'${String(x).replace(/'/g,"''")}'`:n;}).join(', ');
                     return`${fn} ${op==='includes'?'IN':'NOT IN'} (${list})`;
                 }
                 if(!v&&!['blank','notblank'].includes(op))return null;
@@ -742,7 +841,6 @@
                 const op=cond.operator;
                 if(op==='blank'||op==='notblank'){cond.value='';cond.value2='';return;}
                 const field=editableFields.find(f=>f.name===cond.field);if(!field)return;
-
                 if(op==='includes'||op==='excludes'){
                     if(!Array.isArray(cond.values))cond.values=[];
                     if(field.domain?.type==='coded-value'){
@@ -762,7 +860,6 @@
                     }
                     return;
                 }
-
                 function makeInput(placeholder,currentVal,isSecond){
                     if(field.domain?.type==='coded-value'){
                         const wrap=document.createElement('div');wrap.style.marginBottom='4px';
@@ -778,8 +875,7 @@
                         const list=document.createElement('div');list.style.cssText='max-height:160px;overflow-y:auto;';
                         function renderOpts(ft=''){list.innerHTML='';[{code:'',name:'— Select —'},...field.domain.codedValues].filter(cv=>!ft||String(cv.name).toLowerCase().includes(ft.toLowerCase())||String(cv.code).toLowerCase().includes(ft.toLowerCase())).forEach(cv=>{const row=document.createElement('div');const isSel=String(cv.code)===String(selCode);row.style.cssText=`padding:6px 10px;cursor:pointer;font-size:11px;color:${isSel?'#cba6f7':'#cdd6f4'};background:${isSel?'#2a1f3d':'transparent'};font-weight:${isSel?'600':'normal'};border-bottom:1px solid #1e1e2e;`;row.textContent=cv.name;row.addEventListener('mouseenter',()=>{if(String(cv.code)!==String(selCode))row.style.background='#313244';});row.addEventListener('mouseleave',()=>{row.style.background=String(cv.code)===String(selCode)?'#2a1f3d':'transparent';});row.addEventListener('mousedown',e=>{e.preventDefault();selCode=cv.code;if(isSecond)cond.value2=cv.code;else cond.value=cv.code;btnTxt.textContent=cv.name||'— Select —';panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';});list.appendChild(row);});}
                         btn.addEventListener('click',()=>{const isOpen=panel.style.display==='block';if(!isOpen){panel.style.display='block';btn.classList.add('open');btnArr.textContent='▲';srch.value='';renderOpts('');setTimeout(()=>{srch.focus();panel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}else{panel.style.display='none';btn.classList.remove('open');btnArr.textContent='▼';}});
-                        srch.addEventListener('input',()=>renderOpts(srch.value));
-                        panel.appendChild(srch);panel.appendChild(list);
+                        srch.addEventListener('input',()=>renderOpts(srch.value));renderOpts();
                         wrap.appendChild(btn);wrap.appendChild(panel);return wrap;
                     }
                     let inp;
@@ -791,7 +887,6 @@
                     inp.addEventListener('change',()=>{if(isSecond)cond.value2=inp.value;else cond.value=inp.value;});
                     return inp;
                 }
-
                 if(op==='between'){
                     const fl=document.createElement('div');fl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:2px;';fl.textContent='From:';
                     const tl=document.createElement('div');tl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:2px;margin-top:2px;';tl.textContent='To:';
@@ -814,17 +909,13 @@
                 fBtn.addEventListener('click',()=>{const isOpen=fPanel.style.display==='block';if(!isOpen){fPanel.style.display='block';fBtn.classList.add('open');fBtnArr.textContent='▲';fSrch.value='';renderFOpts('');setTimeout(()=>{fSrch.focus();fPanel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}else{fPanel.style.display='none';fBtn.classList.remove('open');fBtnArr.textContent='▼';}});
                 fSrch.addEventListener('input',()=>renderFOpts(fSrch.value));
                 fpWrap.appendChild(fBtn);fpWrap.appendChild(fPanel);
-
                 const opLbl=document.createElement('div');opLbl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:3px;';opLbl.textContent='Condition';
                 const opSel=document.createElement('select');opSel.className='input-ctrl';opSel.style.marginBottom='6px';
                 const valLbl=document.createElement('div');valLbl.style.cssText='font-size:10px;color:#6c7086;margin-bottom:3px;';valLbl.textContent='Value';
                 const valueArea=document.createElement('div');
-
                 function refreshOps(){const field=editableFields.find(f=>f.name===cond.field);opSel.innerHTML='';if(!field)return;getOperatorsForField(field).forEach(op=>{const o=document.createElement('option');o.value=op.value;o.textContent=op.label;if(op.value===cond.operator)o.selected=true;opSel.appendChild(o);});cond.operator=opSel.value;valLbl.style.display=['blank','notblank'].includes(cond.operator)?'none':'block';makeValueArea(cond,valueArea);}
                 opSel.addEventListener('change',()=>{cond.operator=opSel.value;cond.value='';cond.value2='';cond.values=[];valLbl.style.display=['blank','notblank'].includes(cond.operator)?'none':'block';makeValueArea(cond,valueArea);});
-
                 const rmBtn=document.createElement('button');rmBtn.type='button';rmBtn.className='btn btn-danger';rmBtn.style.cssText='width:100%;margin-top:6px;font-size:11px;padding:4px;';rmBtn.textContent='× Remove';rmBtn.onclick=()=>{const idx=filterConditions.indexOf(cond);if(idx>-1)filterConditions.splice(idx,1);row.remove();};
-
                 row.appendChild(fLbl);row.appendChild(fpWrap);row.appendChild(opLbl);row.appendChild(opSel);row.appendChild(valLbl);row.appendChild(valueArea);row.appendChild(rmBtn);
                 refreshOps();return row;
             }
@@ -871,28 +962,22 @@
             const moveUp     = orderDiv.querySelector('.moveUp');
             const moveDown   = orderDiv.querySelector('.moveDown');
 
-            orderInput.addEventListener('input', () => {
-                card.dataset.order = orderInput.value || '1';
-            });
+            orderInput.addEventListener('input', () => { card.dataset.order = orderInput.value || '1'; });
             moveUp.addEventListener('click', () => {
-                const prev = card.previousElementSibling;
-                if(!prev) return;
+                const prev = card.previousElementSibling; if(!prev) return;
                 card.parentElement.insertBefore(card, prev);
                 const prevInput = prev.querySelector('.orderInput');
-                const myVal  = parseInt(orderInput.value) || parseInt(card.dataset.order);
-                const hisVal = parseInt(prevInput.value)  || parseInt(prev.dataset.order);
-                orderInput.value = hisVal; card.dataset.order = hisVal;
-                prevInput.value  = myVal;  prev.dataset.order  = myVal;
+                const myVal=parseInt(orderInput.value)||parseInt(card.dataset.order);
+                const hisVal=parseInt(prevInput.value)||parseInt(prev.dataset.order);
+                orderInput.value=hisVal;card.dataset.order=hisVal;prevInput.value=myVal;prev.dataset.order=myVal;
             });
             moveDown.addEventListener('click', () => {
-                const next = card.nextElementSibling;
-                if(!next) return;
+                const next = card.nextElementSibling; if(!next) return;
                 card.parentElement.insertBefore(next, card);
                 const nextInput = next.querySelector('.orderInput');
-                const myVal  = parseInt(orderInput.value) || parseInt(card.dataset.order);
-                const hisVal = parseInt(nextInput.value)  || parseInt(next.dataset.order);
-                orderInput.value = hisVal; card.dataset.order = hisVal;
-                nextInput.value  = myVal;  next.dataset.order  = myVal;
+                const myVal=parseInt(orderInput.value)||parseInt(card.dataset.order);
+                const hisVal=parseInt(nextInput.value)||parseInt(next.dataset.order);
+                orderInput.value=hisVal;card.dataset.order=hisVal;nextInput.value=myVal;next.dataset.order=myVal;
             });
 
             body.appendChild(modeRow);body.appendChild(fieldsSection);body.appendChild(optDiv);body.appendChild(filterDiv);body.appendChild(orderDiv);
@@ -900,12 +985,8 @@
             header.addEventListener('click',e=>{if(e.target.closest('label.toggle-wrap'))return;const open=body.style.display==='block';body.style.display=open?'none':'block';chevron.textContent=open?'▼':'▲';});
             ti.onchange=()=>{
                 card.classList.toggle('enabled',ti.checked);
-                if(ti.checked){
-                    body.style.display='block';chevron.textContent='▲';
-                    highlightLayerFeatures(lid, features);
-                } else {
-                    clearLayerHighlights(lid);
-                }
+                if(ti.checked){body.style.display='block';chevron.textContent='▲';highlightLayerFeatures(lid,features);}
+                else{clearLayerHighlights(lid);}
             };
             card.appendChild(header);card.appendChild(body);
             return card;
@@ -917,60 +998,34 @@
         function applyAutoCalcWatchers(item){
             const fc = $('#editFormContainer');
             const layerTitle = (item.layer.title || '').toLowerCase();
-
             AUTO_CALC_RULES.forEach(rule => {
                 if(!layerTitle.includes(rule.layerMatch.toLowerCase())) return;
-
-                const watchEls = rule.watchFields.map(fn =>
-                    fc.querySelector(`[data-field-name="${fn}"]`)
-                );
+                const watchEls = rule.watchFields.map(fn => fc.querySelector(`[data-field-name="${fn}"]`));
                 if(watchEls.some(el => !el)) return;
-
                 let targetEl = fc.querySelector(`[data-field-name="${rule.targetField}"]`);
                 if(!targetEl){
                     const hidden = document.createElement('input');
-                    hidden.type = 'hidden';
-                    hidden.dataset.fieldName = rule.targetField;
-                    hidden.dataset.fieldType = 'integer';
-                    hidden.dataset.autoCalc   = 'true';
-                    fc.appendChild(hidden);
-                    targetEl = hidden;
+                    hidden.type='hidden';hidden.dataset.fieldName=rule.targetField;
+                    hidden.dataset.fieldType='integer';hidden.dataset.autoCalc='true';
+                    fc.appendChild(hidden);targetEl=hidden;
                 }
-
-                const secondWatchEl = watchEls[watchEls.length - 1];
-                const parentDiv = secondWatchEl.closest('div[style*="margin-bottom"]') || secondWatchEl.parentElement;
+                const secondWatchEl = watchEls[watchEls.length-1];
+                const parentDiv = secondWatchEl.closest('div[style*="margin-bottom"]')||secondWatchEl.parentElement;
                 let indicator = fc.querySelector(`[data-autocalc-indicator="${rule.targetField}"]`);
                 if(!indicator){
-                    indicator = document.createElement('div');
-                    indicator.dataset.autocalcIndicator = rule.targetField;
-                    indicator.style.cssText = 'font-size:10px;color:#a6e3a1;margin-top:3px;display:none;';
+                    indicator=document.createElement('div');
+                    indicator.dataset.autocalcIndicator=rule.targetField;
+                    indicator.style.cssText='font-size:10px;color:#a6e3a1;margin-top:3px;display:none;';
                     parentDiv.appendChild(indicator);
                 }
-
                 function recalculate(){
-                    const vals = {};
-                    watchEls.forEach((el, i) => {
-                        const raw = el.dataset.selectedCode !== undefined
-                            ? el.dataset.selectedCode : el.value;
-                        vals[rule.watchFields[i]] = raw !== '' ? Number(raw) : NaN;
-                    });
-                    const allReady = rule.watchFields.every(fn => !isNaN(vals[fn]));
-                    if(allReady){
-                        const result = rule.compute(vals);
-                        targetEl.value = result;
-                        indicator.textContent = `↳ ${rule.targetField} will be set to ${result}`;
-                        indicator.style.display = 'block';
-                    } else {
-                        targetEl.value = '';
-                        indicator.style.display = 'none';
-                    }
+                    const vals={};
+                    watchEls.forEach((el,i)=>{const raw=el.dataset.selectedCode!==undefined?el.dataset.selectedCode:el.value;vals[rule.watchFields[i]]=raw!==''?Number(raw):NaN;});
+                    const allReady=rule.watchFields.every(fn=>!isNaN(vals[fn]));
+                    if(allReady){const result=rule.compute(vals);targetEl.value=result;indicator.textContent=`↳ ${rule.targetField} will be set to ${result}`;indicator.style.display='block';}
+                    else{targetEl.value='';indicator.style.display='none';}
                 }
-
-                watchEls.forEach(el => {
-                    el.addEventListener('input',  recalculate);
-                    el.addEventListener('change', recalculate);
-                });
-
+                watchEls.forEach(el=>{el.addEventListener('input',recalculate);el.addEventListener('change',recalculate);});
                 recalculate();
             });
         }
@@ -1014,22 +1069,15 @@
             sessionStartTime=new Date();editLog=[];lastSubmittedValues=null;
             try{const sel=$('#savedConfigSelect');if(sel?.value)localStorage.setItem('pathEditorLastConfig',sel.value);}catch(e){}
             if($('#bulkEditMode')?.checked){startBulkEdit();return;}
-
-            const interleave = $('#interleaveMode')?.checked && layerConfigs.length > 1;
+            const interleave=$('#interleaveMode')?.checked&&layerConfigs.length>1;
             currentEditingQueue=[];
-
             if(interleave){
-                const queues = layerConfigs.map(cfg =>
-                    cfg.features.map(f=>({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip}))
-                );
-                const maxLen = Math.max(...queues.map(q=>q.length));
-                for(let i=0;i<maxLen;i++){
-                    queues.forEach(q=>{ if(i<q.length) currentEditingQueue.push(q[i]); });
-                }
+                const queues=layerConfigs.map(cfg=>cfg.features.map(f=>({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip})));
+                const maxLen=Math.max(...queues.map(q=>q.length));
+                for(let i=0;i<maxLen;i++){queues.forEach(q=>{if(i<q.length)currentEditingQueue.push(q[i]);});}
             }else{
                 layerConfigs.forEach(cfg=>cfg.features.forEach(f=>currentEditingQueue.push({layer:cfg.layer,feature:f,fields:cfg.fields,mode:cfg.mode,showPopup:cfg.showPopup,allowSkip:cfg.allowSkip})));
             }
-
             currentIndex=0;setPhase('editing');showCurrentFeature();
         }
 
@@ -1049,9 +1097,6 @@
             $('#prevBtn').disabled=currentIndex===0;$('#skipBtn').style.display=item.allowSkip?'block':'none';
             $('#applyPrevRow').style.display=(lastSubmittedValues&&item.mode==='edit'&&item.fields.length>0)?'block':'none';
             filesToUpload=[];updateFileList();
-            // Lazy-load attachments — only query the service when the user asks.
-            // Auto-firing queryAttachments on every feature advance was generating
-            // one unprompted round-trip per feature, more aggressive than the native viewer.
             const attSection=$('#existingAttachmentsSection');
             const attList=$('#existingAttachmentsList');
             if(attSection&&attList){
@@ -1059,10 +1104,7 @@
                     attSection.style.display='block';
                     attList.innerHTML='<button class="btn btn-secondary pe-load-att-btn" style="width:100%;font-size:11px;">🗂️ Load Existing Attachments</button>';
                     attSection.querySelector('.pe-load-att-btn').onclick=()=>loadExistingAttachments(item);
-                }else{
-                    attSection.style.display='none';
-                    attList.innerHTML='';
-                }
+                }else{attSection.style.display='none';attList.innerHTML='';}
             }
             highlightFeature(item.feature,item.showPopup);
             updateStatus(`${item.mode==='edit'?'Editing':'Viewing'} feature ${currentIndex+1} of ${currentEditingQueue.length}`);
@@ -1087,6 +1129,17 @@
             return vals;
         }
 
+        function validateFieldLengths(vals,fields){
+            const errors=[];
+            fields.forEach(f=>{
+                if(f.type==='string'&&f.length&&vals[f.name]!==undefined){
+                    const len=String(vals[f.name]).length;
+                    if(len>f.length)errors.push(`"${f.alias||f.name}" is ${len} chars — max is ${f.length}`);
+                }
+            });
+            return errors;
+        }
+
         async function submitFeature(){
             const item=currentEditingQueue[currentIndex];
             if(item.mode==='view'){currentIndex++;showCurrentFeature();return;}
@@ -1104,10 +1157,7 @@
                 const log={timestamp:new Date(),action:'update',layerName:item.layer.title,featureOID:oid,changes:{},success:true};
                 Object.keys(vals).forEach(k=>{const field=item.fields.find(f=>f.name===k);log.changes[k]={fieldAlias:field?(field.alias||field.name):k,oldValue:item.feature.attributes[k],newValue:vals[k]};});
                 editLog.push(log);
-                // Store submitted string values for predictive text on future features
-                item.fields.filter(f=>f.type==='string').forEach(f=>{
-                    if(vals[f.name]!==undefined) saveSuggestion(f.name, vals[f.name]);
-                });
+                item.fields.filter(f=>f.type==='string').forEach(f=>{if(vals[f.name]!==undefined)saveSuggestion(f.name,vals[f.name]);});
                 if(filesToUpload.length>0)await uploadAttachments(item.layer,item.feature);
                 updateStatus('Feature updated!');currentIndex++;setTimeout(()=>showCurrentFeature(),400);
             }catch(err){updateStatus('Error: '+err.message);alert('Error updating feature: '+err.message);}
@@ -1118,6 +1168,7 @@
 
         // ── Field Inputs ──────────────────────────────────────────────────────
         function getObjectIdField(feature){if(feature.attributes.objectid!==undefined)return 'objectid';if(feature.attributes.OBJECTID!==undefined)return 'OBJECTID';if(feature.layer?.objectIdField)return feature.layer.objectIdField;return Object.keys(feature.attributes).find(k=>k.toUpperCase()==='OBJECTID')||'objectid';}
+
         function createFieldInput(field,currentValue){
             const container=document.createElement('div');container.style.marginBottom='10px';
             const labelRow=document.createElement('div');labelRow.className='field-label';labelRow.innerHTML=`<span>${field.alias||field.name}</span><span class="fieldBadge">${getFieldTypeLabel(field)}</span>`;container.appendChild(labelRow);
@@ -1139,21 +1190,22 @@
                 btn.addEventListener('click',()=>{const isOpen=panel.style.display==='block';$('#editFormContainer').querySelectorAll('.domain-panel-inline').forEach(p=>{p.style.display='none';});toolBox.querySelectorAll('.domain-btn').forEach(b=>{b.classList.remove('open');b.querySelector('span:last-child').textContent='▼';});if(!isOpen){panel.style.display='block';btn.classList.add('open');arrow.textContent='▲';srch.value='';renderList('');setTimeout(()=>{srch.focus();panel.scrollIntoView({behavior:'smooth',block:'nearest'});},50);}});
                 srch.addEventListener('input',()=>renderList(srch.value));
                 wrap.appendChild(btn);wrap.appendChild(panel);input=wrap;
-            }else if(field.type==='date'){input=document.createElement('input');input.type='date';if(currentValue)input.value=new Date(currentValue).toISOString().split('T')[0];input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
-            else if(field.type==='integer'||field.type==='small-integer'){input=document.createElement('input');input.type='number';input.step='1';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
-            else if(field.type==='double'||field.type==='single'){input=document.createElement('input');input.type='number';input.step='any';input.value=currentValue??'';input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;}
-            else{
+            }else if(field.type==='date'){
+                input=document.createElement('input');input.type='date';
+                if(currentValue)input.value=new Date(currentValue).toISOString().split('T')[0];
+                input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;
+            }else if(field.type==='integer'||field.type==='small-integer'){
+                input=document.createElement('input');input.type='number';input.step='1';input.value=currentValue??'';
+                input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;
+            }else if(field.type==='double'||field.type==='single'){
+                input=document.createElement('input');input.type='number';input.step='any';input.value=currentValue??'';
+                input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;
+            }else{
                 input=document.createElement('textarea');
-                input.rows=3;
-                input.value=currentValue??'';
+                input.rows=3;input.value=currentValue??'';
                 if(field.length)input.maxLength=field.length;
-                input.className='input-ctrl';
-                input.dataset.fieldName=field.name;
-                input.dataset.fieldType=field.type;
+                input.className='input-ctrl';input.dataset.fieldName=field.name;input.dataset.fieldType=field.type;
                 input.style.cssText+='resize:vertical;font-family:inherit;line-height:1.4;';
-
-                // Auto-expand: grow to fit content but never shrink below a
-                // manually set height. This runs on every keystroke.
                 function autoExpand(){
                     const stored=textareaHeights.get(field.name);
                     input.style.height='auto';
@@ -1161,53 +1213,21 @@
                     const target=stored?Math.max(natural,stored):natural;
                     input.style.height=target+'px';
                 }
-                input.addEventListener('input', autoExpand);
-
-                // Apply stored height or fit to content on first render.
+                input.addEventListener('input',autoExpand);
                 requestAnimationFrame(()=>{
                     const stored=textareaHeights.get(field.name);
-                    if(stored){
-                        // Honour the user's last manual size, then grow if content
-                        // is taller than that saved size.
-                        input.style.height=stored+'px';
-                        if(input.scrollHeight>stored) input.style.height=input.scrollHeight+'px';
-                    } else {
-                        input.style.height='auto';
-                        input.style.height=input.scrollHeight+'px';
-                    }
+                    if(stored){input.style.height=stored+'px';if(input.scrollHeight>stored)input.style.height=input.scrollHeight+'px';}
+                    else{input.style.height='auto';input.style.height=input.scrollHeight+'px';}
                 });
-
-                // ResizeObserver captures both manual drags and programmatic
-                // expansions and persists the final height by field name so the
-                // next feature in the queue opens at the same size.
-                const ro=new ResizeObserver(entries=>{
-                    const h=Math.round(entries[0].contentRect.height);
-                    if(h>0) textareaHeights.set(field.name, h);
-                });
+                const ro=new ResizeObserver(entries=>{const h=Math.round(entries[0].contentRect.height);if(h>0)textareaHeights.set(field.name,h);});
                 ro.observe(input);
-                // Clean up observer when the form is replaced by the next feature
-                input.addEventListener('blur', ()=>{}, {once:false});
                 const origRemove=input.remove.bind(input);
-                input.remove=()=>{ ro.disconnect(); origRemove(); };
-
+                input.remove=()=>{ro.disconnect();origRemove();};
                 container.style.position='relative';
             }
             container.appendChild(input);
-            if(field.type==='string') attachAutocomplete(input, field.name);
+            if(field.type==='string') attachAutocomplete(input,field.name);
             return container;
-        }
-
-        function validateFieldLengths(vals, fields){
-            // Catches values that exceed the field's defined length before they
-            // hit the database and return a cryptic SQLSTATE=22001 error.
-            const errors=[];
-            fields.forEach(f=>{
-                if(f.type==='string'&&f.length&&vals[f.name]!==undefined){
-                    const len=String(vals[f.name]).length;
-                    if(len>f.length) errors.push(`"${f.alias||f.name}" is ${len} chars — max is ${f.length}`);
-                }
-            });
-            return errors;
         }
 
         // ── Highlights ────────────────────────────────────────────────────────
@@ -1219,13 +1239,8 @@
             mapView.goTo({target:feature.geometry,scale:Math.min(mapView.scale,2000)},{duration:700}).then(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);}).catch(()=>{if(showPopup&&mapView.popup)showFeaturePopup(feature);});
         }
         function showFeaturePopup(feature){
-            // Use the already-fetched feature directly — no need to re-query the service.
-            // The original code fired a queryFeatures round-trip on every feature advance
-            // during editing, which was the one unintended service call outside of
-            // intentional queries and edit submissions.
-            try{
-                mapView.popup.open({features:[feature],location:getPopupLocation(feature.geometry)});
-            }catch(e){console.warn('Popup open failed:',e);}
+            try{mapView.popup.open({features:[feature],location:getPopupLocation(feature.geometry)});}
+            catch(e){console.warn('Popup open failed:',e);}
         }
         function getPopupLocation(geom){try{if(geom.type==='point')return geom;if(geom.type==='polyline'&&geom.paths?.[0]?.length>0){const p=geom.paths[0],mid=Math.floor(p.length/2);return{type:'point',x:p[mid][0],y:p[mid][1],spatialReference:geom.spatialReference};}if(geom.type==='polygon')return geom.centroid||geom.extent?.center||geom;return geom.extent?.center||geom;}catch(e){return geom;}}
 
@@ -1244,6 +1259,7 @@
             $('#bulkEditResults').innerHTML='';
             highlightBulkFeatures(cfg.features);
         }
+
         async function applyBulkEdit(){
             const el=layerConfigs.filter(c=>c.mode==='edit'&&c.fields.length>0),cfg=el[currentBulkLayerIndex];
             const vals=collectFormValues($('#bulkEditFormContainer'));
@@ -1253,28 +1269,27 @@
             if(!confirm(`Apply to ${cfg.features.length} features?`))return;
             updateStatus('Applying bulk edit…');$('#applyBulkEditBtn').disabled=true;
 
-            async function applyWithRetry(batch, attempt=0){
+            async function applyWithRetry(batch,attempt=0){
                 try{
                     return await cfg.layer.applyEdits({updateFeatures:batch});
                 }catch(err){
-                    const status=err.httpStatus??err.status;
-
-                    // Data and auth errors will never succeed on retry — surface immediately.
-                    // Only retry on genuine transient capacity signals (429, 503, no status).
-                    const isDataError=(err.messages??[]).some(m=>
-                        /DBMS error|SQLSTATE|too long|constraint|invalid value|not null|unique/i.test(m)
-                    );
+                    const status=err.details?.httpStatus??err.httpStatus??err.status;
+                    const allMessages=[
+                        ...(Array.isArray(err.details?.messages)?err.details.messages:[]),
+                        ...(Array.isArray(err.details?.raw?.details)?err.details.raw.details:[]),
+                        ...(Array.isArray(err.messages)?err.messages:[]),
+                        err.message??'',
+                    ].join(' ');
+                    const isDataError=/DBMS error|SQLSTATE|too long|constraint|invalid value|not null|unique/i.test(allMessages);
                     const isAuthError=status===401||status===403||status===404;
                     const isTransient=status===429||status===503||(!status&&err.name==='request:timeout');
-
                     if(isDataError){
-                        // Extract the meaningful part of the DB message for the user
-                        const dbMsg=(err.messages??[]).find(m=>/DBMS error|SQLSTATE/i.test(m))||err.message;
-                        const friendly=dbMsg.match(/ERROR:\s*([^\n\[]+)/i)?.[1]?.trim()??dbMsg;
-                        throw new Error(`Data error — ${friendly}`);
+                        const friendly=allMessages.match(/ERROR:\s*([^\n\[]+)/i)?.[1]?.trim()||'Value too long or constraint violation';
+                        const suspects=Object.entries(vals).filter(([,v])=>typeof v==='string'&&v.length>30).map(([k,v])=>{const f=cfg.fields.find(f=>f.name===k);return`  • "${f?.alias||k}": ${v.length} chars — "${v.slice(0,40)}${v.length>40?'…':''}"`;});
+                        const hint=suspects.length?`\n\nLong values submitted:\n${suspects.join('\n')}`:'' ;
+                        throw new Error(`Data error — ${friendly}${hint}`);
                     }
                     if(isAuthError||!isTransient||attempt>=3) throw err;
-
                     const delay=500*Math.pow(2,attempt);
                     updateStatus(`Server busy — retrying in ${delay/1000}s… (attempt ${attempt+1}/3)`);
                     await new Promise(r=>setTimeout(r,delay));
@@ -1282,18 +1297,27 @@
                 }
             }
 
-            try{let ok=0,fail=0;const oidF=getObjectIdField(cfg.features[0]);const batches=cfg.features.map(f=>({attributes:{[oidF]:f.attributes[oidF],...vals}}));for(let i=0;i<batches.length;i+=100){const res=await applyWithRetry(batches.slice(i,i+100));res.updateFeatureResults?.forEach((r,idx)=>{const s=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId)),oid=batches[i+idx].attributes[oidF];if(s){ok++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,changes:vals,success:true});}else{fail++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,success:false,error:r.error?.message});}});updateStatus(`Processed ${Math.min(i+100,batches.length)}/${batches.length}`);}
-            $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail?` | ✗ ${fail} failed`:''}</div>`;
-            clearBulkHighlights();
-            if(currentBulkLayerIndex<el.length-1){
-                updateStatus('Moving to next layer…');
-                setTimeout(()=>{currentBulkLayerIndex++;showBulkEditForm();},2000);
-            }else{
+            try{
+                let ok=0,fail=0;
+                const oidF=getObjectIdField(cfg.features[0]);
+                const batches=cfg.features.map(f=>({attributes:{[oidF]:f.attributes[oidF],...vals}}));
+                for(let i=0;i<batches.length;i+=100){
+                    const res=await applyWithRetry(batches.slice(i,i+100));
+                    res.updateFeatureResults?.forEach((r,idx)=>{
+                        const s=r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId));
+                        const oid=batches[i+idx].attributes[oidF];
+                        if(s){ok++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,changes:vals,success:true});}
+                        else{fail++;editLog.push({timestamp:new Date(),action:'bulk_update',layerName:cfg.layer.title,featureOID:oid,success:false,error:r.error?.message});}
+                    });
+                    updateStatus(`Processed ${Math.min(i+100,batches.length)}/${batches.length}`);
+                }
+                $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#a6e3a1;color:#a6e3a1;">✓ ${ok} updated${fail?` | ✗ ${fail} failed`:''}</div>`;
                 clearBulkHighlights();
-                setTimeout(()=>setPhase('complete'),2000);
-            }
-            }catch(err){$('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#f38ba8;color:#f38ba8;">Error: ${err.message}</div>`;}
-            finally{$('#applyBulkEditBtn').disabled=false;}
+                if(currentBulkLayerIndex<el.length-1){updateStatus('Moving to next layer…');setTimeout(()=>{currentBulkLayerIndex++;showBulkEditForm();},2000);}
+                else{clearBulkHighlights();setTimeout(()=>setPhase('complete'),2000);}
+            }catch(err){
+                $('#bulkEditResults').innerHTML=`<div class="card" style="border-color:#f38ba8;color:#f38ba8;">Error: ${err.message}</div>`;
+            }finally{$('#applyBulkEditBtn').disabled=false;}
         }
 
         // ── Saved Configurations ──────────────────────────────────────────────
@@ -1308,7 +1332,11 @@
         // ── Complete / Report ─────────────────────────────────────────────────
         function displayEditSummary(){const edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update'),ok=edits.filter(e=>e.success).length,skip=editLog.filter(e=>e.action==='skip').length,fail=edits.filter(e=>!e.success).length,dur=sessionStartTime?Math.round((new Date()-sessionStartTime)/1000):0;$('#editSummary').innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#a6e3a1;">${ok}</div><div style="font-size:10px;color:#a6adc8;">Updated</div></div><div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f9e2af;">${skip}</div><div style="font-size:10px;color:#a6adc8;">Skipped</div></div>${fail?`<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#f38ba8;">${fail}</div><div style="font-size:10px;color:#a6adc8;">Failed</div></div>`:''}<div class="stat-box"><div style="font-size:20px;font-weight:700;color:#89b4fa;">${Math.floor(dur/60)}m ${dur%60}s</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div></div>`;}
         function exportSummaryReport(){if(!editLog.length){alert('No edits to export.');return;}const end=new Date(),dur=sessionStartTime?Math.round((end-sessionStartTime)/1000):0,edits=editLog.filter(e=>e.action==='update'||e.action==='bulk_update');let r='='.repeat(70)+'\nPATH EDITOR — EDIT SUMMARY REPORT\n'+'='.repeat(70)+'\n\n';r+=`Session: ${sessionStartTime?.toLocaleString()||'Unknown'} → ${end.toLocaleString()}\nDuration: ${Math.floor(dur/60)}m ${dur%60}s\n\nUpdated: ${edits.filter(e=>e.success).length}  Skipped: ${editLog.filter(e=>e.action==='skip').length}  Failed: ${edits.filter(e=>!e.success).length}\n\nDETAILED LOG\n${'-'.repeat(70)}\n`;editLog.forEach((e,i)=>{r+=`[${i+1}] ${e.timestamp.toLocaleTimeString()} | ${e.layerName} | OID:${e.featureOID} | ${e.action.toUpperCase()} | ${e.success?'OK':'FAIL'}\n`;if(e.changes)Object.entries(e.changes).forEach(([k,v])=>{r+=`    ${k}: ${v.oldValue??''}→${v.newValue??v}\n`;});if(e.error)r+=`    Error: ${e.error}\n`;});const blob=new Blob([r],{type:'text/plain'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`path-editor-report-${end.toISOString().split('T')[0]}.txt`;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);updateStatus('Report exported.');}
-        function startOver(){currentIndex=0;currentBulkLayerIndex=0;layerConfigs=[];currentEditingQueue=[];editLog=[];sessionStartTime=null;lastSubmittedValues=null;clearHighlights();clearBulkHighlights();clearSelection();setPhase('selection');updateStatus('Ready — choose a selection mode.');}
+        function startOver(){
+            currentIndex=0;currentBulkLayerIndex=0;layerConfigs=[];currentEditingQueue=[];editLog=[];sessionStartTime=null;lastSubmittedValues=null;
+            textareaHeights.clear();
+            clearHighlights();clearBulkHighlights();clearSelection();setPhase('selection');updateStatus('Ready — choose a selection mode.');
+        }
 
         // ── CSV Download ──────────────────────────────────────────────────────
         async function downloadLayerCSV(lid,layer){
@@ -1327,7 +1355,7 @@
                 if(!features.length){updateStatus('No features to download after applying filter.');return;}
                 await layer.load();
                 const fields=layer.fields.filter(f=>f.type!=='geometry'&&f.type!=='blob');
-                const escape=v=>{const s=String(v);return(s.includes(',')||s.includes('"')||s.includes('\n'))?`"${s.replace(/"/g,'""')}"`  :s;};
+                const escape=v=>{const s=String(v);return(s.includes(',')||s.includes('"')||s.includes('\n'))?`"${s.replace(/"/g,'""')}"`:s;};
                 const headers=fields.map(f=>escape(f.alias||f.name));
                 const rows=features.map(feat=>fields.map(f=>{let val=feat.attributes[f.name];if(val===null||val===undefined)return '';if(f.type==='date'&&val)val=new Date(val).toLocaleString();if(f.domain?.type==='coded-value'){const cv=f.domain.codedValues.find(c=>c.code==val);if(cv)val=cv.name;}return escape(val);}).join(','));
                 const csv='\uFEFF'+[headers.join(','),...rows].join('\n');
@@ -1353,225 +1381,105 @@
 
         // ── Existing Attachment Viewer ────────────────────────────────────────
         async function loadExistingAttachments(item){
-            const section = $('#existingAttachmentsSection');
-            const list    = $('#existingAttachmentsList');
-            if(!section || !list) return;
-
-            section.style.display = 'none';
-            list.innerHTML = '<div style="font-size:11px;color:#6c7086;">Loading…</div>';
-
+            const section=$('#existingAttachmentsSection');
+            const list=$('#existingAttachmentsList');
+            if(!section||!list)return;
+            section.style.display='none';
+            list.innerHTML='<div style="font-size:11px;color:#6c7086;">Loading…</div>';
             try{
                 await item.layer.load();
-                if(!item.layer.capabilities?.data?.supportsAttachment){
-                    section.style.display = 'none'; return;
-                }
+                if(!item.layer.capabilities?.data?.supportsAttachment){section.style.display='none';return;}
+                const oidField=getObjectIdField(item.feature);
+                const oid=item.feature.attributes[oidField];
+                const result=await item.layer.queryAttachments({objectIds:[oid]});
+                const attachments=(result[oid]||[]);
+                if(!attachments.length){section.style.display='none';return;}
+                section.style.display='block';list.innerHTML='';
 
-                const oidField = getObjectIdField(item.feature);
-                const oid      = item.feature.attributes[oidField];
-                const result   = await item.layer.queryAttachments({ objectIds:[oid] });
-                const attachments = (result[oid] || []);
-
-                if(!attachments.length){ section.style.display = 'none'; return; }
-
-                section.style.display = 'block';
-                list.innerHTML = '';
-
-                // ── Download All button (blob fetch — actually downloads) ──────
-                const dlAllBtn = document.createElement('button');
-                dlAllBtn.type = 'button'; dlAllBtn.className = 'btn btn-info';
-                dlAllBtn.style.cssText = 'width:100%;font-size:11px;margin-bottom:8px;';
-                dlAllBtn.textContent = `⬇ Download All (${attachments.length})`;
-                dlAllBtn.onclick = async () => {
-                    dlAllBtn.disabled = true;
-                    dlAllBtn.textContent = 'Downloading…';
-
-                    for (let i = 0; i < attachments.length; i++) {
-                        const att = attachments[i];
-                        dlAllBtn.textContent = `Downloading ${i + 1} / ${attachments.length}…`;
-                        try {
-                            const resp = await fetch(att.url, { credentials: 'include' });
-                            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                            const blob = await resp.blob();
-                            const url  = URL.createObjectURL(blob);
-                            const a    = document.createElement('a');
-                            a.href     = url;
-                            a.download = att.name;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                            await new Promise(r => setTimeout(r, 300));
-                        } catch (err) {
-                            updateStatus(`Failed to download "${att.name}": ${err.message}`);
-                        }
+                const dlAllBtn=document.createElement('button');
+                dlAllBtn.type='button';dlAllBtn.className='btn btn-info';
+                dlAllBtn.style.cssText='width:100%;font-size:11px;margin-bottom:8px;';
+                dlAllBtn.textContent=`⬇ Download All (${attachments.length})`;
+                dlAllBtn.onclick=async()=>{
+                    dlAllBtn.disabled=true;dlAllBtn.textContent='Downloading…';
+                    for(let i=0;i<attachments.length;i++){
+                        const att=attachments[i];
+                        dlAllBtn.textContent=`Downloading ${i+1} / ${attachments.length}…`;
+                        try{
+                            const resp=await fetch(att.url,{credentials:'include'});
+                            if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+                            const blob=await resp.blob();
+                            const url=URL.createObjectURL(blob);
+                            const a=document.createElement('a');a.href=url;a.download=att.name;
+                            document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+                            await new Promise(r=>setTimeout(r,300));
+                        }catch(err){updateStatus(`Failed to download "${att.name}": ${err.message}`);}
                     }
-
-                    dlAllBtn.disabled = false;
-                    dlAllBtn.textContent = `⬇ Download All (${attachments.length})`;
+                    dlAllBtn.disabled=false;dlAllBtn.textContent=`⬇ Download All (${attachments.length})`;
                     updateStatus(`Downloaded ${attachments.length} attachment(s).`);
                 };
                 list.appendChild(dlAllBtn);
 
-                // ── Per-attachment rows ───────────────────────────────────────
-                attachments.forEach(att => {
-                    const row = document.createElement('div');
-                    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px;background:#313244;border-radius:6px;margin-bottom:4px;';
-
-                    const info = document.createElement('div');
-                    info.style.cssText = 'flex:1;min-width:0;';
-
-                    const nameDisplay = document.createElement('div');
-                    nameDisplay.style.cssText = 'font-size:11px;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:text;border-bottom:1px dashed transparent;transition:border-color .15s;';
-                    nameDisplay.title = 'Click to rename';
-                    nameDisplay.textContent = att.name;
-                    nameDisplay.addEventListener('mouseenter', () => nameDisplay.style.borderBottomColor = '#6c7086');
-                    nameDisplay.addEventListener('mouseleave', () => nameDisplay.style.borderBottomColor = 'transparent');
-
-                    const nameInput = document.createElement('input');
-                    nameInput.type = 'text'; nameInput.value = att.name;
-                    nameInput.style.cssText = 'display:none;width:100%;padding:2px 4px;background:#1e1e2e;border:1px solid #cba6f7;border-radius:4px;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
-
-                    const renameStatus = document.createElement('div');
-                    renameStatus.style.cssText = 'font-size:10px;color:#6c7086;margin-top:2px;min-height:14px;';
-                    renameStatus.textContent = att.size ? `${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename` : '✏️ Click name to rename';
-
-                    let isRenaming = false;
-
-                    function enterEditMode(){
-                        if(isRenaming) return;
-                        nameDisplay.style.display = 'none';
-                        nameInput.style.display   = 'block';
-                        nameInput.focus(); nameInput.select();
-                        renameStatus.textContent  = 'Enter to confirm • Esc to cancel';
-                        renameStatus.style.color  = '#a6adc8';
-                    }
-                    function exitEditMode(){
-                        nameDisplay.style.display = 'block';
-                        nameInput.style.display   = 'none';
-                        renameStatus.textContent  = att.size ? `${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename` : '✏️ Click name to rename';
-                        renameStatus.style.color  = '#6c7086';
-                    }
-
+                attachments.forEach(att=>{
+                    const row=document.createElement('div');
+                    row.style.cssText='display:flex;align-items:center;gap:6px;padding:6px 8px;background:#313244;border-radius:6px;margin-bottom:4px;';
+                    const info=document.createElement('div');info.style.cssText='flex:1;min-width:0;';
+                    const nameDisplay=document.createElement('div');
+                    nameDisplay.style.cssText='font-size:11px;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:text;border-bottom:1px dashed transparent;transition:border-color .15s;';
+                    nameDisplay.title='Click to rename';nameDisplay.textContent=att.name;
+                    nameDisplay.addEventListener('mouseenter',()=>nameDisplay.style.borderBottomColor='#6c7086');
+                    nameDisplay.addEventListener('mouseleave',()=>nameDisplay.style.borderBottomColor='transparent');
+                    const nameInput=document.createElement('input');
+                    nameInput.type='text';nameInput.value=att.name;
+                    nameInput.style.cssText='display:none;width:100%;padding:2px 4px;background:#1e1e2e;border:1px solid #cba6f7;border-radius:4px;color:#cdd6f4;font-size:11px;outline:none;box-sizing:border-box;';
+                    const renameStatus=document.createElement('div');
+                    renameStatus.style.cssText='font-size:10px;color:#6c7086;margin-top:2px;min-height:14px;';
+                    renameStatus.textContent=att.size?`${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename`:'✏️ Click name to rename';
+                    let isRenaming=false;
+                    function enterEditMode(){if(isRenaming)return;nameDisplay.style.display='none';nameInput.style.display='block';nameInput.focus();nameInput.select();renameStatus.textContent='Enter to confirm • Esc to cancel';renameStatus.style.color='#a6adc8';}
+                    function exitEditMode(){nameDisplay.style.display='block';nameInput.style.display='none';renameStatus.textContent=att.size?`${(att.size/1024).toFixed(1)} KB  ✏️ Click name to rename`:'✏️ Click name to rename';renameStatus.style.color='#6c7086';}
                     async function commitRename(){
-                        const newName = nameInput.value.trim();
-                        if(!newName || newName === att.name){ exitEditMode(); return; }
-                        isRenaming = true;
-                        renameStatus.textContent = 'Fetching file…';
-                        renameStatus.style.color = '#f9e2af';
-                        nameInput.disabled = true;
+                        const newName=nameInput.value.trim();
+                        if(!newName||newName===att.name){exitEditMode();return;}
+                        isRenaming=true;renameStatus.textContent='Fetching file…';renameStatus.style.color='#f9e2af';nameInput.disabled=true;
                         try{
-                            const resp = await fetch(att.url, { credentials:'include' });
-                            if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                            const blob = await resp.blob();
-                            const origExt   = att.name.includes('.') ? att.name.split('.').pop() : '';
-                            const finalName = (!newName.includes('.') && origExt) ? `${newName}.${origExt}` : newName;
-                            const fd = new FormData();
-                            fd.append('attachment', new File([blob], finalName, { type: blob.type }));
-                            renameStatus.textContent = 'Uploading…';
-                            const addResult = await item.layer.addAttachment(item.feature, fd);
-                            if(!addResult?.addAttachmentResult?.success && !addResult?.objectId)
-                                throw new Error('Upload did not confirm success');
-                            renameStatus.textContent = 'Removing original…';
-                            await item.layer.deleteAttachments(item.feature, [att.id]);
-                            att.name = finalName;
-                            nameDisplay.textContent = finalName;
-                            nameInput.value         = finalName;
-                            renameStatus.textContent = `✓ Renamed  ✏️ Click name to rename`;
-                            renameStatus.style.color = '#a6e3a1';
-                            updateStatus(`Renamed to: ${finalName}`);
-                            exitEditMode();
-                        }catch(err){
-                            renameStatus.textContent = `✗ Rename failed: ${err.message}`;
-                            renameStatus.style.color = '#f38ba8';
-                            updateStatus('Rename failed: ' + err.message);
-                            exitEditMode();
-                        }finally{
-                            isRenaming = false;
-                            nameInput.disabled = false;
-                        }
+                            const resp=await fetch(att.url,{credentials:'include'});
+                            if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+                            const blob=await resp.blob();
+                            const origExt=att.name.includes('.')?att.name.split('.').pop():'';
+                            const finalName=(!newName.includes('.')&&origExt)?`${newName}.${origExt}`:newName;
+                            const fd=new FormData();fd.append('attachment',new File([blob],finalName,{type:blob.type}));
+                            renameStatus.textContent='Uploading…';
+                            const addResult=await item.layer.addAttachment(item.feature,fd);
+                            if(!addResult?.addAttachmentResult?.success&&!addResult?.objectId)throw new Error('Upload did not confirm success');
+                            renameStatus.textContent='Removing original…';
+                            await item.layer.deleteAttachments(item.feature,[att.id]);
+                            att.name=finalName;nameDisplay.textContent=finalName;nameInput.value=finalName;
+                            renameStatus.textContent='✓ Renamed  ✏️ Click name to rename';renameStatus.style.color='#a6e3a1';
+                            updateStatus(`Renamed to: ${finalName}`);exitEditMode();
+                        }catch(err){renameStatus.textContent=`✗ Rename failed: ${err.message}`;renameStatus.style.color='#f38ba8';updateStatus('Rename failed: '+err.message);exitEditMode();}
+                        finally{isRenaming=false;nameInput.disabled=false;}
                     }
-
-                    nameDisplay.addEventListener('click', enterEditMode);
-                    nameInput.addEventListener('keydown', e => {
-                        if(e.key==='Enter')  { e.preventDefault(); commitRename(); }
-                        if(e.key==='Escape') { exitEditMode(); }
-                    });
-                    nameInput.addEventListener('blur', () => { if(!isRenaming) exitEditMode(); });
-
-                    info.appendChild(nameDisplay);
-                    info.appendChild(nameInput);
-                    info.appendChild(renameStatus);
-
-                    const btnWrap = document.createElement('div');
-                    btnWrap.style.cssText = 'display:flex;gap:4px;flex-shrink:0;';
-
-                    const dlBtn = document.createElement('button');
-                    dlBtn.type = 'button'; dlBtn.className = 'btn btn-info';
-                    dlBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
-                    dlBtn.textContent = '⬇';
-                    dlBtn.title = 'Download';
-                    dlBtn.onclick = async () => {
-                        try{
-                            dlBtn.disabled = true;
-                            const resp = await fetch(att.url, { credentials:'include' });
-                            if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                            const blob = await resp.blob();
-                            const url  = URL.createObjectURL(blob);
-                            const a    = document.createElement('a');
-                            a.href = url; a.download = att.name;
-                            document.body.appendChild(a); a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                        }catch(err){
-                            updateStatus('Download failed: ' + err.message);
-                        }finally{
-                            dlBtn.disabled = false;
-                        }
+                    nameDisplay.addEventListener('click',enterEditMode);
+                    nameInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();commitRename();}if(e.key==='Escape')exitEditMode();});
+                    nameInput.addEventListener('blur',()=>{if(!isRenaming)exitEditMode();});
+                    info.appendChild(nameDisplay);info.appendChild(nameInput);info.appendChild(renameStatus);
+                    const btnWrap=document.createElement('div');btnWrap.style.cssText='display:flex;gap:4px;flex-shrink:0;';
+                    const dlBtn=document.createElement('button');dlBtn.type='button';dlBtn.className='btn btn-info';dlBtn.style.cssText='font-size:10px;padding:3px 8px;';dlBtn.textContent='⬇';dlBtn.title='Download';
+                    dlBtn.onclick=async()=>{
+                        try{dlBtn.disabled=true;const resp=await fetch(att.url,{credentials:'include'});if(!resp.ok)throw new Error(`HTTP ${resp.status}`);const blob=await resp.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=att.name;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);}
+                        catch(err){updateStatus('Download failed: '+err.message);}finally{dlBtn.disabled=false;}
                     };
-
-                    const delBtn = document.createElement('button');
-                    delBtn.type = 'button'; delBtn.className = 'btn btn-danger';
-                    delBtn.style.cssText = 'font-size:10px;padding:3px 8px;';
-                    delBtn.textContent = '🗑';
-                    delBtn.title = 'Delete';
-                    delBtn.onclick = async () => {
-                        if(!confirm(`Delete "${att.name}"?`)) return;
-                        try{
-                            delBtn.disabled = true;
-                            await item.layer.deleteAttachments(item.feature, [att.id]);
-                            row.remove();
-                            const rows = list.querySelectorAll('[data-att-row]');
-                            if(!rows.length) section.style.display = 'none';
-                            updateStatus(`Deleted: ${att.name}`);
-                        }catch(err){
-                            delBtn.disabled = false;
-                            updateStatus('Delete failed: ' + err.message);
-                        }
+                    const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='btn btn-danger';delBtn.style.cssText='font-size:10px;padding:3px 8px;';delBtn.textContent='🗑';delBtn.title='Delete';
+                    delBtn.onclick=async()=>{
+                        if(!confirm(`Delete "${att.name}"?`))return;
+                        try{delBtn.disabled=true;await item.layer.deleteAttachments(item.feature,[att.id]);row.remove();const rows=list.querySelectorAll('[data-att-row]');if(!rows.length)section.style.display='none';updateStatus(`Deleted: ${att.name}`);}
+                        catch(err){delBtn.disabled=false;updateStatus('Delete failed: '+err.message);}
                     };
-
-                    btnWrap.appendChild(dlBtn);
-                    btnWrap.appendChild(delBtn);
-                    row.dataset.attRow = att.id;
-                    row.appendChild(info);
-                    row.appendChild(btnWrap);
-                    list.appendChild(row);
+                    btnWrap.appendChild(dlBtn);btnWrap.appendChild(delBtn);
+                    row.dataset.attRow=att.id;row.appendChild(info);row.appendChild(btnWrap);list.appendChild(row);
                 });
-
-            }catch(err){
-                section.style.display = 'none';
-                console.warn('Could not load attachments:', err);
-            }
-        }
-
-        function cleanup(){
-            if(sketchViewModel){sketchViewModel.destroy();sketchViewModel=null;}
-            if(sketchLayer){mapView.map.remove(sketchLayer);sketchLayer=null;}
-            if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
-            clearHighlights();clearBulkHighlights();clearSelectionHighlights();
-            if(selectionGraphic)mapView.graphics.remove(selectionGraphic);
-            selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
-            toolBox.remove();
-            const ps=document.getElementById('peStyles');if(ps)ps.remove();
+            }catch(err){section.style.display='none';console.warn('Could not load attachments:',err);}
         }
 
         // ── Predictive text / autocomplete ───────────────────────────────────
@@ -1603,19 +1511,11 @@
             let activeIdx=-1;
             let visible=[];
 
-            // Append to body and use fixed positioning so the dropdown can render
-            // to the left of the toolbox without being clipped by overflow:hidden.
             const dropdown=document.createElement('div');
             dropdown.style.cssText=[
-                'display:none',
-                'position:fixed',
-                'width:280px',
-                'background:#1e1e2e',
-                'border:1px solid #cba6f7',
-                'border-radius:8px',
-                'z-index:999999',
-                'max-height:220px',
-                'overflow-y:auto',
+                'display:none','position:fixed','width:280px',
+                'background:#1e1e2e','border:1px solid #cba6f7','border-radius:8px',
+                'z-index:999999','max-height:220px','overflow-y:auto',
                 'box-shadow:-4px 4px 20px rgba(0,0,0,.7)',
                 'font:13px/1.4 "Segoe UI",Arial,sans-serif',
             ].join(';');
@@ -1623,19 +1523,15 @@
 
             function reposition(){
                 const r=textarea.getBoundingClientRect();
-                // Anchor top to the textarea, nudge down if it would clip above viewport
-                const top=Math.max(8, r.top);
-                // Place to the left of the toolbox with an 8px gap
+                const top=Math.max(8,r.top);
                 const right=window.innerWidth-r.left+8;
                 dropdown.style.top=top+'px';
                 dropdown.style.right=right+'px';
-                // If dropdown would overflow below viewport, shift it up
                 const dropH=dropdown.offsetHeight;
                 const maxTop=window.innerHeight-dropH-8;
                 if(top>maxTop) dropdown.style.top=Math.max(8,maxTop)+'px';
             }
 
-            // Reposition on peBody scroll so it tracks the textarea as user scrolls
             const peBody=document.getElementById('peBody');
             function onScroll(){ if(dropdown.style.display!=='none') reposition(); }
             if(peBody) peBody.addEventListener('scroll',onScroll);
@@ -1648,85 +1544,68 @@
             }
             function setActive(idx){
                 activeIdx=idx;
-                dropdown.querySelectorAll('.pe-ac-item').forEach((el,i)=>{
-                    el.style.background=i===idx?'#2a1f3d':'transparent';
-                });
+                dropdown.querySelectorAll('.pe-ac-item').forEach((el,i)=>{el.style.background=i===idx?'#2a1f3d':'transparent';});
                 if(idx>=0){const el=dropdown.querySelectorAll('.pe-ac-item')[idx];if(el)el.scrollIntoView({block:'nearest'});}
             }
             function select(val){
-                // Respect maxLength when applying programmatically — browser only
-                // enforces maxLength for keyboard input, not .value assignment.
                 const maxLen=parseInt(textarea.maxLength);
                 if(maxLen>0&&val.length>maxLen) val=val.slice(0,maxLen);
                 textarea.value=val;
-                textarea.style.height='auto';
-                textarea.style.height=textarea.scrollHeight+'px';
-                hide();
-                textarea.focus();
-                textarea.setSelectionRange(val.length,val.length);
+                textarea.style.height='auto';textarea.style.height=textarea.scrollHeight+'px';
+                hide();textarea.focus();textarea.setSelectionRange(val.length,val.length);
             }
-            function hide(){
-                dropdown.style.display='none';
-                activeIdx=-1; visible=[];
-            }
+            function hide(){ dropdown.style.display='none'; activeIdx=-1; visible=[]; }
             function show(matches){
                 visible=matches; activeIdx=-1; dropdown.innerHTML='';
                 if(!matches.length){ hide(); return; }
-
                 const hdr=document.createElement('div');
                 hdr.style.cssText='padding:5px 10px;font-size:10px;color:#6c7086;border-bottom:1px solid #313244;display:flex;justify-content:space-between;align-items:center;';
                 hdr.innerHTML=`<span style="color:#cba6f7;font-weight:700;">💡 ${fieldName}</span><span>↑↓ • Enter • Esc</span>`;
                 dropdown.appendChild(hdr);
-
                 matches.forEach((s,i)=>{
-                    const item=document.createElement('div');
-                    item.className='pe-ac-item';
+                    const item=document.createElement('div');item.className='pe-ac-item';
                     item.style.cssText='display:flex;align-items:flex-start;padding:8px 10px;cursor:pointer;border-bottom:1px solid #313244;gap:8px;transition:background .1s;';
-
-                    const txt=document.createElement('span');
-                    txt.style.cssText='flex:1;font-size:12px;color:#cdd6f4;white-space:pre-wrap;word-break:break-word;line-height:1.4;';
-                    txt.textContent=s;
-
-                    const rm=document.createElement('button');
-                    rm.type='button'; rm.textContent='✕'; rm.title='Remove suggestion';
+                    const txt=document.createElement('span');txt.style.cssText='flex:1;font-size:12px;color:#cdd6f4;white-space:pre-wrap;word-break:break-word;line-height:1.4;';txt.textContent=s;
+                    const rm=document.createElement('button');rm.type='button';rm.textContent='✕';rm.title='Remove suggestion';
                     rm.style.cssText='background:none;border:none;color:#6c7086;cursor:pointer;font-size:11px;padding:2px 5px;flex-shrink:0;border-radius:3px;line-height:1;transition:color .1s;';
                     rm.addEventListener('mouseenter',()=>rm.style.color='#f38ba8');
                     rm.addEventListener('mouseleave',()=>rm.style.color='#6c7086');
-                    rm.addEventListener('mousedown',e=>{
-                        e.preventDefault(); e.stopPropagation();
-                        removeSuggestion(fieldName,s);
-                        show(getMatches(textarea.value));
-                    });
-
+                    rm.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();removeSuggestion(fieldName,s);show(getMatches(textarea.value));});
                     item.addEventListener('mouseenter',()=>setActive(i));
-                    item.addEventListener('mousedown',e=>{ e.preventDefault(); select(s); });
-                    item.appendChild(txt); item.appendChild(rm);
-                    dropdown.appendChild(item);
+                    item.addEventListener('mousedown',e=>{e.preventDefault();select(s);});
+                    item.appendChild(txt);item.appendChild(rm);dropdown.appendChild(item);
                 });
-
-                dropdown.style.display='block';
-                reposition();
+                dropdown.style.display='block';reposition();
             }
 
             textarea.addEventListener('focus',()=>{ const m=getMatches(textarea.value); if(m.length) show(m); });
             textarea.addEventListener('input',()=>show(getMatches(textarea.value)));
             textarea.addEventListener('keydown',e=>{
                 if(dropdown.style.display==='none') return;
-                if(e.key==='ArrowDown'){ e.preventDefault(); setActive(Math.min(activeIdx+1,visible.length-1)); }
-                else if(e.key==='ArrowUp'){ e.preventDefault(); setActive(Math.max(activeIdx-1,-1)); }
-                else if(e.key==='Enter'&&activeIdx>=0){ e.preventDefault(); select(visible[activeIdx]); }
-                else if(e.key==='Escape'){ e.preventDefault(); hide(); }
+                if(e.key==='ArrowDown'){e.preventDefault();setActive(Math.min(activeIdx+1,visible.length-1));}
+                else if(e.key==='ArrowUp'){e.preventDefault();setActive(Math.max(activeIdx-1,-1));}
+                else if(e.key==='Enter'&&activeIdx>=0){e.preventDefault();select(visible[activeIdx]);}
+                else if(e.key==='Escape'){e.preventDefault();hide();}
             });
             textarea.addEventListener('blur',()=>setTimeout(hide,150));
 
-            // Clean up the body-level dropdown and scroll listener when the
-            // textarea is removed from the DOM (i.e. when advancing features).
             const origRemove=textarea.remove.bind(textarea);
             textarea.remove=()=>{
                 dropdown.remove();
                 if(peBody) peBody.removeEventListener('scroll',onScroll);
                 origRemove();
             };
+        }
+
+        function cleanup(){
+            if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
+            if(drawInstance){try{drawInstance.destroy();}catch(e){} drawInstance=null;}
+            clearDrawPreview();
+            if(mapClickHandler){mapClickHandler.remove();mapClickHandler=null;}
+            clearHighlights();clearBulkHighlights();clearSelectionHighlights();
+            selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
+            toolBox.remove();
+            const ps=document.getElementById('peStyles');if(ps)ps.remove();
         }
 
         // ── Event Wiring ──────────────────────────────────────────────────────
@@ -1753,7 +1632,10 @@
         setPhase('selection');
         setupFileUpload();
         startSelection();
-        initializeSketchViewModel(null);
+        // Pre-warm Draw modules in the background while the user is still in the
+        // selection phase. By the time they click polygon/line, the AMD modules
+        // are cached and initializeDraw returns instantly instead of taking 4-5s.
+        initializeDraw(null);
         window.gisToolHost.activeTools.set('path-editor', { cleanup, toolBox });
 
     } catch(error) {
