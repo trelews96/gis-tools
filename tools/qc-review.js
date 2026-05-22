@@ -20,6 +20,10 @@
     let spatialMode = 'none'; // 'none' | 'screen' | 'drawn'
     let drawnGeometry = null, sketchLayer = null, sketchVM = null, isDrawing = false;
 
+    // ── Lightbox state ────────────────────────────────────────────────
+    let lbImages = [], lbIdx = 0, lbScale = 1, lbPan = { x: 0, y: 0 };
+    let lbDragging = false, lbDragStart = { x: 0, y: 0 }, lbPanStart = { x: 0, y: 0 };
+
     // ── CSS ───────────────────────────────────────────────────────────
     const css = document.createElement('style');
     css.textContent = `
@@ -99,6 +103,46 @@
       /* Drag handle cursor on header */
       #rqcwHeader { cursor:grab; user-select:none; }
       #rqcwHeader.dragging { cursor:grabbing; }
+
+      /* ── Lightbox ── */
+      #rqcwLightbox { position:fixed;inset:0;z-index:${Z + 1000};background:rgba(0,0,0,.92);
+        display:none;flex-direction:column;align-items:center;justify-content:center; }
+      #rqcwLightbox.open { display:flex; }
+      #rqcwLightbox .lb-toolbar { position:absolute;top:0;left:0;right:0;display:flex;align-items:center;
+        justify-content:space-between;padding:10px 16px;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:2; }
+      #rqcwLightbox .lb-title { color:#e2e8f0;font-size:12px;font-weight:600;flex:1;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 12px; }
+      #rqcwLightbox .lb-counter { color:#94a3b8;font-size:11px;white-space:nowrap;margin-right:8px; }
+      #rqcwLightbox .lb-zoom-btns { display:flex;gap:5px;margin-right:8px; }
+      #rqcwLightbox .lb-zoom-btns button { background:rgba(255,255,255,.15);border:none;color:#fff;
+        padding:4px 11px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;transition:background .15s; }
+      #rqcwLightbox .lb-zoom-btns button:hover { background:rgba(255,255,255,.3); }
+      #rqcwLightbox .lb-close { background:rgba(255,255,255,.12);border:none;color:#fff;
+        width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:20px;line-height:1;
+        display:flex;align-items:center;justify-content:center;transition:background .15s; }
+      #rqcwLightbox .lb-close:hover { background:rgba(220,38,38,.6); }
+      #rqcwLightbox .lb-stage { position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden; }
+      #rqcwLightbox .lb-stage.grab  { cursor:grab; }
+      #rqcwLightbox .lb-stage.grabbing { cursor:grabbing; }
+      #rqcwLightbox #lbImg { max-width:90vw;max-height:85vh;object-fit:contain;
+        transform-origin:center center;transition:transform .08s ease-out;
+        user-select:none;pointer-events:none;display:none;border-radius:3px; }
+      #rqcwLightbox .lb-spinner { color:#93c5fd;font-size:13px;position:absolute; }
+      #rqcwLightbox .lb-nav { position:absolute;top:50%;transform:translateY(-50%);
+        background:rgba(255,255,255,.13);border:none;color:#fff;width:44px;height:44px;
+        border-radius:50%;cursor:pointer;font-size:22px;display:flex;align-items:center;
+        justify-content:center;transition:background .15s;z-index:2; }
+      #rqcwLightbox .lb-nav:hover { background:rgba(255,255,255,.3); }
+      #rqcwLightbox .lb-prev { left:16px; }
+      #rqcwLightbox .lb-next { right:16px; }
+      #rqcwLightbox .lb-hint { position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+        background:rgba(0,0,0,.55);color:#94a3b8;font-size:10px;padding:4px 12px;border-radius:99px;
+        white-space:nowrap;pointer-events:none; }
+      /* Attachments bar in feature card */
+      #rqcw #attachmentsBar .btn-attach { background:#f0f9ff;color:#0369a1;border-color:#bae6fd; }
+      #rqcw #attachmentsBar .btn-attach:hover { background:#e0f2fe; }
+      #rqcw .attach-badge { background:#dbeafe;color:#1d4ed8;border-radius:99px;padding:1px 8px;
+        font-size:10px;font-weight:700;margin-left:4px; }
     `;
     document.head.appendChild(css);
 
@@ -271,7 +315,15 @@
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <span id="featureCardLabel" style="font-size:10px;font-weight:700;color:#64748b;
                 text-transform:uppercase;letter-spacing:.4px;">Current Feature</span>
-              <button id="btnZoom" class="btn btn-cyan btn-sm">📍 Zoom</button>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <!-- Attachments button — shown only when attachments exist -->
+                <div id="attachmentsBar" style="display:none;">
+                  <button id="btnAttachments" class="btn btn-ghost btn-sm btn-attach">
+                    🔍 Attachments <span id="attachCount" class="attach-badge"></span>
+                  </button>
+                </div>
+                <button id="btnZoom" class="btn btn-cyan btn-sm">📍 Zoom</button>
+              </div>
             </div>
             <div id="featureInfo" class="attr-grid"></div>
             <div id="gigCommentsBanner" style="display:none;margin-top:10px;padding:8px 10px;
@@ -381,43 +433,55 @@
     `;
 
     document.body.appendChild(box);
-    const $ = sel => box.querySelector(sel);
 
-    // ── Drag-to-move ───────────────────────────────────────────────────
+    // ── Lightbox overlay (outside #rqcw, full-screen) ─────────────────
+    const lb = document.createElement('div');
+    lb.id = 'rqcwLightbox';
+    lb.innerHTML = `
+      <div class="lb-toolbar">
+        <span id="lbCounter" class="lb-counter"></span>
+        <span id="lbTitle" class="lb-title"></span>
+        <div class="lb-zoom-btns">
+          <button id="lbZoomIn"  title="Zoom in  (+)">＋</button>
+          <button id="lbZoomOut" title="Zoom out (-)">－</button>
+          <button id="lbReset"   title="Reset zoom (0)" style="font-size:11px;padding:4px 9px;">1:1</button>
+        </div>
+        <button class="lb-close" id="lbClose" title="Close (Esc)">×</button>
+      </div>
+      <div class="lb-stage grab" id="lbStage">
+        <span class="lb-spinner" id="lbLoading">Loading…</span>
+        <img id="lbImg" alt="Attachment">
+        <button class="lb-nav lb-prev" id="lbPrev" title="Previous (←)">‹</button>
+        <button class="lb-nav lb-next" id="lbNext" title="Next (→)">›</button>
+      </div>
+      <div class="lb-hint">Scroll to zoom · Drag to pan · ← → to navigate</div>
+    `;
+    document.body.appendChild(lb);
+
+    const $  = sel => box.querySelector(sel);
+    const $lb = sel => lb.querySelector(sel);
+
+    // ── Drag-to-move (toolbox header) ──────────────────────────────────
     {
       const header = $('#rqcwHeader');
       let dragging = false, offX = 0, offY = 0;
-
       header.addEventListener('mousedown', e => {
         if (e.target.id === 'btnClose') return;
         dragging = true;
         const rect = box.getBoundingClientRect();
-        offX = e.clientX - rect.left;
-        offY = e.clientY - rect.top;
-        // Switch from right-anchored to left-anchored positioning
+        offX = e.clientX - rect.left; offY = e.clientY - rect.top;
         box.style.right = 'auto';
         box.style.left  = rect.left + 'px';
         box.style.top   = rect.top  + 'px';
-        header.classList.add('dragging');
-        e.preventDefault();
+        header.classList.add('dragging'); e.preventDefault();
       });
-
       document.addEventListener('mousemove', e => {
         if (!dragging) return;
-        let nx = e.clientX - offX;
-        let ny = e.clientY - offY;
-        // Clamp within viewport
-        nx = Math.max(0, Math.min(nx, window.innerWidth  - box.offsetWidth));
-        ny = Math.max(0, Math.min(ny, window.innerHeight - box.offsetHeight));
-        box.style.left = nx + 'px';
-        box.style.top  = ny + 'px';
+        let nx = Math.max(0, Math.min(e.clientX - offX, window.innerWidth  - box.offsetWidth));
+        let ny = Math.max(0, Math.min(e.clientY - offY, window.innerHeight - box.offsetHeight));
+        box.style.left = nx + 'px'; box.style.top = ny + 'px';
       });
-
-      document.addEventListener('mouseup', () => {
-        if (!dragging) return;
-        dragging = false;
-        header.classList.remove('dragging');
-      });
+      document.addEventListener('mouseup', () => { if (!dragging) return; dragging = false; header.classList.remove('dragging'); });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
@@ -486,37 +550,28 @@
       });
     }
 
-    // Collect distinct field values that exist in visible feature layers.
     async function collectFieldValues(fieldName) {
       const layers = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
       const map = new Map();
-
       for (const lyr of layers.items) {
         try {
           if (lyr === sketchLayer) continue;
           await lyr.load();
           const fld = lyr.fields.find(f => f.name.toLowerCase() === fieldName.toLowerCase());
           if (!fld) continue;
-
           const domainLookup = new Map();
-          if (fld.domain?.type === 'coded-value') {
-            fld.domain.codedValues.forEach(cv => domainLookup.set(cv.code, cv.name));
-          }
-
+          if (fld.domain?.type === 'coded-value') fld.domain.codedValues.forEach(cv => domainLookup.set(cv.code, cv.name));
           const q = lyr.createQuery();
           q.where = '1=1'; q.returnDistinctValues = true;
           q.outFields = [fld.name]; q.returnGeometry = false;
           const res = await lyr.queryFeatures(q);
-
           res.features.forEach(f => {
             const code = f.attributes[fld.name];
             if (code == null || code === '') return;
-            const name = domainLookup.get(code) ?? code;
-            map.set(code, name);
+            map.set(code, domainLookup.get(code) ?? code);
           });
         } catch (_) {}
       }
-
       return Array.from(map.entries())
         .map(([code, name]) => ({ code, name }))
         .sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -554,8 +609,7 @@
     // ── Date quick-picks ───────────────────────────────────────────────
     box.querySelectorAll('.qd-strip [data-days]').forEach(btn => {
       btn.onclick = () => {
-        const days = parseInt(btn.dataset.days);
-        const to = new Date(), from = new Date();
+        const days = parseInt(btn.dataset.days), to = new Date(), from = new Date();
         from.setDate(from.getDate() - days);
         $('#dateTo').value   = to.toISOString().split('T')[0];
         $('#dateFrom').value = from.toISOString().split('T')[0];
@@ -571,9 +625,7 @@
       spatialMode = m;
       $('#spAll').className    = 'chip' + (m === 'none'   ? ' active' : '');
       $('#spScreen').className = 'chip' + (m === 'screen' ? ' active' : '');
-      $('#spDraw').className   = 'chip'
-        + (m === 'draw'  ? ' active' : '')
-        + (m === 'drawn' ? ' active-green' : '');
+      $('#spDraw').className   = 'chip' + (m === 'draw'  ? ' active' : '') + (m === 'drawn' ? ' active-green' : '');
       $('#drawPanel').style.display = (m === 'draw' || m === 'drawn') ? 'block' : 'none';
       updateFilterBadge();
     }
@@ -599,11 +651,7 @@
 
     $('#btnDrawPoly').onclick = () => startDraw('polygon', 'click');
     $('#btnDrawFree').onclick = () => startDraw('polygon', 'freehand');
-    $('#btnClearDraw').onclick = () => {
-      clearSketchGraphics();
-      setSpatialMode('draw');
-      setDrawHint('', 'Select a tool above to start drawing');
-    };
+    $('#btnClearDraw').onclick = () => { clearSketchGraphics(); setSpatialMode('draw'); setDrawHint('', 'Select a tool above to start drawing'); };
 
     async function initSketch() {
       if (sketchVM) return;
@@ -615,72 +663,42 @@
       sketchLayer = new GraphicsLayer({ listMode: 'hide', title: 'QC Selection Area' });
       mapView.map.add(sketchLayer);
       sketchVM = new SketchViewModel({
-        view: mapView,
-        layer: sketchLayer,
-        updateOnGraphicClick: false,
-        polygonSymbol: {
-          type: 'simple-fill',
-          color: [37, 99, 235, 0.07],
-          outline: { type: 'simple-line', color: [37, 99, 235, 0.85], width: 2, style: 'dash' }
-        }
+        view: mapView, layer: sketchLayer, updateOnGraphicClick: false,
+        polygonSymbol: { type:'simple-fill', color:[37,99,235,0.07], outline:{type:'simple-line',color:[37,99,235,0.85],width:2,style:'dash'} }
       });
       sketchVM.on('create', e => {
-        if (e.state === 'start') {
-          isDrawing = true;
-          setDrawHint('drawing', 'Drawing…');
-        } else if (e.state === 'complete') {
-          isDrawing = false;
-          drawnGeometry = e.graphic.geometry;
-          setSpatialMode('drawn');
-          setDrawHint('done', '✓ Area selected — run query to apply');
-          setStatus('Drawn area ready', 'ok');
-        } else if (e.state === 'cancel') {
-          isDrawing = false;
-          setDrawHint('', 'Drawing cancelled — select a tool to try again');
-        }
+        if      (e.state === 'start')    { isDrawing = true;  setDrawHint('drawing', 'Drawing…'); }
+        else if (e.state === 'complete') { isDrawing = false; drawnGeometry = e.graphic.geometry; setSpatialMode('drawn'); setDrawHint('done', '✓ Area selected — run query to apply'); setStatus('Drawn area ready', 'ok'); }
+        else if (e.state === 'cancel')   { isDrawing = false; setDrawHint('', 'Drawing cancelled — select a tool to try again'); }
       });
-      setStatus('Sketch ready', 'ok');
-      setDrawHint('', 'Select a tool above to start drawing');
+      setStatus('Sketch ready', 'ok'); setDrawHint('', 'Select a tool above to start drawing');
     }
 
     function startDraw(tool, drawMode) {
       if (!sketchVM) { initSketch().then(() => sketchVM.create(tool, { mode: drawMode })).catch(console.error); return; }
       if (isDrawing) sketchVM.cancel();
-      clearSketchGraphics();
-      sketchVM.create(tool, { mode: drawMode });
+      clearSketchGraphics(); sketchVM.create(tool, { mode: drawMode });
       setDrawHint('drawing', drawMode === 'freehand' ? 'Hold and drag to draw a freehand area' : 'Click to place vertices — double-click to finish');
     }
 
     function clearSketchGraphics() { if (sketchLayer) sketchLayer.removeAll(); drawnGeometry = null; }
 
-    // ── Apply spatial filter to a query object ─────────────────────────
     function applySpatialFilter(query) {
-      if (spatialMode === 'screen') {
-        query.geometry = mapView.extent; query.spatialRelationship = 'intersects';
-      } else if (spatialMode === 'drawn' && drawnGeometry) {
-        query.geometry = drawnGeometry; query.spatialRelationship = 'intersects';
-      }
+      if (spatialMode === 'screen') { query.geometry = mapView.extent; query.spatialRelationship = 'intersects'; }
+      else if (spatialMode === 'drawn' && drawnGeometry) { query.geometry = drawnGeometry; query.spatialRelationship = 'intersects'; }
     }
 
-    // ── Layer candidate list ───────────────────────────────────────────
-    // When a spatial filter is active we query ALL feature layers (ignoring
-    // scale-dependent visibility) so results aren't silently dropped just
-    // because the user is zoomed out past a layer's visible scale range.
-    // When no spatial filter is set we respect the current visible set as
-    // before, keeping behaviour identical to the original for attribute-only queries.
     function getCandidateLayers() {
       const useSpatial = spatialMode === 'screen' || spatialMode === 'drawn';
-      if (useSpatial) {
-        return mapView.map.allLayers.filter(l => l.type === 'feature');
-      }
-      return mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+      return useSpatial
+        ? mapView.map.allLayers.filter(l => l.type === 'feature')
+        : mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
     }
 
     // ── Run query ──────────────────────────────────────────────────────
     async function runQuery() {
       try {
-        setStatus('Querying…', 'busy');
-        $('#btnQuery').disabled = true;
+        setStatus('Querying…', 'busy'); $('#btnQuery').disabled = true;
         if (sketchVM && isDrawing) { sketchVM.cancel(); isDrawing = false; }
         mode === 'new_qc' ? await queryNewFeatures() : await queryClearedGigs();
         $('#btnRefresh').disabled = false;
@@ -702,9 +720,7 @@
       const where = clauses.join(' AND '), sort = $('#sortOrder').value;
 
       const layers = getCandidateLayers();
-      qcQueue = [];
-      const counts = {}, errs = [];
-
+      qcQueue = []; const counts = {}, errs = [];
       for (const lyr of layers.items) {
         try {
           if (lyr === sketchLayer) continue;
@@ -725,7 +741,6 @@
           }
         } catch (_) { errs.push(lyr.title); }
       }
-
       qcQueue.sort((a, b) => {
         const da = a.feature.attributes.installation_date || 0, db = b.feature.attributes.installation_date || 0;
         return sort === 'desc' ? db - da : da - db;
@@ -737,7 +752,6 @@
       const gigLyr = mapView.map.allLayers.find(l => l.layerId === 22100);
       if (!gigLyr) throw new Error('GIG layer (22100) not found');
       await gigLyr.load();
-
       const clauses = ["gig_status = 'CLEAR'"];
       const woCode  = $('#woSearch').dataset.code;
       const poCode  = $('#poSearch').dataset.code;
@@ -750,13 +764,11 @@
       const df = $('#dateFrom').value, dt = $('#dateTo').value;
       if (df) clauses.push(`created_date >= ${new Date(df).getTime()}`);
       if (dt) clauses.push(`created_date <= ${new Date(dt + 'T23:59:59').getTime()}`);
-
       const sort = $('#sortOrder').value;
       const q = gigLyr.createQuery();
       q.where = clauses.join(' AND '); q.outFields = ['*']; q.returnGeometry = true;
       applySpatialFilter(q);
       try { q.orderByFields = [`created_date ${sort.toUpperCase()}`]; } catch (_) {}
-
       const res = await gigLyr.queryFeatures(q);
       qcQueue = res.features.map(f => {
         const a = f.attributes;
@@ -848,6 +860,7 @@
       renderFeatureInfo(item); resetForm(); startTimer();
       $('#btnPrev').disabled = currentIndex === 0;
       showPopup(item);
+      loadAttachments(item);   // ← fetch & wire attachment button
       setStatus(`Reviewing ${currentIndex + 1} of ${qcQueue.length}`, 'busy');
     }
 
@@ -855,16 +868,14 @@
       const a = item.feature.attributes, isNew = item.type === 'new_qc';
       const rows = [];
       if (isNew) {
-        rows.push(['GIS ID', item.gisId], ['Layer', item.layer.title],
-          ['Work Order', a.workorder_id || 'N/A']);
+        rows.push(['GIS ID', item.gisId], ['Layer', item.layer.title], ['Work Order', a.workorder_id || 'N/A']);
         if (a.job_number)        rows.push(['Job Number', a.job_number]);
         if (a.purchase_order_id) rows.push(['Purchase Order', a.purchase_order_id]);
         if (a.installation_date) rows.push(['Install Date', new Date(a.installation_date).toLocaleDateString()]);
         if (a.supervisor)        rows.push(['Supervisor', a.supervisor]);
         if (a.crew)              rows.push(['Crew', a.crew]);
       } else {
-        rows.push(['Origin GlobalID', item.gisId], ['GIG Type', item.gigTypeName],
-          ['Work Order', a.workorder_id || 'N/A']);
+        rows.push(['Origin GlobalID', item.gisId], ['GIG Type', item.gigTypeName], ['Work Order', a.workorder_id || 'N/A']);
         if (a.job_number)        rows.push(['Job Number', a.job_number]);
         if (a.purchase_order_id) rows.push(['Purchase Order', a.purchase_order_id]);
         if (a.created_date)      rows.push(['Created', new Date(a.created_date).toLocaleDateString()]);
@@ -880,6 +891,7 @@
       box.querySelectorAll("input[name='qcDec'],input[name='clrDec']").forEach(r => r.checked = false);
       box.querySelectorAll('.radio-card').forEach(rc => rc.className = 'radio-card');
       $('#issueSection').style.display = 'none'; $('#qcNotes').value = '';
+      $('#attachmentsBar').style.display = 'none';  // hide until loaded
     }
 
     // ── Timer ─────────────────────────────────────────────────────────
@@ -931,12 +943,139 @@
 
     function buildGigAttrs(src, gigType, gigStatus, comments) {
       const a = src.attributes;
-      return { billing_area_code: a.globalid, client_code:a.client_code, project_id:a.project_id,
+      return { billing_area_code:a.globalid, client_code:a.client_code, project_id:a.project_id,
         job_number:a.job_number, purchase_order_id:a.purchase_order_id, workorder_id:a.workorder_id,
         workflow_stage:a.workflow_stage, workflow_status:a.workflow_status, supervisor:a.supervisor,
         crew:a.crew, construction_subcontractor:a.construction_subcontractor,
         gig_type:gigType, gig_status:gigStatus, comments:comments||null };
     }
+
+    // ── Attachments ───────────────────────────────────────────────────
+    async function loadAttachments(item) {
+      const bar = $('#attachmentsBar');
+      bar.style.display = 'none';
+      try {
+        const lyr = item.layer;
+        // Layer must support attachments
+        if (!lyr.capabilities?.operations?.supportsQueryAttachments && !lyr.hasAttachments) return;
+        const oid = item.feature.attributes[lyr.objectIdField];
+        const res = await lyr.queryAttachments({ objectIds: [oid] });
+        const attachments = (res[oid] || []).filter(a => a.contentType?.startsWith('image/'));
+        if (!attachments.length) return;
+        bar.style.display = 'block';
+        $('#attachCount').textContent = attachments.length;
+        $('#btnAttachments').onclick = () => openLightbox(attachments);
+      } catch (e) { console.warn('Attachments query failed:', e); }
+    }
+
+    // ── Lightbox ──────────────────────────────────────────────────────
+    function applyLbTransform() {
+      $lb('#lbImg').style.transform = `translate(${lbPan.x}px,${lbPan.y}px) scale(${lbScale})`;
+    }
+
+    function openLightbox(attachments) {
+      lbImages = attachments; lbIdx = 0; lbScale = 1; lbPan = { x:0, y:0 };
+      lb.classList.add('open');
+      showLbImage();
+    }
+
+    function closeLightbox() {
+      lb.classList.remove('open');
+      $lb('#lbImg').src = '';
+    }
+
+    function showLbImage() {
+      const img = $lb('#lbImg'), att = lbImages[lbIdx];
+      lbScale = 1; lbPan = { x:0, y:0 };
+      applyLbTransform();
+      img.style.display = 'none';
+      $lb('#lbLoading').style.display = 'block';
+      img.onload  = () => { $lb('#lbLoading').style.display = 'none'; img.style.display = 'block'; };
+      img.onerror = () => { $lb('#lbLoading').textContent = '⚠ Could not load image'; };
+      img.src = att.url;
+      $lb('#lbCounter').textContent = `${lbIdx + 1} / ${lbImages.length}`;
+      $lb('#lbTitle').textContent   = att.name || '';
+      $lb('#lbPrev').style.display  = lbImages.length > 1 ? 'flex' : 'none';
+      $lb('#lbNext').style.display  = lbImages.length > 1 ? 'flex' : 'none';
+    }
+
+    function lbZoom(factor) {
+      lbScale = Math.min(10, Math.max(0.25, lbScale * factor));
+      applyLbTransform();
+    }
+
+    // Wheel-to-zoom on the stage
+    $lb('#lbStage').addEventListener('wheel', e => {
+      e.preventDefault();
+      lbZoom(e.deltaY < 0 ? 1.15 : 0.87);
+    }, { passive: false });
+
+    // Drag-to-pan on the stage
+    $lb('#lbStage').addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      lbDragging = true;
+      lbDragStart  = { x: e.clientX, y: e.clientY };
+      lbPanStart   = { ...lbPan };
+      $lb('#lbStage').classList.replace('grab', 'grabbing');
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+      if (!lbDragging) return;
+      lbPan = { x: lbPanStart.x + (e.clientX - lbDragStart.x), y: lbPanStart.y + (e.clientY - lbDragStart.y) };
+      applyLbTransform();
+    });
+    document.addEventListener('mouseup', () => {
+      if (!lbDragging) return;
+      lbDragging = false;
+      $lb('#lbStage').classList.replace('grabbing', 'grab');
+    });
+
+    // Touch pinch-to-zoom
+    let lbLastDist = null;
+    $lb('#lbStage').addEventListener('touchstart', e => { if (e.touches.length === 2) lbLastDist = null; }, { passive: true });
+    $lb('#lbStage').addEventListener('touchmove', e => {
+      if (e.touches.length !== 2) return;
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (lbLastDist !== null) lbZoom(dist / lbLastDist);
+      lbLastDist = dist;
+    }, { passive: false });
+
+    // Lightbox button wiring
+    $lb('#lbClose').onclick   = closeLightbox;
+    $lb('#lbZoomIn').onclick  = () => lbZoom(1.3);
+    $lb('#lbZoomOut').onclick = () => lbZoom(0.77);
+    $lb('#lbReset').onclick   = () => { lbScale = 1; lbPan = {x:0,y:0}; applyLbTransform(); };
+    $lb('#lbPrev').onclick    = () => { lbIdx = (lbIdx - 1 + lbImages.length) % lbImages.length; showLbImage(); };
+    $lb('#lbNext').onclick    = () => { lbIdx = (lbIdx + 1) % lbImages.length;                   showLbImage(); };
+
+    // Keyboard for lightbox
+    function onKey(e) {
+      if (lb.classList.contains('open')) {
+        if (e.key === 'Escape')      { closeLightbox(); return; }
+        if (e.key === 'ArrowLeft')   { $lb('#lbPrev').click(); return; }
+        if (e.key === 'ArrowRight')  { $lb('#lbNext').click(); return; }
+        if (e.key === '+' || e.key === '=') { lbZoom(1.3); return; }
+        if (e.key === '-')           { lbZoom(0.77); return; }
+        if (e.key === '0')           { lbScale=1; lbPan={x:0,y:0}; applyLbTransform(); return; }
+      }
+      if (currentPhase !== 'review') return;
+      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+      if (mode === 'new_qc') {
+        if (e.key==='p'||e.key==='P') { $('#radPass').click();  $('#radPass').dispatchEvent(new Event('change')); }
+        if (e.key==='f'||e.key==='F') { $('#radFail').click();  $('#radFail').dispatchEvent(new Event('change')); }
+        if (e.key==='m'||e.key==='M') { $('#radPhoto').click(); $('#radPhoto').dispatchEvent(new Event('change')); }
+      } else {
+        if (e.key==='a'||e.key==='A') { $('#radApprove').click(); $('#radApprove').dispatchEvent(new Event('change')); }
+        if (e.key==='r'||e.key==='R') { $('#radReopen').click();  $('#radReopen').dispatchEvent(new Event('change')); }
+      }
+      if (e.key==='Enter')      $('#btnSubmit').click();
+      if (e.key==='ArrowRight') skipFeature();
+      if (e.key==='ArrowLeft')  prevFeature();
+    }
+    document.addEventListener('keydown', onKey);
 
     // ── Submit — New QC ───────────────────────────────────────────────
     async function submitNewQc() {
@@ -1031,7 +1170,7 @@
       sessionLog.push({ timestamp:new Date(), action:'skip', layerName:qcQueue[currentIndex].layer.title, gisId:qcQueue[currentIndex].gisId, timeSpent:elapsed(), success:true });
       stopTimer(); currentIndex++; showFeature();
     };
-    const prevFeature = () => { if (currentIndex>0) { stopTimer(); currentIndex--; showFeature(); } };
+    const prevFeature = () => { if (currentIndex > 0) { stopTimer(); currentIndex--; showFeature(); } };
 
     // ── Complete ──────────────────────────────────────────────────────
     function completeSession() {
@@ -1041,16 +1180,16 @@
     }
 
     function renderSummary() {
-      const rev  = sessionLog.filter(e => e.action==='qc_review');
-      const pass = rev.filter(e => e.decision==='Pass'||e.decision==='Approve').length;
-      const fail = rev.filter(e => e.decision==='Fail'||e.decision==='Re-open').length;
+      const rev   = sessionLog.filter(e => e.action === 'qc_review');
+      const pass  = rev.filter(e => e.decision==='Pass'||e.decision==='Approve').length;
+      const fail  = rev.filter(e => e.decision==='Fail'||e.decision==='Re-open').length;
       const photo = rev.filter(e => e.decision==='Missing Photo').length;
-      const skip = sessionLog.filter(e => e.action==='skip').length;
-      const errs = sessionLog.filter(e => !e.success).length;
-      const gigs = rev.filter(e=>e.success).reduce((s,e)=>s+(e.gigPointsCreated||0),0);
-      const rate = rev.length ? Math.round((pass/rev.length)*100) : 0;
-      const dur  = sessionStartTime ? Math.floor((new Date()-sessionStartTime)/1000) : 0;
-      const row  = (l,v,c='#1e293b') => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;"><span style="font-size:11px;color:#64748b;">${l}</span><span style="font-size:12px;font-weight:700;color:${c};">${v}</span></div>`;
+      const skip  = sessionLog.filter(e => e.action === 'skip').length;
+      const errs  = sessionLog.filter(e => !e.success).length;
+      const gigs  = rev.filter(e => e.success).reduce((s, e) => s + (e.gigPointsCreated||0), 0);
+      const rate  = rev.length ? Math.round((pass/rev.length)*100) : 0;
+      const dur   = sessionStartTime ? Math.floor((new Date()-sessionStartTime)/1000) : 0;
+      const row   = (l,v,c='#1e293b') => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;"><span style="font-size:11px;color:#64748b;">${l}</span><span style="font-size:12px;font-weight:700;color:${c};">${v}</span></div>`;
       $('#sessionSummary').innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:10px;">Session Summary</div>
         ${row('Total Reviewed',rev.length)}${row('Passed / Approved',pass,'#16a34a')}${row('Failed / Re-opened',fail,'#dc2626')}
         ${photo?row('Missing Photo',photo,'#d97706'):''}${skip?row('Skipped',skip):''}${errs?row('Errors',errs,'#dc2626'):''}
@@ -1110,24 +1249,6 @@
       setPhase('query'); updateFilterBadge(); setStatus('Ready', 'idle');
     }
 
-    // ── Keyboard shortcuts ────────────────────────────────────────────
-    function onKey(e) {
-      if (currentPhase !== 'review') return;
-      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
-      if (mode === 'new_qc') {
-        if (e.key==='p'||e.key==='P') { $('#radPass').click();  $('#radPass').dispatchEvent(new Event('change')); }
-        if (e.key==='f'||e.key==='F') { $('#radFail').click();  $('#radFail').dispatchEvent(new Event('change')); }
-        if (e.key==='m'||e.key==='M') { $('#radPhoto').click(); $('#radPhoto').dispatchEvent(new Event('change')); }
-      } else {
-        if (e.key==='a'||e.key==='A') { $('#radApprove').click(); $('#radApprove').dispatchEvent(new Event('change')); }
-        if (e.key==='r'||e.key==='R') { $('#radReopen').click();  $('#radReopen').dispatchEvent(new Event('change')); }
-      }
-      if (e.key==='Enter')      $('#btnSubmit').click();
-      if (e.key==='ArrowRight') skipFeature();
-      if (e.key==='ArrowLeft')  prevFeature();
-    }
-    document.addEventListener('keydown', onKey);
-
     // ── Wire events ───────────────────────────────────────────────────
     $('#btnQuery').onclick    = runQuery;
     $('#btnRefresh').onclick  = runQuery;
@@ -1154,7 +1275,7 @@
       if (sketchVM)    { try { sketchVM.cancel(); sketchVM.destroy(); }   catch (_) {} }
       if (sketchLayer) { try { mapView.map.remove(sketchLayer); }         catch (_) {} }
       mapView.popup?.close();
-      css.remove(); box.remove();
+      css.remove(); box.remove(); lb.remove();
     }
 
     init();
