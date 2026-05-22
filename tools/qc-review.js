@@ -627,20 +627,62 @@
       const sort=$('#sortOrder').value,q=gigLyr.createQuery();q.where=clauses.join(' AND ');q.outFields=['*'];q.returnGeometry=true;applySpatialFilter(q);try{q.orderByFields=[`created_date ${sort.toUpperCase()}`];}catch(_){}
       const res=await gigLyr.queryFeatures(q);
       qcQueue=res.features.map(f=>{const a=f.attributes;return{layer:gigLyr,feature:f,gisId:a.billing_area_code||'Unknown',gigTypeName:gigTypes.find(gt=>gt.code==a.gig_type)?.name??(a.gig_type||'Unknown'),type:'clear_review'};});
-      showQueryResults(qcQueue.length?{'Cleared GIGs (layer 22100)':qcQueue.length}:{},[]);
+      showQueryResults(qcQueue.length?{[gigLyr.title]:qcQueue.length}:{},[]);
     }
     function showQueryResults(counts,errs){
       const cont=$('#resultsContent'),res=$('#queryResults');
       if(!qcQueue.length){cont.innerHTML=`<div style="text-align:center;padding:10px;color:#64748b;">No features found — try adjusting your filters.</div>${errs.length?`<div style="font-size:11px;color:#dc2626;margin-top:6px;">⚠ ${errs.length} layer(s) had errors: ${errs.join(', ')}</div>`:''}`;res.style.display='block';$('#btnStart').style.display='none';setStatus('No features found','idle');return;}
       const sn=spatialMode==='screen'?' <span style="font-size:10px;color:#0891b2;">📺 screen</span>':spatialMode==='drawn'?' <span style="font-size:10px;color:#2563eb;">✏️ drawn area</span>':'';
-      let html=`<div style="font-weight:700;font-size:13px;color:#1d4ed8;margin-bottom:8px;">${qcQueue.length} feature${qcQueue.length!==1?'s':''} ready${sn}</div><div style="line-height:1.9;">`;
-      Object.entries(counts).forEach(([n,c])=>html+=`<div style="display:flex;justify-content:space-between;font-size:11px;"><span>${n}</span><strong>${c}</strong></div>`);html+='</div>';
-      if(errs.length)html+=`<div style="font-size:10px;color:#92400e;margin-top:6px;padding:4px 8px;background:#fffbeb;border-radius:4px;">⚠ ${errs.length} layer(s) skipped</div>`;
-      cont.innerHTML=html;res.style.display='block';$('#btnStart').style.display='block';setStatus(`${qcQueue.length} feature${qcQueue.length!==1?'s':''} ready`,'ok');
+      const total=qcQueue.length,multiLayer=Object.keys(counts).length>1;
+      let rows='';
+      Object.entries(counts).forEach(([n,c])=>{
+        rows+=`<label style="display:flex;align-items:center;gap:9px;padding:6px 2px;border-bottom:1px solid #e8f0fe;cursor:pointer;user-select:none;">
+          <input type="checkbox" class="layer-include" data-layer="${n.replace(/"/g,'&quot;')}" checked
+            style="accent-color:#2563eb;width:14px;height:14px;flex-shrink:0;cursor:pointer;">
+          <span style="flex:1;font-size:11px;">${n}</span>
+          <strong style="font-size:12px;color:#1d4ed8;">${c}</strong>
+        </label>`;
+      });
+      cont.innerHTML=`
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px;">
+          <div id="qrHeadline" style="font-weight:700;font-size:13px;color:#1d4ed8;">${total} feature${total!==1?'s':''} ready${sn}</div>
+          ${multiLayer?`<button id="qrToggleAll" style="background:none;border:none;font-size:10px;color:#2563eb;cursor:pointer;font-weight:700;padding:0;">Deselect all</button>`:''}
+        </div>
+        <div>${rows}</div>
+        ${errs.length?`<div style="font-size:10px;color:#92400e;margin-top:6px;padding:4px 8px;background:#fffbeb;border-radius:4px;">⚠ ${errs.length} layer(s) skipped</div>`:''}
+      `;
+      res.style.display='block';$('#btnStart').style.display='block';
+      setStatus(`${total} feature${total!==1?'s':''} ready`,'ok');
+
+      const syncBtn=()=>{
+        const checks=[...cont.querySelectorAll('.layer-include')];
+        const checkedNames=new Set(checks.filter(cb=>cb.checked).map(cb=>cb.dataset.layer));
+        const sel=qcQueue.filter(item=>checkedNames.has(item.layer.title)).length;
+        const none=!checkedNames.size,all=checks.length===checkedNames.size;
+        const hl=$('#qrHeadline');
+        if(hl)hl.innerHTML=all?`${total} feature${total!==1?'s':''} ready${sn}`:`<span style="color:#2563eb;">${sel}</span> <span style="color:#94a3b8;font-size:11px;">of ${total} selected</span>${sn}`;
+        const btn=$('#btnStart');
+        btn.disabled=none;
+        btn.textContent=none?'Select at least one layer →':all?'Start Review →':`Start Review → (${sel})`;
+        const tog=$('#qrToggleAll');
+        if(tog)tog.textContent=all?'Deselect all':'Select all';
+      };
+      cont.querySelectorAll('.layer-include').forEach(cb=>cb.addEventListener('change',syncBtn));
+      const tog=$('#qrToggleAll');
+      if(tog)tog.onclick=()=>{const cbs=[...cont.querySelectorAll('.layer-include')],all=cbs.every(cb=>cb.checked);cbs.forEach(cb=>cb.checked=!all);syncBtn();};
     }
 
     // ── Review session ────────────────────────────────────────────────
-    function startReview(){if(!qcQueue.length){alert('No features to review');return;}currentIndex=0;sessionLog=[];sessionStartTime=new Date();setPhase('review');wireDecisionForm();showFeature();}
+    function startReview(){
+      if(!qcQueue.length){alert('No features to review');return;}
+      // Filter out layers the user unchecked in the results panel
+      const checks=[...(($('#resultsContent')?.querySelectorAll('.layer-include'))??[])];
+      if(checks.length){
+        const excluded=new Set(checks.filter(cb=>!cb.checked).map(cb=>cb.dataset.layer));
+        if(excluded.size){qcQueue=qcQueue.filter(item=>!excluded.has(item.layer.title));if(!qcQueue.length){alert('No features remain after exclusions.');return;}}
+      }
+      currentIndex=0;sessionLog=[];sessionStartTime=new Date();setPhase('review');wireDecisionForm();showFeature();
+    }
 
     function wireDecisionForm(){
       const isNew=mode==='new_qc';
@@ -760,7 +802,12 @@
     $lb('#mkUndo').onclick=()=>{if(mkStrokes.length){mkStrokes.pop();redrawMk();updateMkQueueBtn();}};$lb('#mkClear').onclick=()=>{mkStrokes=[];mkCurrent=null;redrawMk();updateMkQueueBtn();};
     function updateMkQueueBtn(){const btn=$lb('#mkQueue');btn.disabled=mkStrokes.length===0;if(mkStrokes.length&&pendingGigAttachment){btn.textContent='↺ Re-queue';btn.style.background='#0891b2';}else if(mkStrokes.length){btn.textContent='📎 Queue for GIG';btn.style.background='';}}
     function resetMkQueueBtn(){$lb('#mkQueue').disabled=true;$lb('#mkQueue').textContent='📎 Queue for GIG';$lb('#mkQueue').style.background='';$lb('#lbMkQueuedBadge').style.display='none';}
-    $lb('#mkQueue').onclick=async()=>{const btn=$lb('#mkQueue');btn.disabled=true;btn.textContent='Capturing…';try{const img=$lb('#lbImg'),w=img.naturalWidth||mkCanvas.width,h=img.naturalHeight||mkCanvas.height,off=document.createElement('canvas');off.width=w;off.height=h;const ctx=off.getContext('2d');try{ctx.drawImage(img,0,0,w,h);}catch(_){ctx.fillStyle='#1e293b';ctx.fillRect(0,0,w,h);}ctx.save();ctx.scale(w/mkCanvas.width,h/mkCanvas.height);ctx.drawImage(mkCanvas,0,0);ctx.restore();const blob=await new Promise(res=>off.toBlob(res,'image/png'));const origName=lbImages[lbIdx]?.name||'attachment';pendingGigAttachment={blob,filename:`markup_${origName.replace(/\.[^.]+$/,'')}_${Date.now()}.png`};$lb('#lbMkQueuedBadge').style.display='block';btn.textContent='✓ Queued!';btn.style.background='#15803d';btn.disabled=false;$('#mkPendingPill').style.display='inline-flex';setStatus('Markup queued — will attach to GIG on submit','ok');}catch(e){console.error('Markup capture:',e);btn.textContent='📎 Queue for GIG';btn.disabled=false;setStatus('Markup capture failed: '+e.message,'error');}};
+    $lb('#mkQueue').onclick=async()=>{
+      // Flush any pending text input before capturing — the blur handler is
+      // delayed 150ms so it won't have run yet if the user clicked Queue directly
+      // from the text field. commitMkText() is a no-op if no text is pending.
+      commitMkText();
+      const btn=$lb('#mkQueue');btn.disabled=true;btn.textContent='Capturing…';try{const img=$lb('#lbImg'),w=img.naturalWidth||mkCanvas.width,h=img.naturalHeight||mkCanvas.height,off=document.createElement('canvas');off.width=w;off.height=h;const ctx=off.getContext('2d');try{ctx.drawImage(img,0,0,w,h);}catch(_){ctx.fillStyle='#1e293b';ctx.fillRect(0,0,w,h);}ctx.save();ctx.scale(w/mkCanvas.width,h/mkCanvas.height);ctx.drawImage(mkCanvas,0,0);ctx.restore();const blob=await new Promise(res=>off.toBlob(res,'image/png'));const origName=lbImages[lbIdx]?.name||'attachment';pendingGigAttachment={blob,filename:`markup_${origName.replace(/\.[^.]+$/,'')}_${Date.now()}.png`};$lb('#lbMkQueuedBadge').style.display='block';btn.textContent='✓ Queued!';btn.style.background='#15803d';btn.disabled=false;$('#mkPendingPill').style.display='inline-flex';setStatus('Markup queued — will attach to GIG on submit','ok');}catch(e){console.error('Markup capture:',e);btn.textContent='📎 Queue for GIG';btn.disabled=false;setStatus('Markup capture failed: '+e.message,'error');}};
 
     // ── REST helpers — all via esri/request so auth is handled automatically ──
     //
@@ -770,14 +817,17 @@
 
     async function esriPost(url, formData) {
       // Central wrapper: loads esri/request once (AMD caches it) and posts
-      // multipart form data, returning the parsed JSON response data.
+      // multipart form data. We use responseType:'text' and parse manually so
+      // esri/request handles auth (token injection, refresh, proxy) without also
+      // applying its ArcGIS JSON error-detection to addAttachment / deleteAttachments
+      // responses, which use non-standard shapes that can trigger false throws.
       const esriRequest = await loadModule('esri/request');
       const result = await esriRequest(url, {
         method: 'post',
         body: formData,
-        responseType: 'json'
+        responseType: 'text'
       });
-      return result.data;
+      try { return JSON.parse(result.data); } catch (_) { return result.data; }
     }
 
     async function uploadPendingAttachment(objectId, layerUrl) {
@@ -797,11 +847,15 @@
         const data = await esriPost(uploadUrl, fd);
         console.debug('[rqcw] addAttachment response:', data);
 
-        if (data?.error) throw new Error(data.error.message || `Server error ${data.error.code ?? ''}`);
+        console.debug('[rqcw] addAttachment response:', data);
 
+        // Only treat as failure on an explicit server-side error or a definite
+        // success:false — a missing/undefined success field still means success.
+        if (data?.error?.code) throw new Error(data.error.message || `Server error ${data.error.code}`);
         const r = data?.addAttachmentResult;
-        if (!r) throw new Error('No addAttachmentResult in response — confirm attachments are enabled on the GIG layer');
-        if (!r.success && !r.objectId) throw new Error(r.error?.description || r.error?.message || `Upload rejected (code: ${r.error?.code ?? 'unknown'})`);
+        if (r?.success === false && !r?.objectId) {
+          throw new Error(r?.error?.description || r?.error?.message || 'Upload rejected by server');
+        }
 
         pendingGigAttachment = null;
         $('#mkPendingPill').style.display = 'none';
@@ -843,8 +897,8 @@
       fd.append('attachmentIds', ids.join(','));
       fd.append('f', 'json');
       const data = await esriPost(`${layerUrl}/${objectId}/deleteAttachments`, fd);
-      if (data?.error) throw new Error(data.error.message || 'Delete failed');
-      const failed = (data?.deleteAttachmentResults || []).filter(r => !r.success);
+      if (data?.error?.code) throw new Error(data.error.message || 'Delete failed');
+      const failed = (data?.deleteAttachmentResults || []).filter(r => r.success === false);
       if (failed.length) throw new Error(`${failed.length} attachment(s) failed to delete`);
     }
 
@@ -879,9 +933,9 @@
           fd.append('attachment', blob, filename);
           fd.append('f', 'json');
           const data = await esriPost(`${origInfo.layerUrl}/${origInfo.objectId}/addAttachment`, fd);
-          if (data?.error) throw new Error(data.error.message || `Upload failed for "${filename}"`);
+          if (data?.error?.code) throw new Error(data.error.message || `Upload failed for "${filename}"`);
           const r = data?.addAttachmentResult;
-          if (!r?.success && !r?.objectId) throw new Error(r?.error?.description || `Upload failed for "${filename}"`);
+          if (r?.success === false && !r?.objectId) throw new Error(r?.error?.description || `Upload failed for "${filename}"`);
           tick();
         }
       }
