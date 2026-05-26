@@ -30,7 +30,12 @@
     let mkActive = false, mkTool = 'pen', mkColor = '#ff3b3b', mkWidth = 3;
     let mkStrokes = [], mkCurrent = null, mkDrawing = false;
     let mkCanvas = null, mkCtx = null;
-    let pendingGigAttachment = null;
+    // Per-image stroke storage: Map<lbIdx, stroke[]>
+    let mkStrokesMap = new Map();
+    // Indices of images that have already been queued as attachments
+    let queuedLbIndices = new Set();
+    // All pending markup blobs to be attached on submit (one per image)
+    let pendingGigAttachments = [];
 
     const OPTS_CACHE_KEY = 'rqcw_filter_opts_v1';
     const OPTS_CACHE_TTL = 4 * 60 * 60 * 1000;
@@ -192,11 +197,10 @@
     `;
     document.head.appendChild(css);
 
-    // ── Toolbox ───────────────────────────────────────────────────────
+    // ── Toolbox HTML ──────────────────────────────────────────────────
     const box = document.createElement('div');
     box.id = 'rqcw';
     box.style.cssText = `position:fixed;top:70px;right:20px;z-index:${Z};width:468px;max-height:90vh;overflow-y:auto;background:#f8fafc;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.22);`;
-
     box.innerHTML = `
       <div id="rqcwHeader" style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);padding:14px 16px;border-radius:12px 12px 0 0;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;">
         <div><div style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-.2px;">🔍 Remote QC Workflow</div>
@@ -206,69 +210,35 @@
           <button id="btnClose" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;">×</button>
         </div>
       </div>
-      <div class="tab-bar">
-        <button class="tab active" id="tabNew">New Feature QC</button>
-        <button class="tab" id="tabClear">Review Cleared GIGs</button>
-      </div>
+      <div class="tab-bar"><button class="tab active" id="tabNew">New Feature QC</button><button class="tab" id="tabClear">Review Cleared GIGs</button></div>
       <div style="padding:14px;display:flex;flex-direction:column;gap:10px;">
-
-        <!-- QUERY PHASE -->
         <div id="phaseQuery">
           <div class="card" style="margin-bottom:10px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span id="filterTitle" style="font-weight:700;font-size:13px;">Filter Criteria</span>
-                <span id="filterBadge" class="filter-badge" style="display:none;"></span>
-                <span id="cacheBadge"  class="cache-badge"  style="display:none;"></span>
-              </div>
-              <div style="display:flex;gap:5px;">
-                <button class="btn btn-ghost btn-sm" id="btnRefreshOpts" disabled>↺</button>
-                <button class="btn btn-ghost btn-sm" id="btnClearFilters">✕ Clear All</button>
-              </div>
+              <div style="display:flex;align-items:center;gap:8px;"><span id="filterTitle" style="font-weight:700;font-size:13px;">Filter Criteria</span><span id="filterBadge" class="filter-badge" style="display:none;"></span><span id="cacheBadge" class="cache-badge" style="display:none;"></span></div>
+              <div style="display:flex;gap:5px;"><button class="btn btn-ghost btn-sm" id="btnRefreshOpts" disabled>↺</button><button class="btn btn-ghost btn-sm" id="btnClearFilters">✕ Clear All</button></div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
-              <div style="margin-bottom:10px;"><label class="field-label">Work Order</label>
-                <div style="position:relative;"><input type="text" id="woSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="woPill" class="multi-pill" style="display:none;"></span><div id="woDrop" class="dropdown-list" style="display:none;"></div></div></div>
-              <div style="margin-bottom:10px;"><label class="field-label">Purchase Order</label>
-                <div style="position:relative;"><input type="text" id="poSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="poPill" class="multi-pill" style="display:none;"></span><div id="poDrop" class="dropdown-list" style="display:none;"></div></div></div>
+              <div style="margin-bottom:10px;"><label class="field-label">Work Order</label><div style="position:relative;"><input type="text" id="woSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="woPill" class="multi-pill" style="display:none;"></span><div id="woDrop" class="dropdown-list" style="display:none;"></div></div></div>
+              <div style="margin-bottom:10px;"><label class="field-label">Purchase Order</label><div style="position:relative;"><input type="text" id="poSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="poPill" class="multi-pill" style="display:none;"></span><div id="poDrop" class="dropdown-list" style="display:none;"></div></div></div>
             </div>
-            <div style="margin-bottom:10px;"><label class="field-label">Job Number</label>
-              <div style="position:relative;"><input type="text" id="jobSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="jobPill" class="multi-pill" style="display:none;"></span><div id="jobDrop" class="dropdown-list" style="display:none;"></div></div></div>
+            <div style="margin-bottom:10px;"><label class="field-label">Job Number</label><div style="position:relative;"><input type="text" id="jobSearch" placeholder="Loading…" autocomplete="off" disabled><span class="dd-chevron">▾</span><span id="jobPill" class="multi-pill" style="display:none;"></span><div id="jobDrop" class="dropdown-list" style="display:none;"></div></div></div>
             <div id="gigTypeWrap" style="margin-bottom:10px;display:none;"><label class="field-label">GIG Type</label><select id="gigTypeFilter"><option value="">All Types</option></select></div>
             <div style="margin-bottom:10px;">
               <label class="field-label" id="dateLabel">Installation Date Range</label>
-              <div style="display:grid;grid-template-columns:1fr 14px 1fr;gap:4px;align-items:center;">
-                <input type="date" id="dateFrom"><span style="text-align:center;color:#94a3b8;font-size:11px;">–</span><input type="date" id="dateTo">
-              </div>
-              <div class="qd-strip">
-                <button class="btn btn-ghost" data-days="7">Last 7 days</button>
-                <button class="btn btn-ghost" data-days="30">30 days</button>
-                <button class="btn btn-ghost" data-days="90">90 days</button>
-                <button class="btn btn-ghost" id="qdClear" style="color:#dc2626;margin-left:auto;">✕</button>
-              </div>
+              <div style="display:grid;grid-template-columns:1fr 14px 1fr;gap:4px;align-items:center;"><input type="date" id="dateFrom"><span style="text-align:center;color:#94a3b8;font-size:11px;">–</span><input type="date" id="dateTo"></div>
+              <div class="qd-strip"><button class="btn btn-ghost" data-days="7">Last 7 days</button><button class="btn btn-ghost" data-days="30">30 days</button><button class="btn btn-ghost" data-days="90">90 days</button><button class="btn btn-ghost" id="qdClear" style="color:#dc2626;margin-left:auto;">✕</button></div>
             </div>
-            <div style="margin-bottom:12px;"><label class="field-label">Sort Order</label>
-              <select id="sortOrder"><option value="desc">Newest First</option><option value="asc">Oldest First</option></select></div>
+            <div style="margin-bottom:12px;"><label class="field-label">Sort Order</label><select id="sortOrder"><option value="desc">Newest First</option><option value="asc">Oldest First</option></select></div>
             <div style="margin-bottom:12px;">
               <label class="field-label">Spatial Filter</label>
-              <div class="chip-group">
-                <label class="chip active" id="spAll"><input type="radio" name="sp" value="none" checked> 🌐 All Features</label>
-                <label class="chip" id="spScreen"><input type="radio" name="sp" value="screen"> 📺 Current Screen</label>
-                <label class="chip" id="spDraw"><input type="radio" name="sp" value="draw"> ✏️ Draw Area</label>
-              </div>
+              <div class="chip-group"><label class="chip active" id="spAll"><input type="radio" name="sp" value="none" checked> 🌐 All Features</label><label class="chip" id="spScreen"><input type="radio" name="sp" value="screen"> 📺 Current Screen</label><label class="chip" id="spDraw"><input type="radio" name="sp" value="draw"> ✏️ Draw Area</label></div>
               <div id="drawPanel" class="draw-panel" style="display:none;">
-                <div style="display:flex;gap:6px;">
-                  <button id="btnDrawPoly" class="btn btn-cyan btn-sm" style="flex:1;">⬡ Polygon</button>
-                  <button id="btnDrawFree" class="btn btn-violet btn-sm" style="flex:1;">〰 Freehand</button>
-                  <button id="btnClearDraw" class="btn btn-ghost btn-sm">✕</button>
-                </div>
+                <div style="display:flex;gap:6px;"><button id="btnDrawPoly" class="btn btn-cyan btn-sm" style="flex:1;">⬡ Polygon</button><button id="btnDrawFree" class="btn btn-violet btn-sm" style="flex:1;">〰 Freehand</button><button id="btnClearDraw" class="btn btn-ghost btn-sm">✕</button></div>
                 <div id="drawHint" class="draw-hint">Select a tool above to start drawing</div>
               </div>
             </div>
-            <div style="display:flex;gap:8px;">
-              <button id="btnQuery" class="btn btn-primary btn-full" disabled>🔍 Query Features</button>
-              <button id="btnRefresh" class="btn btn-slate" style="padding:7px 14px;" disabled>↺</button>
-            </div>
+            <div style="display:flex;gap:8px;"><button id="btnQuery" class="btn btn-primary btn-full" disabled>🔍 Query Features</button><button id="btnRefresh" class="btn btn-slate" style="padding:7px 14px;" disabled>↺</button></div>
           </div>
           <div id="queryResults" class="card" style="display:none;border-color:#bfdbfe;background:#eff6ff;">
             <div style="font-weight:700;font-size:12px;color:#1d4ed8;margin-bottom:8px;">Query Results</div>
@@ -276,28 +246,18 @@
             <button id="btnStart" class="btn btn-success btn-full" style="margin-top:10px;">Start Review →</button>
           </div>
         </div>
-
-        <!-- REVIEW PHASE -->
         <div id="phaseReview" style="display:none;">
           <div class="card-inset" style="margin-bottom:10px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
-              <span style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.4px;">PROGRESS</span>
-              <span id="progressText" style="font-size:11px;font-weight:700;color:#2563eb;">0 / 0</span>
-            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px;"><span style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.4px;">PROGRESS</span><span id="progressText" style="font-size:11px;font-weight:700;color:#2563eb;">0 / 0</span></div>
             <div class="pbar-track"><div id="progressBar" class="pbar-fill" style="width:0%;"></div></div>
-            <div style="display:flex;justify-content:space-between;margin-top:5px;">
-              <span id="progressStats" style="font-size:10px;color:#94a3b8;"></span>
-              <span style="font-size:10px;color:#64748b;">⏱ <span id="featureTimer" style="font-weight:700;">0:00</span></span>
-            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:5px;"><span id="progressStats" style="font-size:10px;color:#94a3b8;"></span><span style="font-size:10px;color:#64748b;">⏱ <span id="featureTimer" style="font-weight:700;">0:00</span></span></div>
           </div>
           <div class="card" style="margin-bottom:10px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <span id="featureCardLabel" style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.4px;">Current Feature</span>
               <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
-                <span id="mkPendingPill" class="mk-pending-pill" style="display:none;">📎 Markup queued</span>
-                <div id="attachmentsBar" style="display:none;">
-                  <button id="btnAttachments" class="btn btn-ghost btn-sm btn-attach">🔍 Attachments <span id="attachCount" class="attach-badge"></span></button>
-                </div>
+                <span id="mkPendingPill" class="mk-pending-pill" style="display:none;"></span>
+                <div id="attachmentsBar" style="display:none;"><button id="btnAttachments" class="btn btn-ghost btn-sm btn-attach">🔍 Attachments <span id="attachCount" class="attach-badge"></span></button></div>
                 <button id="btnZoom" class="btn btn-cyan btn-sm">📍 Zoom</button>
               </div>
             </div>
@@ -319,13 +279,7 @@
               <label class="radio-card" id="rcReopen"><input type="radio" name="clrDec" value="reopen" id="radReopen"><span class="rc-icon">↩️</span><div style="flex:1;"><div class="rc-title" style="color:#b91c1c;">Re-open</div><div class="rc-sub">Fix insufficient — return to OPEN</div></div><span class="kbd">R</span></label>
             </div>
             <div id="photoSkipWrap" style="display:none;margin-top:10px;padding:10px 12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:8px;">
-              <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-                <input type="checkbox" id="chkSkipPhotos" style="accent-color:#d97706;width:15px;height:15px;flex-shrink:0;">
-                <div>
-                  <div style="font-size:12px;font-weight:700;color:#92400e;">Skip photo transfer</div>
-                  <div style="font-size:10px;color:#b45309;margin-top:1px;">Approve without reviewing or transferring photos</div>
-                </div>
-              </label>
+              <label style="display:flex;align-items:center;gap:10px;cursor:pointer;"><input type="checkbox" id="chkSkipPhotos" style="accent-color:#d97706;width:15px;height:15px;flex-shrink:0;"><div><div style="font-size:12px;font-weight:700;color:#92400e;">Skip photo transfer</div><div style="font-size:10px;color:#b45309;margin-top:1px;">Approve without reviewing or transferring photos</div></div></label>
             </div>
             <div id="issueSection" style="display:none;margin-top:10px;">
               <label class="field-label">Issue Type(s) <span style="color:#dc2626;">*</span></label>
@@ -345,21 +299,11 @@
             <button id="btnEndSession" class="btn btn-ghost btn-full" style="margin-top:6px;color:#dc2626;border-color:#fecaca;">⏹ End Session Early</button>
           </div>
         </div>
-
-        <!-- COMPLETE PHASE -->
         <div id="phaseComplete" style="display:none;">
-          <div style="text-align:center;padding:18px 0 10px;">
-            <div style="font-size:42px;">🎉</div>
-            <div style="font-weight:700;font-size:15px;color:#15803d;margin-top:8px;">Session Complete</div>
-            <div style="color:#64748b;font-size:12px;margin-top:3px;">All features reviewed</div>
-          </div>
+          <div style="text-align:center;padding:18px 0 10px;"><div style="font-size:42px;">🎉</div><div style="font-weight:700;font-size:15px;color:#15803d;margin-top:8px;">Session Complete</div><div style="color:#64748b;font-size:12px;margin-top:3px;">All features reviewed</div></div>
           <div id="sessionSummary" class="card" style="margin-bottom:10px;"></div>
-          <div style="display:flex;gap:8px;">
-            <button id="btnExport" class="btn btn-cyan" style="flex:1;">📄 Export Report</button>
-            <button id="btnStartOver" class="btn btn-success" style="flex:1;">↺ New Session</button>
-          </div>
+          <div style="display:flex;gap:8px;"><button id="btnExport" class="btn btn-cyan" style="flex:1;">📄 Export Report</button><button id="btnStartOver" class="btn btn-success" style="flex:1;">↺ New Session</button></div>
         </div>
-
       </div>
       <div style="background:#fff;border-top:1px solid #e2e8f0;padding:7px 14px;border-radius:0 0 12px 12px;display:flex;align-items:center;gap:7px;position:sticky;bottom:0;">
         <div id="statusDot" style="width:7px;height:7px;border-radius:50%;background:#94a3b8;flex-shrink:0;transition:background .3s;"></div>
@@ -373,13 +317,8 @@
     lb.id = 'rqcwLightbox';
     lb.innerHTML = `
       <div class="lb-toolbar">
-        <span id="lbCounter" class="lb-counter"></span>
-        <span id="lbTitle" class="lb-title"></span>
-        <div class="lb-zoom-btns">
-          <button id="lbZoomIn">＋</button><button id="lbZoomOut">－</button>
-          <button id="lbReset" style="font-size:11px;padding:4px 9px;">1:1</button>
-          <button id="lbMkToggle" title="Markup tools (M)" style="background:rgba(255,255,255,.15);border:none;color:#fff;padding:4px 11px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;">✏️</button>
-        </div>
+        <span id="lbCounter" class="lb-counter"></span><span id="lbTitle" class="lb-title"></span>
+        <div class="lb-zoom-btns"><button id="lbZoomIn">＋</button><button id="lbZoomOut">－</button><button id="lbReset" style="font-size:11px;padding:4px 9px;">1:1</button><button id="lbMkToggle" title="Markup tools (M)" style="background:rgba(255,255,255,.15);border:none;color:#fff;padding:4px 11px;border-radius:5px;cursor:pointer;font-size:14px;font-weight:700;">✏️</button></div>
         <button class="lb-close" id="lbClose">×</button>
       </div>
       <div class="lb-stage grab" id="lbStage">
@@ -409,7 +348,7 @@
         <div class="mk-sep"></div>
         <button class="mk-queue" id="mkQueue" disabled>📎 Queue for GIG</button>
       </div>
-      <div id="lbMkQueuedBadge" class="mk-queued-badge">✓ Markup queued for GIG</div>
+      <div id="lbMkQueuedBadge" class="mk-queued-badge"></div>
       <div class="lb-hint" id="lbHint">Scroll to zoom · Drag to pan · ← → to navigate</div>
     `;
     document.body.appendChild(lb);
@@ -419,34 +358,13 @@
     pp.id = 'rqcwPhotoPanel';
     pp.innerHTML = `
       <div class="pp-wrap">
-        <div class="pp-hdr">
-          <div>
-            <div style="color:#fff;font-weight:700;font-size:15px;">📸 Photo Transfer Review</div>
-            <div id="ppGigId" style="color:#93c5fd;font-size:11px;margin-top:2px;"></div>
-          </div>
-          <button id="ppClose" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;">×</button>
-        </div>
+        <div class="pp-hdr"><div><div style="color:#fff;font-weight:700;font-size:15px;">📸 Photo Transfer Review</div><div id="ppGigId" style="color:#93c5fd;font-size:11px;margin-top:2px;"></div></div><button id="ppClose" style="background:rgba(255,255,255,.15);border:none;color:#fff;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;">×</button></div>
         <div class="pp-body">
-          <div>
-            <div class="pp-col-hdr">
-              <span>GIG Fix Photos</span>
-              <span class="pp-col-badge" style="background:#dbeafe;color:#1d4ed8;">✓ = Transfer →</span>
-            </div>
-            <div id="ppLeft" class="pp-grid"></div>
-          </div>
-          <div>
-            <div class="pp-col-hdr">
-              <span>Original Feature Photos</span>
-              <span class="pp-col-badge" style="background:#fee2e2;color:#b91c1c;">✓ = Delete</span>
-            </div>
-            <div id="ppRight" class="pp-grid"></div>
-          </div>
+          <div><div class="pp-col-hdr"><span>GIG Fix Photos</span><span class="pp-col-badge" style="background:#dbeafe;color:#1d4ed8;">✓ = Transfer →</span></div><div id="ppLeft" class="pp-grid"></div></div>
+          <div><div class="pp-col-hdr"><span>Original Feature Photos</span><span class="pp-col-badge" style="background:#fee2e2;color:#b91c1c;">✓ = Delete</span></div><div id="ppRight" class="pp-grid"></div></div>
         </div>
         <div class="pp-footer">
-          <div style="flex:1;">
-            <div id="ppSummary" class="pp-summary"></div>
-            <div id="ppProg" class="pp-prog"><div id="ppProgFill" class="pp-prog-fill"></div></div>
-          </div>
+          <div style="flex:1;"><div id="ppSummary" class="pp-summary"></div><div id="ppProg" class="pp-prog"><div id="ppProgFill" class="pp-prog-fill"></div></div></div>
           <button id="ppCancel" class="pp-btn-cancel">Cancel</button>
           <button id="ppConfirm" class="pp-btn-confirm">Confirm Transfer &amp; Approve →</button>
         </div>
@@ -489,14 +407,12 @@
       const b=$('#filterBadge'); b.style.display=n?'inline-flex':'none'; b.textContent=n+(n===1?' filter':' filters');
     }
     function formatBytes(b) { if(!b)return''; if(b<1024)return b+' B'; if(b<1048576)return Math.round(b/1024)+' KB'; return(b/1048576).toFixed(1)+' MB'; }
-
-    // Returns the correct REST endpoint URL for a layer, ensuring the layer
-    // index is appended. This is needed because layer.url may point to the
-    // FeatureServer root when the layer was added from a service definition.
-    function layerEndpointUrl(lyr) {
-      const base = lyr.url?.replace(/\/+$/, '');
-      if (!base) return null;
-      return base.endsWith('/' + lyr.layerId) ? base : `${base}/${lyr.layerId}`;
+    function layerEndpointUrl(lyr) { const base=lyr.url?.replace(/\/+$/,''); if(!base)return null; return base.endsWith('/'+lyr.layerId)?base:`${base}/${lyr.layerId}`; }
+    // Update the pending pill to reflect current queue count
+    function syncPendingPill() {
+      const n=pendingGigAttachments.length,pill=$('#mkPendingPill');
+      pill.style.display=n?'inline-flex':'none';
+      pill.textContent=n===1?'📎 1 markup queued':`📎 ${n} markups queued`;
     }
 
     // ── Mode ──────────────────────────────────────────────────────────
@@ -512,20 +428,13 @@
 
     // ── Init / cache ──────────────────────────────────────────────────
     async function init() { setStatus('Initializing…','busy'); try{await loadCachedOrFetch();}catch(e){setStatus('Init error: '+e.message,'error');console.error(e);} }
-
     async function loadCachedOrFetch(forceRefresh=false) {
-      if(!forceRefresh){
-        try{
-          const raw=localStorage.getItem(OPTS_CACHE_KEY);
-          if(raw){const c=JSON.parse(raw);if((Date.now()-c.ts)<OPTS_CACHE_TTL){applyFilterOptions(c);const age=Math.round((Date.now()-c.ts)/60000);$('#cacheBadge').style.display='inline-flex';$('#cacheBadge').textContent=`⚡ cached ${age<2?'just now':age<60?age+'m ago':Math.round(age/60)+'h ago'}`;setStatus('Ready — configure filters and query.','ok');$('#hdrSub').textContent='Configure filters to begin';return;}}
-        }catch(_){}
-      }
+      if(!forceRefresh){try{const raw=localStorage.getItem(OPTS_CACHE_KEY);if(raw){const c=JSON.parse(raw);if((Date.now()-c.ts)<OPTS_CACHE_TTL){applyFilterOptions(c);const age=Math.round((Date.now()-c.ts)/60000);$('#cacheBadge').style.display='inline-flex';$('#cacheBadge').textContent=`⚡ cached ${age<2?'just now':age<60?age+'m ago':Math.round(age/60)+'h ago'}`;setStatus('Ready — configure filters and query.','ok');$('#hdrSub').textContent='Configure filters to begin';return;}}}catch(_){}}
       $('#cacheBadge').style.display='none'; setStatus('Loading filter options…','busy');
       const data=await fetchFilterOptions();
       try{localStorage.setItem(OPTS_CACHE_KEY,JSON.stringify({ts:Date.now(),...data}));}catch(_){}
       applyFilterOptions(data); setStatus('Ready — configure filters and query.','ok'); $('#hdrSub').textContent='Configure filters to begin';
     }
-
     function applyFilterOptions(data) {
       gigTypes=data.gigTypes||[];
       const sel=$('#gigTypeFilter'); sel.innerHTML='<option value="">All Types</option>';
@@ -537,11 +446,9 @@
       setupMultiDropdown('#jobSearch','#jobDrop','#jobPill',jobOptions,selectedJobs,jobNameMap);
       $('#btnQuery').disabled=false; $('#btnRefreshOpts').disabled=false;
     }
-
     const woAcc=new Map(),poAcc=new Map(),jobAcc=new Map();
     async function fetchFilterOptions() {
-      const [gigTypesData]=await Promise.all([
-        (async()=>{const lyr=mapView.map.allLayers.find(l=>l.layerId===22100);if(!lyr)throw new Error('GIG layer (22100) not found');await lyr.load();const fld=lyr.fields.find(f=>f.name.toLowerCase()==='gig_type');if(!fld?.domain?.codedValues)throw new Error('gig_type domain not found');return fld.domain.codedValues.map(cv=>({code:cv.code,name:cv.name}));})(),
+      const [gigTypesData]=await Promise.all([(async()=>{const lyr=mapView.map.allLayers.find(l=>l.layerId===22100);if(!lyr)throw new Error('GIG layer (22100) not found');await lyr.load();const fld=lyr.fields.find(f=>f.name.toLowerCase()==='gig_type');if(!fld?.domain?.codedValues)throw new Error('gig_type domain not found');return fld.domain.codedValues.map(cv=>({code:cv.code,name:cv.name}));})(),
         (async()=>{const layers=mapView.map.allLayers.filter(l=>l.type==='feature'&&l.visible);await Promise.all(layers.items.map(async lyr=>{try{if(lyr===sketchLayer)return;await lyr.load();await Promise.all([{name:'workorder_id',map:woAcc},{name:'purchase_order_id',map:poAcc},{name:'job_number',map:jobAcc}].map(async({name,map})=>{const fld=lyr.fields.find(f=>f.name.toLowerCase()===name);if(!fld)return;const dom=new Map();if(fld.domain?.type==='coded-value')fld.domain.codedValues.forEach(cv=>dom.set(cv.code,cv.name));const q=lyr.createQuery();q.where='1=1';q.returnDistinctValues=true;q.outFields=[fld.name];q.returnGeometry=false;const res=await lyr.queryFeatures(q);res.features.forEach(f=>{const c=f.attributes[fld.name];if(c==null||c==='')return;map.set(c,dom.get(c)??c);});}));}catch(_){}}));})()])
       ;
       const toSorted=m=>Array.from(m.entries()).map(([code,name])=>({code,name})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
@@ -552,18 +459,8 @@
     function setupMultiDropdown(inputSel,dropSel,pillSel,options,selectedSet,nameMap) {
       const inp=$(inputSel),dd=$(dropSel),pill=$(pillSel);
       const syncDisplay=()=>{if(selectedSet.size===0){inp.value='';pill.style.display='none';}else if(selectedSet.size===1){inp.value=nameMap.get([...selectedSet][0])||'';pill.style.display='none';}else{inp.value='';pill.textContent=selectedSet.size+' selected';pill.style.display='inline-flex';}};
-      const render=(filter='')=>{
-        dd.innerHTML='';const lc=filter.toLowerCase();
-        const hdr=document.createElement('div');hdr.className='dd-hdr';hdr.innerHTML=`<span class="dd-hdr-txt">${selectedSet.size?selectedSet.size+' selected':'None selected'}</span><button class="dd-hdr-clear">Clear all</button>`;
-        hdr.querySelector('.dd-hdr-clear').onmousedown=e=>{e.preventDefault();selectedSet.clear();syncDisplay();updateFilterBadge();render(inp.value);};dd.appendChild(hdr);
-        const hits=options.filter(o=>!lc||String(o.name).toLowerCase().includes(lc)||String(o.code).toLowerCase().includes(lc)).slice(0,80);
-        if(!hits.length){const none=document.createElement('div');none.className='dd-item';none.style.color='#94a3b8';none.textContent='No matches';dd.appendChild(none);}
-        else hits.forEach(o=>{const d=document.createElement('div');d.className='dd-check-row'+(selectedSet.has(o.code)?' is-checked':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selectedSet.has(o.code);const lbl=document.createElement('span');lbl.textContent=o.name;d.appendChild(cb);d.appendChild(lbl);d.onmousedown=e=>{e.preventDefault();if(selectedSet.has(o.code))selectedSet.delete(o.code);else{selectedSet.add(o.code);nameMap.set(o.code,o.name);}syncDisplay();updateFilterBadge();render(inp.value);};dd.appendChild(d);});
-      };
-      inp.onfocus=()=>{inp.value='';pill.style.display='none';render('');dd.style.display='block';};
-      inp.oninput=()=>{render(inp.value);dd.style.display='block';};
-      inp.onblur=()=>setTimeout(()=>{dd.style.display='none';syncDisplay();},160);
-      syncDisplay();
+      const render=(filter='')=>{dd.innerHTML='';const lc=filter.toLowerCase();const hdr=document.createElement('div');hdr.className='dd-hdr';hdr.innerHTML=`<span class="dd-hdr-txt">${selectedSet.size?selectedSet.size+' selected':'None selected'}</span><button class="dd-hdr-clear">Clear all</button>`;hdr.querySelector('.dd-hdr-clear').onmousedown=e=>{e.preventDefault();selectedSet.clear();syncDisplay();updateFilterBadge();render(inp.value);};dd.appendChild(hdr);const hits=options.filter(o=>!lc||String(o.name).toLowerCase().includes(lc)||String(o.code).toLowerCase().includes(lc)).slice(0,80);if(!hits.length){const none=document.createElement('div');none.className='dd-item';none.style.color='#94a3b8';none.textContent='No matches';dd.appendChild(none);}else hits.forEach(o=>{const d=document.createElement('div');d.className='dd-check-row'+(selectedSet.has(o.code)?' is-checked':'');const cb=document.createElement('input');cb.type='checkbox';cb.checked=selectedSet.has(o.code);const lbl=document.createElement('span');lbl.textContent=o.name;d.appendChild(cb);d.appendChild(lbl);d.onmousedown=e=>{e.preventDefault();if(selectedSet.has(o.code))selectedSet.delete(o.code);else{selectedSet.add(o.code);nameMap.set(o.code,o.name);}syncDisplay();updateFilterBadge();render(inp.value);};dd.appendChild(d);});};
+      inp.onfocus=()=>{inp.value='';pill.style.display='none';render('');dd.style.display='block';};inp.oninput=()=>{render(inp.value);dd.style.display='block';};inp.onblur=()=>setTimeout(()=>{dd.style.display='none';syncDisplay();},160);syncDisplay();
     }
     function refreshMultiDisplays() {
       [['#woSearch','#woPill',selectedWOs,woNameMap],['#poSearch','#poPill',selectedPOs,poNameMap],['#jobSearch','#jobPill',selectedJobs,jobNameMap]].forEach(([iS,pS,set,map])=>{const inp=$(iS),pill=$(pS);if(!inp)return;if(set.size===0){inp.value='';pill.style.display='none';}else if(set.size===1){inp.value=map.get([...set][0])||'';pill.style.display='none';}else{inp.value='';pill.textContent=set.size+' selected';pill.style.display='inline-flex';}});
@@ -582,19 +479,7 @@
     $('#btnDrawPoly').onclick=()=>startDraw('polygon','click');
     $('#btnDrawFree').onclick=()=>startDraw('polygon','freehand');
     $('#btnClearDraw').onclick=()=>{clearSketchGraphics();setSpatialMode('draw');setDrawHint('','Select a tool above to start drawing');};
-
-    async function initSketch(){
-      if(sketchVM)return; setStatus('Loading sketch tools…','busy');
-      const [GL,SVM]=await Promise.all([loadModule('esri/layers/GraphicsLayer'),loadModule('esri/widgets/Sketch/SketchViewModel')]);
-      sketchLayer=new GL({listMode:'hide',title:'QC Selection Area'});mapView.map.add(sketchLayer);
-      sketchVM=new SVM({view:mapView,layer:sketchLayer,updateOnGraphicClick:false,polygonSymbol:{type:'simple-fill',color:[37,99,235,0.07],outline:{type:'simple-line',color:[37,99,235,0.85],width:2,style:'dash'}}});
-      sketchVM.on('create',async e=>{
-        if(e.state==='start'){isDrawing=true;setDrawHint('drawing','Drawing…');}
-        else if(e.state==='complete'){isDrawing=false;let geom=e.graphic.geometry;if(geom&&mapView.spatialReference&&!geom.spatialReference?.wkid)geom=Object.assign(Object.create(Object.getPrototypeOf(geom)),geom,{spatialReference:mapView.spatialReference});try{const ge=await loadModule('esri/geometry/geometryEngine');const s=ge.simplify(geom);if(s)geom=s;}catch(_){}drawnGeometry=geom;setSpatialMode('drawn');setDrawHint('done','✓ Area selected — run query to apply');setStatus('Drawn area ready','ok');}
-        else if(e.state==='cancel'){isDrawing=false;setDrawHint('','Drawing cancelled — select a tool to try again');}
-      });
-      setStatus('Sketch ready','ok');setDrawHint('','Select a tool above to start drawing');
-    }
+    async function initSketch(){if(sketchVM)return;setStatus('Loading sketch tools…','busy');const [GL,SVM]=await Promise.all([loadModule('esri/layers/GraphicsLayer'),loadModule('esri/widgets/Sketch/SketchViewModel')]);sketchLayer=new GL({listMode:'hide',title:'QC Selection Area'});mapView.map.add(sketchLayer);sketchVM=new SVM({view:mapView,layer:sketchLayer,updateOnGraphicClick:false,polygonSymbol:{type:'simple-fill',color:[37,99,235,0.07],outline:{type:'simple-line',color:[37,99,235,0.85],width:2,style:'dash'}}});sketchVM.on('create',async e=>{if(e.state==='start'){isDrawing=true;setDrawHint('drawing','Drawing…');}else if(e.state==='complete'){isDrawing=false;let geom=e.graphic.geometry;if(geom&&mapView.spatialReference&&!geom.spatialReference?.wkid)geom=Object.assign(Object.create(Object.getPrototypeOf(geom)),geom,{spatialReference:mapView.spatialReference});try{const ge=await loadModule('esri/geometry/geometryEngine');const s=ge.simplify(geom);if(s)geom=s;}catch(_){}drawnGeometry=geom;setSpatialMode('drawn');setDrawHint('done','✓ Area selected — run query to apply');setStatus('Drawn area ready','ok');}else if(e.state==='cancel'){isDrawing=false;setDrawHint('','Drawing cancelled — select a tool to try again');}});setStatus('Sketch ready','ok');setDrawHint('','Select a tool above to start drawing');}
     function startDraw(tool,drawMode){if(!sketchVM){initSketch().then(()=>sketchVM.create(tool,{mode:drawMode})).catch(console.error);return;}if(isDrawing)sketchVM.cancel();clearSketchGraphics();sketchVM.create(tool,{mode:drawMode});setDrawHint('drawing',drawMode==='freehand'?'Hold and drag to draw a freehand area':'Click to place vertices — double-click to finish');}
     function clearSketchGraphics(){if(sketchLayer)sketchLayer.removeAll();drawnGeometry=null;}
     function applySpatialFilter(q){if(spatialMode==='screen'){q.geometry=mapView.extent;q.spatialRelationship='intersects';}else if(spatialMode==='drawn'&&drawnGeometry){q.geometry=drawnGeometry;q.spatialRelationship='intersects';}}
@@ -602,20 +487,13 @@
     function inClause(field,set){if(!set.size)return null;const v=[...set].map(c=>`'${String(c).replace(/'/g,"''")}'`).join(',');return set.size===1?`${field} = ${v}`:`${field} IN (${v})`;}
 
     // ── Queries ───────────────────────────────────────────────────────
-    async function runQuery(){
-      try{setStatus('Querying…','busy');$('#btnQuery').disabled=true;if(sketchVM&&isDrawing){sketchVM.cancel();isDrawing=false;}mode==='new_qc'?await queryNewFeatures():await queryClearedGigs();$('#btnRefresh').disabled=false;}
-      catch(e){setStatus('Query error: '+e.message,'error');alert('Query error:\n'+e.message);}
-      finally{$('#btnQuery').disabled=false;}
-    }
+    async function runQuery(){try{setStatus('Querying…','busy');$('#btnQuery').disabled=true;if(sketchVM&&isDrawing){sketchVM.cancel();isDrawing=false;}mode==='new_qc'?await queryNewFeatures():await queryClearedGigs();$('#btnRefresh').disabled=false;}catch(e){setStatus('Query error: '+e.message,'error');alert('Query error:\n'+e.message);}finally{$('#btnQuery').disabled=false;}}
     async function queryNewFeatures(){
       const clauses=["workflow_stage = 'OSP_CONST'","workflow_status = 'CMPLT'"];
       [inClause('workorder_id',selectedWOs),inClause('purchase_order_id',selectedPOs),inClause('job_number',selectedJobs)].forEach(c=>c&&clauses.push(c));
       const df=$('#dateFrom').value,dt=$('#dateTo').value;if(df)clauses.push(`installation_date >= ${new Date(df).getTime()}`);if(dt)clauses.push(`installation_date <= ${new Date(dt+'T23:59:59').getTime()}`);
-      const where=clauses.join(' AND '),sort=$('#sortOrder').value;
-      qcQueue=[];const counts={},errs=[];
-      for(const lyr of getCandidateLayers().items){
-        try{if(lyr===sketchLayer)continue;await lyr.load();if(!['workflow_stage','workflow_status','gis_id'].every(fn=>lyr.fields.some(f=>f.name.toLowerCase()===fn)))continue;const q=lyr.createQuery();q.where=where;q.outFields=['*'];q.returnGeometry=true;applySpatialFilter(q);try{q.orderByFields=[`installation_date ${sort.toUpperCase()}`];}catch(_){}const res=await lyr.queryFeatures(q);if(res.features.length){counts[lyr.title]=res.features.length;res.features.forEach(f=>{const gisId=f.attributes.gis_id||f.attributes.GIS_ID||f.attributes.gisid||'Unknown';qcQueue.push({layer:lyr,feature:f,gisId,type:'new_qc'});});}}catch(_){errs.push(lyr.title);}
-      }
+      const where=clauses.join(' AND '),sort=$('#sortOrder').value;qcQueue=[];const counts={},errs=[];
+      for(const lyr of getCandidateLayers().items){try{if(lyr===sketchLayer)continue;await lyr.load();if(!['workflow_stage','workflow_status','gis_id'].every(fn=>lyr.fields.some(f=>f.name.toLowerCase()===fn)))continue;const q=lyr.createQuery();q.where=where;q.outFields=['*'];q.returnGeometry=true;applySpatialFilter(q);try{q.orderByFields=[`installation_date ${sort.toUpperCase()}`];}catch(_){}const res=await lyr.queryFeatures(q);if(res.features.length){counts[lyr.title]=res.features.length;res.features.forEach(f=>{const gisId=f.attributes.gis_id||f.attributes.GIS_ID||f.attributes.gisid||'Unknown';qcQueue.push({layer:lyr,feature:f,gisId,type:'new_qc'});});}}catch(_){errs.push(lyr.title);}}
       qcQueue.sort((a,b)=>{const da=a.feature.attributes.installation_date||0,db=b.feature.attributes.installation_date||0;return sort==='desc'?db-da:da-db;});showQueryResults(counts,errs);
     }
     async function queryClearedGigs(){
@@ -634,71 +512,25 @@
       if(!qcQueue.length){cont.innerHTML=`<div style="text-align:center;padding:10px;color:#64748b;">No features found — try adjusting your filters.</div>${errs.length?`<div style="font-size:11px;color:#dc2626;margin-top:6px;">⚠ ${errs.length} layer(s) had errors: ${errs.join(', ')}</div>`:''}`;res.style.display='block';$('#btnStart').style.display='none';setStatus('No features found','idle');return;}
       const sn=spatialMode==='screen'?' <span style="font-size:10px;color:#0891b2;">📺 screen</span>':spatialMode==='drawn'?' <span style="font-size:10px;color:#2563eb;">✏️ drawn area</span>':'';
       const total=qcQueue.length,multiLayer=Object.keys(counts).length>1;
-      let rows='';
-      Object.entries(counts).forEach(([n,c])=>{
-        rows+=`<label style="display:flex;align-items:center;gap:9px;padding:6px 2px;border-bottom:1px solid #e8f0fe;cursor:pointer;user-select:none;">
-          <input type="checkbox" class="layer-include" data-layer="${n.replace(/"/g,'&quot;')}" checked
-            style="accent-color:#2563eb;width:14px;height:14px;flex-shrink:0;cursor:pointer;">
-          <span style="flex:1;font-size:11px;">${n}</span>
-          <strong style="font-size:12px;color:#1d4ed8;">${c}</strong>
-        </label>`;
-      });
-      cont.innerHTML=`
-        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px;">
-          <div id="qrHeadline" style="font-weight:700;font-size:13px;color:#1d4ed8;">${total} feature${total!==1?'s':''} ready${sn}</div>
-          ${multiLayer?`<button id="qrToggleAll" style="background:none;border:none;font-size:10px;color:#2563eb;cursor:pointer;font-weight:700;padding:0;">Deselect all</button>`:''}
-        </div>
-        <div>${rows}</div>
-        ${errs.length?`<div style="font-size:10px;color:#92400e;margin-top:6px;padding:4px 8px;background:#fffbeb;border-radius:4px;">⚠ ${errs.length} layer(s) skipped</div>`:''}
-      `;
-      res.style.display='block';$('#btnStart').style.display='block';
-      setStatus(`${total} feature${total!==1?'s':''} ready`,'ok');
-
-      const syncBtn=()=>{
-        const checks=[...cont.querySelectorAll('.layer-include')];
-        const checkedNames=new Set(checks.filter(cb=>cb.checked).map(cb=>cb.dataset.layer));
-        const sel=qcQueue.filter(item=>checkedNames.has(item.layer.title)).length;
-        const none=!checkedNames.size,all=checks.length===checkedNames.size;
-        const hl=$('#qrHeadline');
-        if(hl)hl.innerHTML=all?`${total} feature${total!==1?'s':''} ready${sn}`:`<span style="color:#2563eb;">${sel}</span> <span style="color:#94a3b8;font-size:11px;">of ${total} selected</span>${sn}`;
-        const btn=$('#btnStart');
-        btn.disabled=none;
-        btn.textContent=none?'Select at least one layer →':all?'Start Review →':`Start Review → (${sel})`;
-        const tog=$('#qrToggleAll');
-        if(tog)tog.textContent=all?'Deselect all':'Select all';
-      };
-      cont.querySelectorAll('.layer-include').forEach(cb=>cb.addEventListener('change',syncBtn));
-      const tog=$('#qrToggleAll');
-      if(tog)tog.onclick=()=>{const cbs=[...cont.querySelectorAll('.layer-include')],all=cbs.every(cb=>cb.checked);cbs.forEach(cb=>cb.checked=!all);syncBtn();};
+      let rows='';Object.entries(counts).forEach(([n,c])=>{rows+=`<label style="display:flex;align-items:center;gap:9px;padding:6px 2px;border-bottom:1px solid #e8f0fe;cursor:pointer;user-select:none;"><input type="checkbox" class="layer-include" data-layer="${n.replace(/"/g,'&quot;')}" checked style="accent-color:#2563eb;width:14px;height:14px;flex-shrink:0;cursor:pointer;"><span style="flex:1;font-size:11px;">${n}</span><strong style="font-size:12px;color:#1d4ed8;">${c}</strong></label>`;});
+      cont.innerHTML=`<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px;"><div id="qrHeadline" style="font-weight:700;font-size:13px;color:#1d4ed8;">${total} feature${total!==1?'s':''} ready${sn}</div>${multiLayer?`<button id="qrToggleAll" style="background:none;border:none;font-size:10px;color:#2563eb;cursor:pointer;font-weight:700;padding:0;">Deselect all</button>`:''}</div><div>${rows}</div>${errs.length?`<div style="font-size:10px;color:#92400e;margin-top:6px;padding:4px 8px;background:#fffbeb;border-radius:4px;">⚠ ${errs.length} layer(s) skipped</div>`:''}`;
+      res.style.display='block';$('#btnStart').style.display='block';setStatus(`${total} feature${total!==1?'s':''} ready`,'ok');
+      const syncBtn=()=>{const checks=[...cont.querySelectorAll('.layer-include')];const checkedNames=new Set(checks.filter(cb=>cb.checked).map(cb=>cb.dataset.layer));const sel=qcQueue.filter(item=>checkedNames.has(item.layer.title)).length;const none=!checkedNames.size,all=checks.length===checkedNames.size;const hl=$('#qrHeadline');if(hl)hl.innerHTML=all?`${total} feature${total!==1?'s':''} ready${sn}`:`<span style="color:#2563eb;">${sel}</span> <span style="color:#94a3b8;font-size:11px;">of ${total} selected</span>${sn}`;const btn=$('#btnStart');btn.disabled=none;btn.textContent=none?'Select at least one layer →':all?'Start Review →':`Start Review → (${sel})`;const tog=$('#qrToggleAll');if(tog)tog.textContent=all?'Deselect all':'Select all';};
+      cont.querySelectorAll('.layer-include').forEach(cb=>cb.addEventListener('change',syncBtn));const tog=$('#qrToggleAll');if(tog)tog.onclick=()=>{const cbs=[...cont.querySelectorAll('.layer-include')],all=cbs.every(cb=>cb.checked);cbs.forEach(cb=>cb.checked=!all);syncBtn();};
     }
 
     // ── Review session ────────────────────────────────────────────────
     function startReview(){
       if(!qcQueue.length){alert('No features to review');return;}
-      // Filter out layers the user unchecked in the results panel
       const checks=[...(($('#resultsContent')?.querySelectorAll('.layer-include'))??[])];
-      if(checks.length){
-        const excluded=new Set(checks.filter(cb=>!cb.checked).map(cb=>cb.dataset.layer));
-        if(excluded.size){qcQueue=qcQueue.filter(item=>!excluded.has(item.layer.title));if(!qcQueue.length){alert('No features remain after exclusions.');return;}}
-      }
+      if(checks.length){const excluded=new Set(checks.filter(cb=>!cb.checked).map(cb=>cb.dataset.layer));if(excluded.size){qcQueue=qcQueue.filter(item=>!excluded.has(item.layer.title));if(!qcQueue.length){alert('No features remain after exclusions.');return;}}}
       currentIndex=0;sessionLog=[];sessionStartTime=new Date();setPhase('review');wireDecisionForm();showFeature();
     }
-
     function wireDecisionForm(){
-      const isNew=mode==='new_qc';
-      $('#newQcOpts').style.display=isNew?'block':'none';$('#clearOpts').style.display=isNew?'none':'block';
-      $('#photoSkipWrap').style.display=isNew?'none':'block';
-      $('#chkSkipPhotos').checked=false;
-      $('#featureCardLabel').textContent=isNew?'Current Feature':'Cleared GIG';
-      if(isNew){
-        const sync=()=>{const v=box.querySelector("input[name='qcDec']:checked")?.value;$('#rcPass').className='radio-card'+(v==='pass'?' sel-pass':'');$('#rcFail').className='radio-card'+(v==='fail'?' sel-fail':'');$('#rcPhoto').className='radio-card'+(v==='missing_photo'?' sel-photo':'');$('#issueSection').style.display=v==='fail'?'block':'none';};
-        ['#radPass','#radFail','#radPhoto'].forEach(s=>$(s).onchange=sync);setupIssueTypes();
-      }else{
-        const sync=()=>{const v=box.querySelector("input[name='clrDec']:checked")?.value;$('#rcApprove').className='radio-card'+(v==='approve'?' sel-approve':'');$('#rcReopen').className='radio-card'+(v==='reopen'?' sel-reopen':'');};
-        $('#radApprove').onchange=sync;$('#radReopen').onchange=sync;
-      }
+      const isNew=mode==='new_qc';$('#newQcOpts').style.display=isNew?'block':'none';$('#clearOpts').style.display=isNew?'none':'block';$('#photoSkipWrap').style.display=isNew?'none':'block';$('#chkSkipPhotos').checked=false;$('#featureCardLabel').textContent=isNew?'Current Feature':'Cleared GIG';
+      if(isNew){const sync=()=>{const v=box.querySelector("input[name='qcDec']:checked")?.value;$('#rcPass').className='radio-card'+(v==='pass'?' sel-pass':'');$('#rcFail').className='radio-card'+(v==='fail'?' sel-fail':'');$('#rcPhoto').className='radio-card'+(v==='missing_photo'?' sel-photo':'');$('#issueSection').style.display=v==='fail'?'block':'none';};['#radPass','#radFail','#radPhoto'].forEach(s=>$(s).onchange=sync);setupIssueTypes();}
+      else{const sync=()=>{const v=box.querySelector("input[name='clrDec']:checked")?.value;$('#rcApprove').className='radio-card'+(v==='approve'?' sel-approve':'');$('#rcReopen').className='radio-card'+(v==='reopen'?' sel-reopen':'');};$('#radApprove').onchange=sync;$('#radReopen').onchange=sync;}
     }
-
     function setupIssueTypes(){
       const inp=$('#issueSearch'),list=$('#issueList');
       const makeItem=gt=>{const lbl=document.createElement('label');lbl.className='check-item';lbl.innerHTML=`<input type="checkbox" class="issueCheck" data-code="${gt.code}" data-name="${gt.name}"><span style="font-size:11px;">${gt.name}</span>`;list.appendChild(lbl);};
@@ -706,21 +538,17 @@
       const render=(filter='')=>{list.innerHTML='';const lc=filter.toLowerCase();const hits=gigTypes.filter(gt=>gt.name.toLowerCase().includes(lc)||String(gt.code).toLowerCase().includes(lc));if(!hits.length){list.innerHTML='<div style="padding:8px;color:#94a3b8;font-size:11px;text-align:center;">No matches</div>';return;}if(!lc&&recentGigTypes.length){const rc=new Set(recentGigTypes.map(r=>String(r.code)));const recent=hits.filter(gt=>rc.has(String(gt.code))),rest=hits.filter(gt=>!rc.has(String(gt.code)));if(recent.length){makeSep('★ Recently Used','#0891b2');recent.forEach(makeItem);}if(rest.length){makeSep('All Types','#94a3b8',recent.length>0);rest.forEach(makeItem);}}else hits.forEach(makeItem);};
       render();inp.oninput=()=>render(inp.value);
     }
-
     function showFeature(){
       if(currentIndex>=qcQueue.length){completeSession();return;}
-      const item=qcQueue[currentIndex];
-      const pct=((currentIndex+1)/qcQueue.length)*100;
+      const item=qcQueue[currentIndex];const pct=((currentIndex+1)/qcQueue.length)*100;
       $('#progressBar').style.width=pct+'%';$('#progressText').textContent=`${currentIndex+1} / ${qcQueue.length}`;
       const rev=sessionLog.filter(e=>e.action==='qc_review'&&e.success),pc=rev.filter(e=>e.decision==='Pass'||e.decision==='Approve').length,sk=sessionLog.filter(e=>e.action==='skip').length;
       $('#progressStats').textContent=rev.length?`${pc} ✓  ${rev.length-pc} ✗${sk?'  '+sk+' skipped':''}` : '';
       $('#hdrSub').textContent=mode==='new_qc'?`New QC · ${item.layer.title}`:`Clear Review · GIS ${item.gisId}`;
-      renderFeatureInfo(item);resetForm();startTimer();
-      $('#btnPrev').disabled=currentIndex===0;
+      renderFeatureInfo(item);resetForm();startTimer();$('#btnPrev').disabled=currentIndex===0;
       showPopup(item).then(()=>loadAttachments(item)).catch(()=>{});
       setStatus(`Reviewing ${currentIndex+1} of ${qcQueue.length}`,'busy');
     }
-
     function renderFeatureInfo(item){
       const a=item.feature.attributes,isNew=item.type==='new_qc',rows=[];
       if(isNew){rows.push(['GIS ID',item.gisId],['Layer',item.layer.title],['Work Order',a.workorder_id||'N/A']);if(a.job_number)rows.push(['Job Number',a.job_number]);if(a.purchase_order_id)rows.push(['Purchase Order',a.purchase_order_id]);if(a.installation_date)rows.push(['Install Date',new Date(a.installation_date).toLocaleDateString()]);if(a.supervisor)rows.push(['Supervisor',a.supervisor]);if(a.crew)rows.push(['Crew',a.crew]);}
@@ -728,15 +556,14 @@
       $('#featureInfo').innerHTML=rows.map(([k,v])=>`<span class="attr-key">${k}:</span><span class="attr-val">${v}</span>`).join('');
       const banner=$('#gigCommentsBanner');if(!isNew&&a.comments){banner.style.display='block';$('#gigCommentsText').textContent=a.comments;}else banner.style.display='none';
     }
-
     function resetForm(){
       box.querySelectorAll("input[name='qcDec'],input[name='clrDec']").forEach(r=>r.checked=false);
       box.querySelectorAll('.radio-card').forEach(rc=>rc.className='radio-card');
       $('#issueSection').style.display='none';$('#qcNotes').value='';$('#attachmentsBar').style.display='none';
       $('#chkSkipPhotos').checked=false;
-      pendingGigAttachment=null;$('#mkPendingPill').style.display='none';
+      pendingGigAttachments=[];queuedLbIndices.clear();mkStrokesMap.clear();
+      syncPendingPill();
     }
-
     const startTimer=()=>{stopTimer();featureStartTime=new Date();timerInterval=setInterval(()=>{const s=Math.floor((new Date()-featureStartTime)/1000);$('#featureTimer').textContent=`${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;},1000);};
     const stopTimer=()=>{if(timerInterval){clearInterval(timerInterval);timerInterval=null;}};
     const elapsed=()=>featureStartTime?Math.floor((new Date()-featureStartTime)/1000):0;
@@ -757,15 +584,36 @@
 
     // ── Lightbox ──────────────────────────────────────────────────────
     function applyLbTransform(){$lb('#lbImg').style.transform=`translate(${lbPan.x}px,${lbPan.y}px) scale(${lbScale})`;}
-    function openLightbox(atts){lbImages=atts;lbIdx=0;lbScale=1;lbPan={x:0,y:0};lb.classList.add('open');showLbImage();}
+    function openLightbox(atts){
+      lbImages=atts;lbIdx=0;lbScale=1;lbPan={x:0,y:0};
+      // Reset per-session markup state for this new attachment set
+      mkStrokesMap.clear();queuedLbIndices.clear();
+      lb.classList.add('open');showLbImage();
+    }
     function closeLightbox(){if(mkActive)deactivateMarkup();lb.classList.remove('open');$lb('#lbImg').src='';}
+
+    // Save current strokes for the current image index before navigating away
+    function saveMkStrokesForCurrent(){
+      if(mkStrokes.length) mkStrokesMap.set(lbIdx,[...mkStrokes]);
+      else mkStrokesMap.delete(lbIdx);
+    }
+
     function showLbImage(){
-      const img=$lb('#lbImg'),att=lbImages[lbIdx];lbScale=1;lbPan={x:0,y:0};applyLbTransform();img.style.display='none';$lb('#lbLoading').style.display='block';
-      img.onload=()=>{$lb('#lbLoading').style.display='none';img.style.display='block';if(mkActive)resizeMkCanvas();};img.onerror=()=>{$lb('#lbLoading').textContent='⚠ Could not load image';};img.src=att.url;
+      const img=$lb('#lbImg'),att=lbImages[lbIdx];
+      lbScale=1;lbPan={x:0,y:0};applyLbTransform();img.style.display='none';$lb('#lbLoading').style.display='block';
+      img.onload=()=>{$lb('#lbLoading').style.display='none';img.style.display='block';if(mkActive)resizeMkCanvas();};
+      img.onerror=()=>{$lb('#lbLoading').textContent='⚠ Could not load image';};
+      img.src=att.url;
       $lb('#lbCounter').textContent=`${lbIdx+1} / ${lbImages.length}`;$lb('#lbTitle').textContent=att.name||'';
       $lb('#lbPrev').style.display=lbImages.length>1?'flex':'none';$lb('#lbNext').style.display=lbImages.length>1?'flex':'none';
-      mkStrokes=[];mkCurrent=null;if(mkCtx)mkCtx.clearRect(0,0,mkCanvas?.width||0,mkCanvas?.height||0);resetMkQueueBtn();
+      // Restore saved strokes for this image (or start fresh)
+      mkStrokes=mkStrokesMap.get(lbIdx)||[];
+      mkCurrent=null;
+      if(mkCtx)mkCtx.clearRect(0,0,mkCanvas?.width||0,mkCanvas?.height||0);
+      if(mkStrokes.length&&mkActive)redrawMk();
+      updateMkQueueBtn();
     }
+
     function lbZoom(f){lbScale=Math.min(10,Math.max(0.25,lbScale*f));applyLbTransform();}
     const lbStage=$lb('#lbStage');
     lbStage.addEventListener('wheel',e=>{if(mkActive)return;e.preventDefault();lbZoom(e.deltaY<0?1.15:0.87);},{passive:false});
@@ -775,11 +623,28 @@
     let lbLastDist=null;
     lbStage.addEventListener('touchstart',e=>{if(e.touches.length===2)lbLastDist=null;},{passive:true});
     lbStage.addEventListener('touchmove',e=>{if(mkActive||e.touches.length!==2)return;e.preventDefault();const dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY,dist=Math.sqrt(dx*dx+dy*dy);if(lbLastDist!==null)lbZoom(dist/lbLastDist);lbLastDist=dist;},{passive:false});
-    $lb('#lbClose').onclick=closeLightbox;$lb('#lbZoomIn').onclick=()=>lbZoom(1.3);$lb('#lbZoomOut').onclick=()=>lbZoom(0.77);$lb('#lbReset').onclick=()=>{lbScale=1;lbPan={x:0,y:0};applyLbTransform();};$lb('#lbPrev').onclick=()=>{lbIdx=(lbIdx-1+lbImages.length)%lbImages.length;showLbImage();};$lb('#lbNext').onclick=()=>{lbIdx=(lbIdx+1)%lbImages.length;showLbImage();};
+    $lb('#lbClose').onclick=closeLightbox;$lb('#lbZoomIn').onclick=()=>lbZoom(1.3);$lb('#lbZoomOut').onclick=()=>lbZoom(0.77);$lb('#lbReset').onclick=()=>{lbScale=1;lbPan={x:0,y:0};applyLbTransform();};
+    // Save strokes before navigating so they're restored on return
+    $lb('#lbPrev').onclick=()=>{saveMkStrokesForCurrent();lbIdx=(lbIdx-1+lbImages.length)%lbImages.length;showLbImage();};
+    $lb('#lbNext').onclick=()=>{saveMkStrokesForCurrent();lbIdx=(lbIdx+1)%lbImages.length;showLbImage();};
 
     // ── Markup ────────────────────────────────────────────────────────
     mkCanvas=$lb('#lbMkCanvas');mkCtx=mkCanvas.getContext('2d');
-    function activateMarkup(){mkActive=true;lbScale=1;lbPan={x:0,y:0};applyLbTransform();resizeMkCanvas();mkCanvas.style.display='block';$lb('#lbMkBar').classList.add('open');$lb('#lbMkToggle').classList.add('on');$lb('#lbHint').style.opacity='0';lbStage.style.cursor='crosshair';}
+    function activateMarkup(){
+      mkActive=true;lbScale=1;lbPan={x:0,y:0};
+      const imgEl=$lb('#lbImg');
+      // Freeze the CSS transition so the transform is applied synchronously.
+      // Without this, resizeMkCanvas measures the image mid-animation and the
+      // canvas ends up misaligned, shifting all strokes in the composite.
+      imgEl.style.transition='none';
+      applyLbTransform();
+      imgEl.getBoundingClientRect(); // force reflow — transform is now settled
+      resizeMkCanvas();
+      requestAnimationFrame(()=>imgEl.style.transition=''); // restore for next pan/zoom
+      mkCanvas.style.display='block';
+      $lb('#lbMkBar').classList.add('open');$lb('#lbMkToggle').classList.add('on');
+      $lb('#lbHint').style.opacity='0';lbStage.style.cursor='crosshair';
+    }
     function deactivateMarkup(){mkActive=false;mkCanvas.style.display='none';$lb('#lbMkBar').classList.remove('open');$lb('#lbMkToggle').classList.remove('on');$lb('#lbMkTextWrap').style.display='none';$lb('#lbHint').style.opacity='1';lbStage.style.cursor='';}
     $lb('#lbMkToggle').onclick=()=>mkActive?deactivateMarkup():activateMarkup();
     function resizeMkCanvas(){const img=$lb('#lbImg');if(!img||img.style.display==='none')return;const stR=lbStage.getBoundingClientRect(),imgR=img.getBoundingClientRect();const w=Math.round(imgR.width),h=Math.round(imgR.height);if(!w||!h)return;mkCanvas.width=w;mkCanvas.height=h;mkCanvas.style.width=w+'px';mkCanvas.style.height=h+'px';mkCanvas.style.left=Math.round(imgR.left-stR.left)+'px';mkCanvas.style.top=Math.round(imgR.top-stR.top)+'px';redrawMk();}
@@ -795,284 +660,206 @@
     $lb('#lbMkTextVal').addEventListener('blur',()=>setTimeout(commitMkText,150));
     function commitMkText(){const tw=$lb('#lbMkTextWrap');if(tw.style.display==='none')return;const txt=$lb('#lbMkTextVal').value.trim();if(txt){mkStrokes.push({type:'text',color:mkColor,width:mkWidth,x:parseFloat(tw.dataset.x),y:parseFloat(tw.dataset.y),text:txt});redrawMk();updateMkQueueBtn();}tw.style.display='none';}
     function redrawMk(){mkCtx.clearRect(0,0,mkCanvas.width,mkCanvas.height);mkStrokes.forEach(drawMkStroke);if(mkCurrent)drawMkStroke(mkCurrent);}
-    function drawMkStroke(s){const ctx=mkCtx;ctx.save();ctx.strokeStyle=s.color;ctx.fillStyle=s.color;ctx.lineWidth=s.width;ctx.lineCap='round';ctx.lineJoin='round';switch(s.type){case'pen':if(s.points.length<2){ctx.beginPath();ctx.arc(s.points[0].x,s.points[0].y,s.width/2,0,Math.PI*2);ctx.fill();}else{ctx.beginPath();ctx.moveTo(s.points[0].x,s.points[0].y);for(let i=1;i<s.points.length-1;i++){const mx=(s.points[i].x+s.points[i+1].x)/2,my=(s.points[i].y+s.points[i+1].y)/2;ctx.quadraticCurveTo(s.points[i].x,s.points[i].y,mx,my);}ctx.lineTo(s.points[s.points.length-1].x,s.points[s.points.length-1].y);ctx.stroke();}break;case'circle':{const rx=Math.abs(s.x2-s.x1)/2,ry=Math.abs(s.y2-s.y1)/2,cx=(s.x1+s.x2)/2,cy=(s.y1+s.y2)/2;ctx.beginPath();ctx.ellipse(cx,cy,Math.max(rx,1),Math.max(ry,1),0,0,Math.PI*2);ctx.stroke();break;}case'arrow':{const hl=Math.max(12,s.width*4),ang=Math.atan2(s.y2-s.y1,s.x2-s.x1);ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();ctx.beginPath();ctx.moveTo(s.x2,s.y2);ctx.lineTo(s.x2-hl*Math.cos(ang-Math.PI/6),s.y2-hl*Math.sin(ang-Math.PI/6));ctx.lineTo(s.x2-hl*Math.cos(ang+Math.PI/6),s.y2-hl*Math.sin(ang+Math.PI/6));ctx.closePath();ctx.fill();break;}case'text':{const fs=Math.max(14,s.width*5);ctx.font=`bold ${fs}px sans-serif`;ctx.strokeStyle='rgba(0,0,0,.65)';ctx.lineWidth=s.width*2.5;ctx.strokeText(s.text,s.x,s.y);ctx.fillStyle=s.color;ctx.fillText(s.text,s.x,s.y);break;}}ctx.restore();}
+    function drawMkStroke(s){const ctx=mkCtx;ctx.save();ctx.strokeStyle=s.color;ctx.fillStyle=s.color;ctx.lineWidth=s.width;ctx.lineCap='round';ctx.lineJoin='round';switch(s.type){case'pen':if(s.points.length<2){ctx.beginPath();ctx.arc(s.points[0].x,s.points[0].y,s.width/2,0,Math.PI*2);ctx.fill();}else{ctx.beginPath();ctx.moveTo(s.points[0].x,s.points[0].y);for(let i=1;i<s.points.length-1;i++){const mx=(s.points[i].x+s.points[i+1].x)/2,my=(s.points[i].y+s.points[i+1].y)/2;ctx.quadraticCurveTo(s.points[i].x,s.points[i].y,mx,my);}ctx.lineTo(s.points[s.points.length-1].x,s.points[s.points.length-1].y);ctx.stroke();}break;case'circle':{const rx=Math.abs(s.x2-s.x1)/2,ry=Math.abs(s.y2-s.y1)/2,cx=(s.x1+s.x2)/2,cy=(s.y1+s.y2)/2;ctx.beginPath();ctx.ellipse(cx,cy,Math.max(rx,1),Math.max(ry,1),0,0,Math.PI*2);ctx.stroke();break;}case'arrow':{const hl=Math.max(12,s.width*4),ang=Math.atan2(s.y2-s.y1,s.x2-s.x1);ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();ctx.beginPath();ctx.moveTo(s.x2,s.y2);ctx.lineTo(s.x2-hl*Math.cos(ang-Math.PI/6),s.y2-hl*Math.sin(ang-Math.PI/6));ctx.lineTo(s.x2-hl*Math.cos(ang+Math.PI/6),s.y2-hl*Math.sin(ang+Math.PI/6));ctx.closePath();ctx.fill();break;}case'text':{const fs=Math.max(14,s.width*5);ctx.font=`bold ${fs}px sans-serif`;const tw=ctx.measureText(s.text).width;const x=Math.min(Math.max(s.x,4),ctx.canvas.width-tw-4);const y=Math.min(Math.max(s.y,fs+4),ctx.canvas.height-4);ctx.strokeStyle='rgba(0,0,0,.65)';ctx.lineWidth=s.width*2.5;ctx.strokeText(s.text,x,y);ctx.fillStyle=s.color;ctx.fillText(s.text,x,y);break;}}ctx.restore();}
     function setMkTool(t){mkTool=t;['mkPen','mkCircle','mkArrow','mkText'].forEach(id=>$lb('#'+id).classList.toggle('sel',id==='mk'+t.charAt(0).toUpperCase()+t.slice(1)));mkCanvas.style.cursor=t==='text'?'text':'crosshair';}
     $lb('#mkPen').onclick=()=>setMkTool('pen');$lb('#mkCircle').onclick=()=>setMkTool('circle');$lb('#mkArrow').onclick=()=>setMkTool('arrow');$lb('#mkText').onclick=()=>setMkTool('text');$lb('#mkWidth').oninput=e=>{mkWidth=parseInt(e.target.value);};
     lb.querySelectorAll('.mk-dot').forEach(d=>{d.onclick=()=>{mkColor=d.dataset.c;lb.querySelectorAll('.mk-dot').forEach(x=>x.classList.remove('sel'));d.classList.add('sel');};});
-    $lb('#mkUndo').onclick=()=>{if(mkStrokes.length){mkStrokes.pop();redrawMk();updateMkQueueBtn();}};$lb('#mkClear').onclick=()=>{mkStrokes=[];mkCurrent=null;redrawMk();updateMkQueueBtn();};
-    function updateMkQueueBtn(){const btn=$lb('#mkQueue');btn.disabled=mkStrokes.length===0;if(mkStrokes.length&&pendingGigAttachment){btn.textContent='↺ Re-queue';btn.style.background='#0891b2';}else if(mkStrokes.length){btn.textContent='📎 Queue for GIG';btn.style.background='';}}
-    function resetMkQueueBtn(){$lb('#mkQueue').disabled=true;$lb('#mkQueue').textContent='📎 Queue for GIG';$lb('#mkQueue').style.background='';$lb('#lbMkQueuedBadge').style.display='none';}
+    $lb('#mkUndo').onclick=()=>{if(mkStrokes.length){mkStrokes.pop();redrawMk();updateMkQueueBtn();}};
+    $lb('#mkClear').onclick=()=>{mkStrokes=[];mkCurrent=null;redrawMk();updateMkQueueBtn();};
+
+    function updateMkQueueBtn(){
+      const btn=$lb('#mkQueue');
+      const hasStrokes=mkStrokes.length>0;
+      const alreadyQueued=queuedLbIndices.has(lbIdx);
+      btn.disabled=!hasStrokes;
+      if(hasStrokes&&alreadyQueued){btn.textContent='↺ Re-queue this photo';btn.style.background='#0891b2';}
+      else if(hasStrokes){btn.textContent='📎 Queue for GIG';btn.style.background='';}
+      else{btn.textContent='📎 Queue for GIG';btn.style.background='';}
+    }
+
     $lb('#mkQueue').onclick=async()=>{
       // Flush any pending text input before capturing — the blur handler is
-      // delayed 150ms so it won't have run yet if the user clicked Queue directly
-      // from the text field. commitMkText() is a no-op if no text is pending.
+      // delayed 150ms so it won't have run yet if the user clicked Queue directly.
       commitMkText();
-      const btn=$lb('#mkQueue');btn.disabled=true;btn.textContent='Capturing…';try{const img=$lb('#lbImg'),w=img.naturalWidth||mkCanvas.width,h=img.naturalHeight||mkCanvas.height,off=document.createElement('canvas');off.width=w;off.height=h;const ctx=off.getContext('2d');try{ctx.drawImage(img,0,0,w,h);}catch(_){ctx.fillStyle='#1e293b';ctx.fillRect(0,0,w,h);}ctx.save();ctx.scale(w/mkCanvas.width,h/mkCanvas.height);ctx.drawImage(mkCanvas,0,0);ctx.restore();const blob=await new Promise(res=>off.toBlob(res,'image/png'));const origName=lbImages[lbIdx]?.name||'attachment';pendingGigAttachment={blob,filename:`markup_${origName.replace(/\.[^.]+$/,'')}_${Date.now()}.png`};$lb('#lbMkQueuedBadge').style.display='block';btn.textContent='✓ Queued!';btn.style.background='#15803d';btn.disabled=false;$('#mkPendingPill').style.display='inline-flex';setStatus('Markup queued — will attach to GIG on submit','ok');}catch(e){console.error('Markup capture:',e);btn.textContent='📎 Queue for GIG';btn.disabled=false;setStatus('Markup capture failed: '+e.message,'error');}};
+      const btn=$lb('#mkQueue');btn.disabled=true;btn.textContent='Capturing…';
+      try{
+        const img=$lb('#lbImg'),w=img.naturalWidth||mkCanvas.width,h=img.naturalHeight||mkCanvas.height,off=document.createElement('canvas');
+        off.width=w;off.height=h;
+        const ctx=off.getContext('2d');
+        try{ctx.drawImage(img,0,0,w,h);}catch(_){ctx.fillStyle='#1e293b';ctx.fillRect(0,0,w,h);}
+        ctx.save();ctx.scale(w/mkCanvas.width,h/mkCanvas.height);ctx.drawImage(mkCanvas,0,0);ctx.restore();
+        const blob=await new Promise(res=>off.toBlob(res,'image/png'));
+        const origName=lbImages[lbIdx]?.name||'attachment';
+        const entry={blob,filename:`markup_${origName.replace(/\.[^.]+$/,'')}_${Date.now()}.png`};
+
+        // Replace any prior entry for this image index, otherwise append
+        if(queuedLbIndices.has(lbIdx)){
+          // Find and replace the existing entry for this image (matched by original name prefix)
+          const prefix=`markup_${origName.replace(/\.[^.]+$/,'')}`;
+          const idx=pendingGigAttachments.findIndex(a=>a.filename.startsWith(prefix));
+          if(idx>=0) pendingGigAttachments[idx]=entry;
+          else pendingGigAttachments.push(entry);
+        } else {
+          pendingGigAttachments.push(entry);
+          queuedLbIndices.add(lbIdx);
+        }
+
+        // Update badge in lightbox
+        const badge=$lb('#lbMkQueuedBadge');
+        badge.textContent=`✓ ${pendingGigAttachments.length} markup${pendingGigAttachments.length>1?'s':''} queued`;
+        badge.style.display='block';
+
+        btn.textContent='✓ Queued!';btn.style.background='#15803d';
+        setTimeout(()=>updateMkQueueBtn(),1200);
+
+        syncPendingPill();
+        setStatus(`${pendingGigAttachments.length} markup${pendingGigAttachments.length>1?'s':''} queued — will attach to GIG on submit`,'ok');
+      }catch(e){
+        console.error('Markup capture:',e);btn.disabled=false;
+        updateMkQueueBtn();
+        setStatus('Markup capture failed: '+e.message,'error');
+      }
+    };
 
     // ── REST helpers — all via esri/request so auth is handled automatically ──
-    //
-    // No manual token fetching anywhere below. esri/request uses the same
-    // IdentityManager credential store as applyEdits / queryFeatures, so
-    // tokens are injected, refreshed, and proxied transparently.
-
     async function esriPost(url, formData) {
-      // Central wrapper: loads esri/request once (AMD caches it) and posts
-      // multipart form data. We use responseType:'text' and parse manually so
-      // esri/request handles auth (token injection, refresh, proxy) without also
-      // applying its ArcGIS JSON error-detection to addAttachment / deleteAttachments
-      // responses, which use non-standard shapes that can trigger false throws.
       const esriRequest = await loadModule('esri/request');
-      const result = await esriRequest(url, {
-        method: 'post',
-        body: formData,
-        responseType: 'text'
-      });
+      const result = await esriRequest(url, { method:'post', body:formData, responseType:'text' });
       try { return JSON.parse(result.data); } catch (_) { return result.data; }
     }
 
-    async function uploadPendingAttachment(objectId, layerUrl) {
-      if (!pendingGigAttachment) return;
-
-      if (!layerUrl) {
-        setStatus('⚠ GIG created but markup upload skipped — layer URL unavailable', 'error');
-        return;
-      }
-
-      const uploadUrl = `${layerUrl}/${objectId}/addAttachment`;
-      try {
-        const fd = new FormData();
-        fd.append('attachment', pendingGigAttachment.blob, pendingGigAttachment.filename);
-        fd.append('f', 'json');
-
-        const data = await esriPost(uploadUrl, fd);
-        console.debug('[rqcw] addAttachment response:', data);
-
-        console.debug('[rqcw] addAttachment response:', data);
-
-        // Only treat as failure on an explicit server-side error or a definite
-        // success:false — a missing/undefined success field still means success.
-        if (data?.error?.code) throw new Error(data.error.message || `Server error ${data.error.code}`);
-        const r = data?.addAttachmentResult;
-        if (r?.success === false && !r?.objectId) {
-          throw new Error(r?.error?.description || r?.error?.message || 'Upload rejected by server');
+    // Upload all queued markup attachments to a GIG feature
+    async function uploadPendingAttachments(objectId, layerUrl) {
+      if (!pendingGigAttachments.length) return;
+      if (!layerUrl) { setStatus('⚠ Markup upload skipped — layer URL unavailable','error'); return; }
+      for (const att of pendingGigAttachments) {
+        try {
+          const fd = new FormData();
+          fd.append('attachment', att.blob, att.filename);
+          fd.append('f', 'json');
+          const data = await esriPost(`${layerUrl}/${objectId}/addAttachment`, fd);
+          console.debug('[rqcw] addAttachment response:', data);
+          if (data?.error?.code) throw new Error(data.error.message||`Server error ${data.error.code}`);
+          const r = data?.addAttachmentResult;
+          if (r?.success===false&&!r?.objectId) throw new Error(r?.error?.description||r?.error?.message||'Upload rejected by server');
+        } catch (e) {
+          console.warn('Markup upload failed for', att.filename, e);
+          setStatus(`⚠ GIG created but markup upload failed for "${att.filename}": ${e.message}`,'error');
         }
-
-        pendingGigAttachment = null;
-        $('#mkPendingPill').style.display = 'none';
-        setStatus('Markup attached to GIG ✓', 'ok');
-      } catch (e) {
-        console.warn('Markup upload failed:', e);
-        setStatus('⚠ GIG created but markup upload failed: ' + e.message, 'error');
       }
+      pendingGigAttachments=[];queuedLbIndices.clear();
+      syncPendingPill();
+      setStatus('Markups attached to GIG ✓','ok');
     }
 
     // ── Photo Transfer Panel ──────────────────────────────────────────
-
     async function findOriginatingFeature(globalId) {
-      const layers = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
+      const layers = mapView.map.allLayers.filter(l=>l.type==='feature'&&l.visible);
       for (const lyr of layers.items) {
         try {
-          if (lyr === sketchLayer) continue;
-          await lyr.load();
-          if (!lyr.globalIdField) continue;
-          const q = lyr.createQuery();
-          q.where = `${lyr.globalIdField} = '${globalId}'`;
-          q.outFields = ['*']; q.returnGeometry = false;
-          const res = await lyr.queryFeatures(q);
-          if (!res.features.length) continue;
-          const objectId = res.features[0].attributes[lyr.objectIdField];
-          const supportsAttachments = !!(lyr.capabilities?.operations?.supportsQueryAttachments || lyr.hasAttachments);
-          // Use layerEndpointUrl to guarantee the REST URL includes the layer index
-          return { layer: lyr, layerUrl: layerEndpointUrl(lyr), objectId, globalId, supportsAttachments };
-        } catch (_) {}
+          if(lyr===sketchLayer)continue;await lyr.load();if(!lyr.globalIdField)continue;
+          const q=lyr.createQuery();q.where=`${lyr.globalIdField} = '${globalId}'`;q.outFields=['*'];q.returnGeometry=false;
+          const res=await lyr.queryFeatures(q);if(!res.features.length)continue;
+          const objectId=res.features[0].attributes[lyr.objectIdField];
+          const supportsAttachments=!!(lyr.capabilities?.operations?.supportsQueryAttachments||lyr.hasAttachments);
+          return{layer:lyr,layerUrl:layerEndpointUrl(lyr),objectId,globalId,supportsAttachments};
+        } catch(_){}
       }
       return null;
     }
 
-    // Deletes attachment IDs from a feature via the REST API, routed through
-    // esri/request so the current user's auth session is used automatically.
     async function restDeleteAttachments(layerUrl, objectId, ids) {
-      if (!ids.length) return;
-      const fd = new FormData();
-      fd.append('attachmentIds', ids.join(','));
-      fd.append('f', 'json');
-      const data = await esriPost(`${layerUrl}/${objectId}/deleteAttachments`, fd);
-      if (data?.error?.code) throw new Error(data.error.message || 'Delete failed');
-      const failed = (data?.deleteAttachmentResults || []).filter(r => r.success === false);
-      if (failed.length) throw new Error(`${failed.length} attachment(s) failed to delete`);
+      if(!ids.length)return;
+      const fd=new FormData();fd.append('attachmentIds',ids.join(','));fd.append('f','json');
+      const data=await esriPost(`${layerUrl}/${objectId}/deleteAttachments`,fd);
+      if(data?.error?.code)throw new Error(data.error.message||'Delete failed');
+      const failed=(data?.deleteAttachmentResults||[]).filter(r=>r.success===false);
+      if(failed.length)throw new Error(`${failed.length} attachment(s) failed to delete`);
     }
 
-    // Downloads GIG photos, deletes selected originals, uploads to original feature.
-    // All network calls go through esri/request — no manual token handling needed.
     async function executePhotoTransfer(gigLayerUrl, gigOid, origInfo, toTransfer, toDeleteIds, progressCb) {
-      const esriRequest = await loadModule('esri/request');
-      const steps = toTransfer.length + (toDeleteIds.length ? 1 : 0) + toTransfer.length;
-      let done = 0;
-      const tick = () => { done++; progressCb(Math.min(99, Math.round(done / steps * 100))); };
-
-      // Step 1: Download GIG fix photos as blobs via esri/request.
-      // responseType 'blob' lets esri/request handle auth (token, proxy) for the download.
-      const blobs = [];
-      for (const att of toTransfer) {
-        const result = await esriRequest(att.url, { responseType: 'blob' });
-        if (!result?.data) throw new Error(`Download failed for "${att.name}" — empty response`);
-        blobs.push({ blob: result.data, filename: att.name });
-        tick();
+      const esriRequest=await loadModule('esri/request');
+      const steps=toTransfer.length+(toDeleteIds.length?1:0)+toTransfer.length;
+      let done=0;const tick=()=>{done++;progressCb(Math.min(99,Math.round(done/steps*100)));};
+      const blobs=[];
+      for(const att of toTransfer){
+        const result=await esriRequest(att.url,{responseType:'blob'});
+        if(!result?.data)throw new Error(`Download failed for "${att.name}" — empty response`);
+        blobs.push({blob:result.data,filename:att.name});tick();
       }
-
-      // Step 2: Delete selected original feature photos.
-      if (toDeleteIds.length && origInfo?.supportsAttachments) {
-        await restDeleteAttachments(origInfo.layerUrl, origInfo.objectId, toDeleteIds);
-        tick();
-      }
-
-      // Step 3: Upload downloaded blobs to the original feature via esri/request.
-      if (origInfo?.supportsAttachments) {
-        for (const { blob, filename } of blobs) {
-          const fd = new FormData();
-          fd.append('attachment', blob, filename);
-          fd.append('f', 'json');
-          const data = await esriPost(`${origInfo.layerUrl}/${origInfo.objectId}/addAttachment`, fd);
-          if (data?.error?.code) throw new Error(data.error.message || `Upload failed for "${filename}"`);
-          const r = data?.addAttachmentResult;
-          if (r?.success === false && !r?.objectId) throw new Error(r?.error?.description || `Upload failed for "${filename}"`);
-          tick();
+      if(toDeleteIds.length&&origInfo?.supportsAttachments){await restDeleteAttachments(origInfo.layerUrl,origInfo.objectId,toDeleteIds);tick();}
+      if(origInfo?.supportsAttachments){
+        for(const{blob,filename}of blobs){
+          const fd=new FormData();fd.append('attachment',blob,filename);fd.append('f','json');
+          const data=await esriPost(`${origInfo.layerUrl}/${origInfo.objectId}/addAttachment`,fd);
+          if(data?.error?.code)throw new Error(data.error.message||`Upload failed for "${filename}"`);
+          const r=data?.addAttachmentResult;if(r?.success===false&&!r?.objectId)throw new Error(r?.error?.description||`Upload failed for "${filename}"`);tick();
         }
       }
       progressCb(100);
     }
 
     function buildPPItem(att, type) {
-      const isTransfer = type === 'transfer';
-      const wrap = document.createElement('div');
-      wrap.className = 'pp-item ' + (isTransfer ? 'sel-t' : 'sel-d');
-
-      const cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = true;
-      cb.className = 'pp-cb ' + (isTransfer ? 'pp-cb-t' : 'pp-cb-d');
-      cb.dataset.id = String(att.id);
-
-      const img = document.createElement('img');
-      img.className = 'pp-thumb'; img.loading = 'lazy';
-      img.src = att.url;
-
-      const ph = document.createElement('div');
-      ph.className = 'pp-thumb-ph'; ph.textContent = '🖼';
-      img.onerror = () => { img.style.display = 'none'; ph.style.display = 'flex'; };
-
-      const info = document.createElement('div'); info.className = 'pp-info';
-      const name = document.createElement('div'); name.className = 'pp-name'; name.textContent = att.name || 'Unknown'; name.title = att.name || '';
-      const size = document.createElement('div'); size.className = 'pp-size'; size.textContent = formatBytes(att.size);
-      info.append(name, size);
-
-      wrap.append(cb, img, ph, info);
-      wrap.addEventListener('click', e => {
-        if (e.target !== cb) cb.checked = !cb.checked;
-        wrap.classList.toggle('sel-t', isTransfer && cb.checked);
-        wrap.classList.toggle('sel-d', !isTransfer && cb.checked);
-        if (!cb.checked) wrap.classList.remove('sel-t', 'sel-d');
-        wrap.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      const isTransfer=type==='transfer';const wrap=document.createElement('div');wrap.className='pp-item '+(isTransfer?'sel-t':'sel-d');
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.className='pp-cb '+(isTransfer?'pp-cb-t':'pp-cb-d');cb.dataset.id=String(att.id);
+      const img=document.createElement('img');img.className='pp-thumb';img.loading='lazy';img.src=att.url;
+      const ph=document.createElement('div');ph.className='pp-thumb-ph';ph.textContent='🖼';img.onerror=()=>{img.style.display='none';ph.style.display='flex';};
+      const info=document.createElement('div');info.className='pp-info';const name=document.createElement('div');name.className='pp-name';name.textContent=att.name||'Unknown';name.title=att.name||'';const size=document.createElement('div');size.className='pp-size';size.textContent=formatBytes(att.size);info.append(name,size);
+      wrap.append(cb,img,ph,info);
+      wrap.addEventListener('click',e=>{if(e.target!==cb)cb.checked=!cb.checked;wrap.classList.toggle('sel-t',isTransfer&&cb.checked);wrap.classList.toggle('sel-d',!isTransfer&&cb.checked);if(!cb.checked)wrap.classList.remove('sel-t','sel-d');wrap.dispatchEvent(new Event('change',{bubbles:true}));});
       return wrap;
     }
 
     function openPhotoTransferPanel(item, notes, gigAtts, gigOid, gigLayerUrl, origInfo, origAtts) {
-      const transferable = gigAtts.filter(a => a.contentType?.startsWith('image/') && !a.name?.startsWith('markup_'));
-      const markupCount  = gigAtts.filter(a => a.name?.startsWith('markup_')).length;
-
-      $pp('#ppGigId').textContent = `GIG ${item.gisId} · ${item.gigTypeName || ''}`;
-
-      const left = $pp('#ppLeft'); left.innerHTML = '';
-      if (!transferable.length) {
-        left.innerHTML = '<div class="pp-empty">No transferable photos on this GIG</div>';
-      } else {
-        transferable.forEach(att => left.appendChild(buildPPItem(att, 'transfer')));
-        if (markupCount) { const n = document.createElement('div'); n.className = 'pp-excluded'; n.textContent = `${markupCount} QC markup file${markupCount > 1 ? 's' : ''} excluded`; left.appendChild(n); }
-      }
-
-      const right = $pp('#ppRight'); right.innerHTML = '';
-      if (!origInfo) {
-        right.innerHTML = '<div class="pp-empty">⚠ Originating feature not found — photos cannot be deleted or uploaded</div>';
-      } else if (!origInfo.supportsAttachments) {
-        right.innerHTML = '<div class="pp-empty">This layer does not support attachment operations — photos will be added only</div>';
-      } else if (!origAtts.length) {
-        right.innerHTML = '<div class="pp-empty">No existing photos on the original feature</div>';
-      } else {
-        origAtts.forEach(att => right.appendChild(buildPPItem(att, 'delete')));
-      }
-
-      const summaryEl = $pp('#ppSummary');
-      const updateSummary = () => {
-        const t = left.querySelectorAll('input[type=checkbox]:checked').length;
-        const d = right.querySelectorAll('input[type=checkbox]:checked').length;
-        summaryEl.innerHTML = `Transferring <strong>${t}</strong> · Deleting <strong>${d}</strong>`;
+      const transferable=gigAtts.filter(a=>a.contentType?.startsWith('image/')&&!a.name?.startsWith('markup_'));
+      const markupCount=gigAtts.filter(a=>a.name?.startsWith('markup_')).length;
+      $pp('#ppGigId').textContent=`GIG ${item.gisId} · ${item.gigTypeName||''}`;
+      const left=$pp('#ppLeft');left.innerHTML='';
+      if(!transferable.length){left.innerHTML='<div class="pp-empty">No transferable photos on this GIG</div>';}
+      else{transferable.forEach(att=>left.appendChild(buildPPItem(att,'transfer')));if(markupCount){const n=document.createElement('div');n.className='pp-excluded';n.textContent=`${markupCount} QC markup file${markupCount>1?'s':''} excluded`;left.appendChild(n);}}
+      const right=$pp('#ppRight');right.innerHTML='';
+      if(!origInfo){right.innerHTML='<div class="pp-empty">⚠ Originating feature not found — photos cannot be deleted or uploaded</div>';}
+      else if(!origInfo.supportsAttachments){right.innerHTML='<div class="pp-empty">This layer does not support attachment operations — photos will be added only</div>';}
+      else if(!origAtts.length){right.innerHTML='<div class="pp-empty">No existing photos on the original feature</div>';}
+      else{origAtts.forEach(att=>right.appendChild(buildPPItem(att,'delete')));}
+      const summaryEl=$pp('#ppSummary');
+      const updateSummary=()=>{const t=left.querySelectorAll('input[type=checkbox]:checked').length,d=right.querySelectorAll('input[type=checkbox]:checked').length;summaryEl.innerHTML=`Transferring <strong>${t}</strong> · Deleting <strong>${d}</strong>`;};
+      updateSummary();left.addEventListener('change',updateSummary);right.addEventListener('change',updateSummary);
+      const prog=$pp('#ppProg'),progFill=$pp('#ppProgFill'),confirmBtn=$pp('#ppConfirm');
+      prog.style.display='none';progFill.style.width='0%';confirmBtn.disabled=false;confirmBtn.textContent='Confirm Transfer & Approve →';
+      confirmBtn.onclick=async()=>{
+        const selTransferIds=[...left.querySelectorAll('input[type=checkbox]:checked')].map(cb=>cb.dataset.id);
+        const selDeleteIds=[...right.querySelectorAll('input[type=checkbox]:checked')].map(cb=>parseInt(cb.dataset.id));
+        const toTransfer=transferable.filter(a=>selTransferIds.includes(String(a.id)));
+        if(!toTransfer.length&&!selDeleteIds.length){if(!confirm('No photos selected for transfer or deletion.\n\nApprove this GIG without any photo changes?'))return;}
+        confirmBtn.disabled=true;confirmBtn.textContent='Processing…';prog.style.display='block';
+        try{await executePhotoTransfer(gigLayerUrl,gigOid,origInfo,toTransfer,selDeleteIds,pct=>{progFill.style.width=pct+'%';});closePP();await doApproveGig(item,notes);}
+        catch(e){confirmBtn.disabled=false;confirmBtn.textContent='↺ Retry Transfer & Approve';prog.style.display='none';progFill.style.width='0%';setStatus('Transfer failed: '+e.message,'error');alert('Photo transfer failed:\n\n'+e.message+'\n\nThe GIG has not been updated. Correct the issue above and retry, or cancel.');}
       };
-      updateSummary();
-      left.addEventListener('change', updateSummary);
-      right.addEventListener('change', updateSummary);
-
-      const prog = $pp('#ppProg'), progFill = $pp('#ppProgFill'), confirmBtn = $pp('#ppConfirm');
-      prog.style.display = 'none'; progFill.style.width = '0%';
-      confirmBtn.disabled = false; confirmBtn.textContent = 'Confirm Transfer & Approve →';
-
-      confirmBtn.onclick = async () => {
-        const selTransferIds = [...left.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.dataset.id);
-        const selDeleteIds   = [...right.querySelectorAll('input[type=checkbox]:checked')].map(cb => parseInt(cb.dataset.id));
-        const toTransfer = transferable.filter(a => selTransferIds.includes(String(a.id)));
-
-        if (!toTransfer.length && !selDeleteIds.length) {
-          if (!confirm('No photos selected for transfer or deletion.\n\nApprove this GIG without any photo changes?')) return;
-        }
-
-        confirmBtn.disabled = true; confirmBtn.textContent = 'Processing…';
-        prog.style.display = 'block';
-
-        try {
-          await executePhotoTransfer(gigLayerUrl, gigOid, origInfo, toTransfer, selDeleteIds, pct => { progFill.style.width = pct + '%'; });
-          closePP();
-          await doApproveGig(item, notes);
-        } catch (e) {
-          confirmBtn.disabled = false; confirmBtn.textContent = '↺ Retry Transfer & Approve';
-          prog.style.display = 'none'; progFill.style.width = '0%';
-          setStatus('Transfer failed: ' + e.message, 'error');
-          alert('Photo transfer failed:\n\n' + e.message + '\n\nThe GIG has not been updated. Correct the issue above and retry, or cancel.');
-        }
-      };
-
       pp.classList.add('open');
     }
-
-    function closePP() { pp.classList.remove('open'); $('#btnSubmit').disabled = false; setStatus('Ready','idle'); }
-    $pp('#ppClose').onclick = closePP;
-    $pp('#ppCancel').onclick = closePP;
+    function closePP(){pp.classList.remove('open');$('#btnSubmit').disabled=false;setStatus('Ready','idle');}
+    $pp('#ppClose').onclick=closePP;$pp('#ppCancel').onclick=closePP;
 
     async function doApproveGig(item, notes) {
-      try {
-        setStatus('Saving…','busy'); $('#btnSubmit').disabled = true;
-        const gl = gigLayerRef(); await gl.load();
-        const oid = item.feature.attributes[gl.objectIdField];
-        const gigAttrs = { [gl.objectIdField]: oid, gig_status: 'APPROVED' };
-        if (notes) gigAttrs.comments = notes;
-        const gigRes = await gl.applyEdits({ updateFeatures: [{ attributes: gigAttrs }] });
-        const gr = gigRes.updateFeatureResults?.[0];
-        if (!(gr?.success === true || (gr?.success === undefined && gr?.error === null))) throw new Error(gr?.error?.message || 'GIG update failed');
-        await updateOriginatingFeature(item.gisId, 'QCCMPLT');
-        if (pendingGigAttachment) await uploadPendingAttachment(oid, layerEndpointUrl(gl));
-        sessionLog.push({ timestamp: new Date(), action: 'qc_review', layerName: 'GIG Layer (22100)', gisId: item.gisId, decision: 'Approve', gigPointsCreated: 0, notes, timeSpent: elapsed(), success: true });
-        setStatus('GIG approved','ok');
-        stopTimer(); currentIndex++; setTimeout(showFeature, 600);
-      } catch (e) {
-        setStatus('Error: ' + e.message, 'error'); alert('Error:\n' + e.message); console.error(e);
-        $('#btnSubmit').disabled = false;
-      }
+      try{
+        setStatus('Saving…','busy');$('#btnSubmit').disabled=true;
+        const gl=gigLayerRef();await gl.load();const oid=item.feature.attributes[gl.objectIdField];
+        const gigAttrs={[gl.objectIdField]:oid,gig_status:'APPROVED'};if(notes)gigAttrs.comments=notes;
+        const gigRes=await gl.applyEdits({updateFeatures:[{attributes:gigAttrs}]});
+        const gr=gigRes.updateFeatureResults?.[0];if(!(gr?.success===true||(gr?.success===undefined&&gr?.error===null)))throw new Error(gr?.error?.message||'GIG update failed');
+        await updateOriginatingFeature(item.gisId,'QCCMPLT');
+        if(pendingGigAttachments.length)await uploadPendingAttachments(oid,layerEndpointUrl(gl));
+        sessionLog.push({timestamp:new Date(),action:'qc_review',layerName:'GIG Layer (22100)',gisId:item.gisId,decision:'Approve',gigPointsCreated:0,notes,timeSpent:elapsed(),success:true});
+        setStatus('GIG approved','ok');stopTimer();currentIndex++;setTimeout(showFeature,600);
+      }catch(e){setStatus('Error: '+e.message,'error');alert('Error:\n'+e.message);console.error(e);$('#btnSubmit').disabled=false;}
     }
 
     // ── Submit — New QC ───────────────────────────────────────────────
     async function submitNewQc(){
       const item=qcQueue[currentIndex],dec=box.querySelector("input[name='qcDec']:checked");
       if(!dec){alert('Please select Pass, Fail, or Missing Photo');return;}
-      const dv=dec.value,notes=$('#qcNotes').value.trim();
-      let issues=[];
+      const dv=dec.value,notes=$('#qcNotes').value.trim();let issues=[];
       if(dv==='fail'){const checked=box.querySelectorAll('.issueCheck:checked');if(!checked.length){alert('Please select at least one issue type');return;}issues=Array.from(checked).map(cb=>({code:cb.dataset.code,name:cb.dataset.name}));}
       try{
         setStatus('Saving…','busy');$('#btnSubmit').disabled=true;
@@ -1082,100 +869,41 @@
         const okResults=(addRes.addFeatureResults||[]).filter(r=>r.success===true||(r.success===undefined&&r.error===null&&(r.objectId||r.globalId)));
         if(okResults.length<cfg.pts.length){const e=(addRes.addFeatureResults||[]).filter(r=>!(r.success===true||(r.success===undefined&&r.error===null))).map(r=>r.error?.message||'Unknown').join(', ');throw new Error('GIG creation failed: '+e);}
         if(cfg.update){const oid=item.feature.attributes[item.layer.objectIdField];const up=await item.layer.applyEdits({updateFeatures:[{attributes:{[item.layer.objectIdField]:oid,workflow_status:cfg.wfStatus}}]});const ur=up.updateFeatureResults?.[0];if(!(ur?.success===true||(ur?.success===undefined&&ur?.error===null)))throw new Error(ur?.error?.message||'Feature update failed');}
-        // Use layerEndpointUrl to ensure the REST URL includes the layer index
-        if(pendingGigAttachment&&okResults[0]?.objectId) await uploadPendingAttachment(okResults[0].objectId, layerEndpointUrl(gl));
+        if(pendingGigAttachments.length&&okResults[0]?.objectId)await uploadPendingAttachments(okResults[0].objectId,layerEndpointUrl(gl));
         const label={pass:'Pass',fail:'Fail',missing_photo:'Missing Photo'}[dv];
         sessionLog.push({timestamp:new Date(),action:'qc_review',layerName:item.layer.title,gisId:item.gisId,decision:label,gigPointsCreated:okResults.length,issueTypes:issues,notes,timeSpent:elapsed(),success:true});
         if(issues.length){const seen=new Set(issues.map(i=>String(i.code)));recentGigTypes=[...issues,...recentGigTypes.filter(r=>!seen.has(String(r.code)))].slice(0,10);try{localStorage.setItem('rqcw_recent_gig_types',JSON.stringify(recentGigTypes));}catch(_){}}
-        setStatus(`${label} submitted · ${okResults.length} GIG point(s) created`,'ok');
-        stopTimer();currentIndex++;setTimeout(showFeature,600);
+        setStatus(`${label} submitted · ${okResults.length} GIG point(s) created`,'ok');stopTimer();currentIndex++;setTimeout(showFeature,600);
       }catch(e){setStatus('Error: '+e.message,'error');alert('Error submitting QC:\n'+e.message+'\n\nNo changes saved.');sessionLog.push({timestamp:new Date(),action:'qc_review',layerName:item.layer.title,gisId:item.gisId,success:false,error:e.message});console.error(e);}
       finally{$('#btnSubmit').disabled=false;}
     }
 
     // ── Submit — Clear Review ─────────────────────────────────────────
     async function submitClearReview() {
-      const item = qcQueue[currentIndex];
-      const dec  = box.querySelector("input[name='clrDec']:checked");
-      if (!dec) { alert('Please select Approve or Re-open'); return; }
-      const dv = dec.value, notes = $('#qcNotes').value.trim();
-
-      if (dv === 'reopen') {
-        try {
-          setStatus('Saving…','busy'); $('#btnSubmit').disabled = true;
-          const gl = gigLayerRef(); await gl.load();
-          const oid = item.feature.attributes[gl.objectIdField];
-          const attrs = { [gl.objectIdField]: oid, gig_status: 'OPEN' };
-          if (notes) attrs.comments = notes;
-          const res = await gl.applyEdits({ updateFeatures: [{ attributes: attrs }] });
-          const r = res.updateFeatureResults?.[0];
-          if (!(r?.success === true || (r?.success === undefined && r?.error === null))) throw new Error(r?.error?.message || 'GIG update failed');
-          sessionLog.push({ timestamp: new Date(), action: 'qc_review', layerName: 'GIG Layer (22100)', gisId: item.gisId, decision: 'Re-open', gigPointsCreated: 0, notes, timeSpent: elapsed(), success: true });
-          setStatus('GIG re-opened','ok');
-          stopTimer(); currentIndex++; setTimeout(showFeature, 600);
-        } catch (e) { setStatus('Error: '+e.message,'error'); alert('Error:\n'+e.message); console.error(e); }
-        finally { $('#btnSubmit').disabled = false; }
-        return;
+      const item=qcQueue[currentIndex],dec=box.querySelector("input[name='clrDec']:checked");
+      if(!dec){alert('Please select Approve or Re-open');return;}
+      const dv=dec.value,notes=$('#qcNotes').value.trim();
+      if(dv==='reopen'){
+        try{setStatus('Saving…','busy');$('#btnSubmit').disabled=true;const gl=gigLayerRef();await gl.load();const oid=item.feature.attributes[gl.objectIdField];const attrs={[gl.objectIdField]:oid,gig_status:'OPEN'};if(notes)attrs.comments=notes;const res=await gl.applyEdits({updateFeatures:[{attributes:attrs}]});const r=res.updateFeatureResults?.[0];if(!(r?.success===true||(r?.success===undefined&&r?.error===null)))throw new Error(r?.error?.message||'GIG update failed');sessionLog.push({timestamp:new Date(),action:'qc_review',layerName:'GIG Layer (22100)',gisId:item.gisId,decision:'Re-open',gigPointsCreated:0,notes,timeSpent:elapsed(),success:true});setStatus('GIG re-opened','ok');stopTimer();currentIndex++;setTimeout(showFeature,600);}
+        catch(e){setStatus('Error: '+e.message,'error');alert('Error:\n'+e.message);console.error(e);}finally{$('#btnSubmit').disabled=false;}return;
       }
-
-      const skipPhotos = $('#chkSkipPhotos').checked;
-      if (skipPhotos) { doApproveGig(item, notes); return; }
-
-      try {
-        setStatus('Fetching GIG photos…','busy'); $('#btnSubmit').disabled = true;
-        const gl = gigLayerRef(); await gl.load();
-        const gigOid = item.feature.attributes[gl.objectIdField];
-        const gigAttRes = await gl.queryAttachments({ objectIds: [gigOid] });
-        const gigAtts = (gigAttRes[gigOid] || []).filter(a => a.contentType?.startsWith('image/'));
-        const transferable = gigAtts.filter(a => !a.name?.startsWith('markup_'));
-
-        if (!transferable.length) {
-          $('#btnSubmit').disabled = false;
-          doApproveGig(item, notes);
-          return;
-        }
-
-        const origInfo = await findOriginatingFeature(item.gisId);
-        if (!origInfo) {
-          setStatus('⚠ Originating feature not found — photo transfer skipped','idle');
-          $('#btnSubmit').disabled = false;
-          doApproveGig(item, notes);
-          return;
-        }
-
-        let origAtts = [];
-        if (origInfo.supportsAttachments) {
-          try {
-            await origInfo.layer.load();
-            const origAttRes = await origInfo.layer.queryAttachments({ objectIds: [origInfo.objectId] });
-            origAtts = (origAttRes[origInfo.objectId] || []).filter(a => a.contentType?.startsWith('image/'));
-          } catch (_) {}
-        }
-
-        setStatus('Ready','idle');
-        openPhotoTransferPanel(item, notes, gigAtts, gigOid, layerEndpointUrl(gl), origInfo, origAtts);
-
-      } catch (e) {
-        setStatus('Error: '+e.message,'error');
-        alert('Error loading photos:\n'+e.message);
-        $('#btnSubmit').disabled = false;
-      }
+      const skipPhotos=$('#chkSkipPhotos').checked;if(skipPhotos){doApproveGig(item,notes);return;}
+      try{
+        setStatus('Fetching GIG photos…','busy');$('#btnSubmit').disabled=true;
+        const gl=gigLayerRef();await gl.load();const gigOid=item.feature.attributes[gl.objectIdField];
+        const gigAttRes=await gl.queryAttachments({objectIds:[gigOid]});const gigAtts=(gigAttRes[gigOid]||[]).filter(a=>a.contentType?.startsWith('image/'));
+        const transferable=gigAtts.filter(a=>!a.name?.startsWith('markup_'));
+        if(!transferable.length){$('#btnSubmit').disabled=false;doApproveGig(item,notes);return;}
+        const origInfo=await findOriginatingFeature(item.gisId);
+        if(!origInfo){setStatus('⚠ Originating feature not found — photo transfer skipped','idle');$('#btnSubmit').disabled=false;doApproveGig(item,notes);return;}
+        let origAtts=[];if(origInfo.supportsAttachments){try{await origInfo.layer.load();const origAttRes=await origInfo.layer.queryAttachments({objectIds:[origInfo.objectId]});origAtts=(origAttRes[origInfo.objectId]||[]).filter(a=>a.contentType?.startsWith('image/'));}catch(_){}}
+        setStatus('Ready','idle');openPhotoTransferPanel(item,notes,gigAtts,gigOid,layerEndpointUrl(gl),origInfo,origAtts);
+      }catch(e){setStatus('Error: '+e.message,'error');alert('Error loading photos:\n'+e.message);$('#btnSubmit').disabled=false;}
     }
 
     async function updateOriginatingFeature(globalId, newStatus) {
-      const layers = mapView.map.allLayers.filter(l => l.type === 'feature' && l.visible);
-      for (const lyr of layers.items) {
-        try {
-          if (lyr === sketchLayer) continue; await lyr.load(); if (!lyr.globalIdField) continue;
-          const q = lyr.createQuery(); q.where = `${lyr.globalIdField} = '${globalId}'`; q.outFields = [lyr.objectIdField]; q.returnGeometry = false;
-          const res = await lyr.queryFeatures(q); if (!res.features.length) continue;
-          const oid = res.features[0].attributes[lyr.objectIdField];
-          const up = await lyr.applyEdits({ updateFeatures: [{ attributes: { [lyr.objectIdField]: oid, workflow_status: newStatus } }] });
-          const ur = up.updateFeatureResults?.[0];
-          if (!(ur?.success === true || (ur?.success === undefined && ur?.error === null))) throw new Error(ur?.error?.message || 'Update failed');
-          return;
-        } catch (e) { throw e; }
-      }
+      const layers=mapView.map.allLayers.filter(l=>l.type==='feature'&&l.visible);
+      for(const lyr of layers.items){try{if(lyr===sketchLayer)continue;await lyr.load();if(!lyr.globalIdField)continue;const q=lyr.createQuery();q.where=`${lyr.globalIdField} = '${globalId}'`;q.outFields=[lyr.objectIdField];q.returnGeometry=false;const res=await lyr.queryFeatures(q);if(!res.features.length)continue;const oid=res.features[0].attributes[lyr.objectIdField];const up=await lyr.applyEdits({updateFeatures:[{attributes:{[lyr.objectIdField]:oid,workflow_status:newStatus}}]});const ur=up.updateFeatureResults?.[0];if(!(ur?.success===true||(ur?.success===undefined&&ur?.error===null)))throw new Error(ur?.error?.message||'Update failed');return;}catch(e){throw e;}}
       setStatus(`⚠ Originating feature "${globalId}" not found`,'error');
     }
 
@@ -1183,7 +911,7 @@
     const prevFeature=()=>{if(currentIndex>0){stopTimer();currentIndex--;showFeature();}};
 
     // ── Home & End Session ────────────────────────────────────────────
-    function goHome(){if(currentPhase==='review'){const r=sessionLog.filter(e=>e.action==='qc_review').length;if(!confirm(r>0?`Return to filters? You've reviewed ${r} feature(s) — session data will be lost.`:'Return to filter screen?'))return;}stopTimer();if(highlightHandle){highlightHandle.remove();highlightHandle=null;}mapView.popup?.close();qcQueue=[];sessionLog=[];sessionStartTime=null;currentIndex=0;pendingGigAttachment=null;setPhase('query');$('#queryResults').style.display='none';$('#btnRefresh').disabled=true;$('#hdrSub').textContent='Configure filters to begin';setStatus('Ready — configure filters and query.','ok');}
+    function goHome(){if(currentPhase==='review'){const r=sessionLog.filter(e=>e.action==='qc_review').length;if(!confirm(r>0?`Return to filters? You've reviewed ${r} feature(s) — session data will be lost.`:'Return to filter screen?'))return;}stopTimer();if(highlightHandle){highlightHandle.remove();highlightHandle=null;}mapView.popup?.close();qcQueue=[];sessionLog=[];sessionStartTime=null;currentIndex=0;pendingGigAttachments=[];queuedLbIndices.clear();mkStrokesMap.clear();setPhase('query');$('#queryResults').style.display='none';$('#btnRefresh').disabled=true;$('#hdrSub').textContent='Configure filters to begin';setStatus('Ready — configure filters and query.','ok');}
     function endSessionEarly(){const r=sessionLog.filter(e=>e.action==='qc_review').length;if(!r){alert('No features reviewed yet — nothing to summarize.');return;}if(confirm(`End session now? You've reviewed ${r} of ${qcQueue.length} features.`))completeSession();}
 
     // ── Complete ──────────────────────────────────────────────────────
@@ -1192,13 +920,14 @@
 
     function exportReport(){if(!sessionLog.length){alert('No data to export');return;}const now=new Date(),dur=sessionStartTime?Math.floor((now-sessionStartTime)/1000):0,rev=sessionLog.filter(e=>e.action==='qc_review'),pass=rev.filter(e=>e.decision==='Pass'||e.decision==='Approve').length,fail=rev.filter(e=>e.decision==='Fail'||e.decision==='Re-open').length,photo=rev.filter(e=>e.decision==='Missing Photo').length,skip=sessionLog.filter(e=>e.action==='skip').length,errs=sessionLog.filter(e=>!e.success).length,gigs=rev.filter(e=>e.success).reduce((s,e)=>s+(e.gigPointsCreated||0),0),rate=rev.length?Math.round((pass/rev.length)*100):0,hr='='.repeat(80);let r=`${hr}\nREMOTE QC WORKFLOW — SESSION REPORT\nMode: ${mode==='new_qc'?'New Feature QC':'Clear GIG Review'}\n${hr}\n\nStart: ${sessionStartTime?.toLocaleString()??'N/A'}\nEnd: ${now.toLocaleString()}\nDuration: ${Math.floor(dur/60)}m ${dur%60}s\n\nSUMMARY\n${'-'.repeat(40)}\nTotal: ${rev.length}\nPassed/Approved: ${pass}\nFailed/Re-opened: ${fail}\n`;if(photo)r+=`Missing Photo: ${photo}\n`;if(skip)r+=`Skipped: ${skip}\n`;if(errs)r+=`Errors: ${errs}\n`;r+=`Pass Rate: ${rate}%\n`;if(gigs)r+=`GIG Points Created: ${gigs}\n`;r+=`\nDETAILED LOG\n${hr}\n\n`;sessionLog.forEach((e,i)=>{r+=`[${i+1}] ${e.timestamp.toLocaleTimeString()} | GIS: ${e.gisId} | ${e.layerName}\n    Action: ${e.action.toUpperCase()}`;if(e.action==='qc_review')r+=` | ${e.decision} | ${e.success?'OK':'ERROR'}`;r+='\n';if(e.gigPointsCreated)r+=`    GIG Points: ${e.gigPointsCreated}\n`;if(e.issueTypes?.length)r+=`    Issues: ${e.issueTypes.map(it=>it.name).join(', ')}\n`;if(e.notes)r+=`    Notes: ${e.notes}\n`;if(e.timeSpent!=null)r+=`    Time: ${Math.floor(e.timeSpent/60)}:${(e.timeSpent%60).toString().padStart(2,'0')}\n`;if(e.error)r+=`    Error: ${e.error}\n`;r+='\n';});r+=`${hr}\nEND OF REPORT\n${hr}\n`;const url=URL.createObjectURL(new Blob([r],{type:'text/plain'}));const a=Object.assign(document.createElement('a'),{href:url,download:`qc-report-${now.toISOString().split('T')[0]}.txt`});document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);setStatus('Report exported','ok');}
 
-    function resetSession(clearForm=true){currentIndex=0;qcQueue=[];sessionLog=[];sessionStartTime=null;pendingGigAttachment=null;stopTimer();if(highlightHandle){highlightHandle.remove();highlightHandle=null;}mapView.popup?.close();if(clearForm){['#dateFrom','#dateTo'].forEach(s=>$(s).value='');selectedWOs.clear();selectedPOs.clear();selectedJobs.clear();refreshMultiDisplays();$('#sortOrder').value='desc';$('#gigTypeFilter').value='';$('#queryResults').style.display='none';$('#btnRefresh').disabled=true;setSpatialMode('none');clearSketchGraphics();setDrawHint('','Select a tool above to start drawing');}setPhase('query');updateFilterBadge();setStatus('Ready','idle');}
+    function resetSession(clearForm=true){currentIndex=0;qcQueue=[];sessionLog=[];sessionStartTime=null;pendingGigAttachments=[];queuedLbIndices.clear();mkStrokesMap.clear();stopTimer();if(highlightHandle){highlightHandle.remove();highlightHandle=null;}mapView.popup?.close();if(clearForm){['#dateFrom','#dateTo'].forEach(s=>$(s).value='');selectedWOs.clear();selectedPOs.clear();selectedJobs.clear();refreshMultiDisplays();$('#sortOrder').value='desc';$('#gigTypeFilter').value='';$('#queryResults').style.display='none';$('#btnRefresh').disabled=true;setSpatialMode('none');clearSketchGraphics();setDrawHint('','Select a tool above to start drawing');}setPhase('query');updateFilterBadge();setStatus('Ready','idle');}
 
     // ── Keyboard shortcuts ────────────────────────────────────────────
     function onKey(e){
       if(lb.classList.contains('open')){if(e.key==='Escape'){closeLightbox();return;}if(e.key==='m'||e.key==='M'){$lb('#lbMkToggle').click();return;}if(mkActive){if(e.key==='p'||e.key==='P'){setMkTool('pen');return;}if(e.key==='c'||e.key==='C'){setMkTool('circle');return;}if(e.key==='a'||e.key==='A'){setMkTool('arrow');return;}if(e.key==='t'||e.key==='T'){setMkTool('text');return;}if((e.ctrlKey||e.metaKey)&&e.key==='z'){$lb('#mkUndo').click();return;}return;}if(e.key==='ArrowLeft'){$lb('#lbPrev').click();return;}if(e.key==='ArrowRight'){$lb('#lbNext').click();return;}if(e.key==='+'||e.key==='='){lbZoom(1.3);return;}if(e.key==='-'){lbZoom(0.77);return;}if(e.key==='0'){lbScale=1;lbPan={x:0,y:0};applyLbTransform();return;}}
       if(currentPhase!=='review')return;if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
-      if(mode==='new_qc'){if(e.key==='p'||e.key==='P'){$('#radPass').click();$('#radPass').dispatchEvent(new Event('change'));}if(e.key==='f'||e.key==='F'){$('#radFail').click();$('#radFail').dispatchEvent(new Event('change'));}if(e.key==='m'||e.key==='M'){$('#radPhoto').click();$('#radPhoto').dispatchEvent(new Event('change'));}}else{if(e.key==='a'||e.key==='A'){$('#radApprove').click();$('#radApprove').dispatchEvent(new Event('change'));}if(e.key==='r'||e.key==='R'){$('#radReopen').click();$('#radReopen').dispatchEvent(new Event('change'));}}
+      if(mode==='new_qc'){if(e.key==='p'||e.key==='P'){$('#radPass').click();$('#radPass').dispatchEvent(new Event('change'));}if(e.key==='f'||e.key==='F'){$('#radFail').click();$('#radFail').dispatchEvent(new Event('change'));}if(e.key==='m'||e.key==='M'){$('#radPhoto').click();$('#radPhoto').dispatchEvent(new Event('change'));}}
+      else{if(e.key==='a'||e.key==='A'){$('#radApprove').click();$('#radApprove').dispatchEvent(new Event('change'));}if(e.key==='r'||e.key==='R'){$('#radReopen').click();$('#radReopen').dispatchEvent(new Event('change'));}}
       if(e.key==='Enter')$('#btnSubmit').click();if(e.key==='ArrowRight')skipFeature();if(e.key==='ArrowLeft')prevFeature();
     }
     document.addEventListener('keydown',onKey);
