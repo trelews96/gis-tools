@@ -623,6 +623,7 @@
             if(activeQueryController){activeQueryController.abort();activeQueryController=null;}
             if(activeDrawAction){try{activeDrawAction.destroy();}catch(e){} activeDrawAction=null;}
             if(drawInstance){try{drawInstance.reset();}catch(e){}}
+            setDrawCursor(false);
             clearDrawPreview();
             selectionGraphic=null;
             selectionGraphics.forEach(g=>{try{mapView.graphics.remove(g);}catch(e){}});selectionGraphics=[];
