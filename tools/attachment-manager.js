@@ -80,10 +80,8 @@
             mapView.map.allLayers.forEach(layer => {
                 if (layer.type === 'feature') {
                     TARGET_LAYERS.push({
-                        uid: layer.id,
-                        layerId: layer.layerId,
-                        name: layer.title || `Layer ${layer.id}`,
-                        layer
+                        uid: layer.id, layerId: layer.layerId,
+                        name: layer.title || `Layer ${layer.id}`, layer
                     });
                 }
             });
@@ -148,7 +146,6 @@
                 #attachmentManagerToolbox #dropZone.drag-over {
                     border-color: #7c3aed; color: #c4b5fd; background: #13132a;
                 }
-                #attachmentManagerToolbox #selectedFeatureInfo .am-section { margin-bottom: 0; }
                 #attachmentManagerToolbox ::-webkit-scrollbar { width: 5px; }
                 #attachmentManagerToolbox ::-webkit-scrollbar-track { background: #0a0a18; }
                 #attachmentManagerToolbox ::-webkit-scrollbar-thumb { background: #3b2061; border-radius: 3px; }
@@ -164,19 +161,18 @@
             let popupWatcher = null;
             let filesToUpload = [];
 
-            // Polygon draw state
             let drawnPolygonGraphic = null;
-            let isDrawingPolygon = false;
-            let polygonPoints     = [];
-            let committedGraphics = [];
-            let rubberGraphic     = null;
-            let rafPending        = false;
-            let lastCursor        = null;
-            let prevPopupEnabled  = null;
-            let polyClickHandler  = null;
-            let polyMoveHandler   = null;
-            let polyDblHandler    = null;
-            let polyKeyHandler    = null;
+            let isDrawingPolygon    = false;
+            let polygonPoints       = [];
+            let committedGraphics   = [];
+            let rubberGraphic       = null;
+            let rafPending          = false;
+            let lastCursor          = null;
+            let prevPopupEnabled    = null;
+            let polyClickHandler    = null;
+            let polyMoveHandler     = null;
+            let polyDblHandler      = null;
+            let polyKeyHandler      = null;
 
             // ── Build UI ──────────────────────────────────────────────
             const toolBox = document.createElement('div');
@@ -187,12 +183,10 @@
                 width:460px; max-width:90vw; max-height:85vh;
                 font:12px/1.4 Arial,sans-serif;
                 box-shadow:0 8px 40px rgba(0,0,0,.7); border-radius:10px;
-                resize:both; overflow:hidden;
-                display:flex; flex-direction:column;
+                resize:both; overflow:hidden; display:flex; flex-direction:column;
             `;
 
             toolBox.innerHTML = `
-                <!-- DRAG HANDLE -->
                 <div id="amDragHandle" style="
                     cursor:grab; flex-shrink:0; user-select:none;
                     background:linear-gradient(135deg,#1e0a40,#120830);
@@ -208,7 +202,6 @@
                     " onmouseover="this.style.color='#c4b5fd'" onmouseout="this.style.color='#52527a'">✕</button>
                 </div>
 
-                <!-- SCROLLABLE CONTENT -->
                 <div style="overflow-y:auto; flex:1; padding:12px;">
 
                     <div class="am-section">
@@ -250,6 +243,14 @@
                         </div>
 
                         <div class="am-section">
+                            <label class="am-label">File Naming</label>
+                            <div class="am-row"><input type="checkbox" id="useAddressNames" checked>
+                                <label for="useAddressNames">Name files by street address</label></div>
+                            <div class="am-hint">Checks feature attributes first, then reverse-geocodes the location</div>
+                            <div class="am-hint">Falls back to layer name + GIS ID if no address is found</div>
+                        </div>
+
+                        <div class="am-section">
                             <label class="am-label">Image Options</label>
                             <div class="am-row"><input type="checkbox" id="watermarkImages">
                                 <label for="watermarkImages">Add Metadata Watermark to Images</label></div>
@@ -273,6 +274,13 @@
                         <div class="am-section" style="color:#6b6b9a;font-style:italic;font-size:12px;">
                             Click a <span id="layerHint">feature</span> to select it
                             <div style="margin-top:4px;font-size:11px;color:#3d3d5c;">💡 Use the map popup to pick a specific feature when multiple overlap</div>
+                        </div>
+
+                        <div class="am-section">
+                            <label class="am-label">File Naming</label>
+                            <div class="am-row"><input type="checkbox" id="useAddressNamesSingle" checked>
+                                <label for="useAddressNamesSingle">Name files by street address</label></div>
+                            <div class="am-hint">Checks feature attributes first, then reverse-geocodes the location</div>
                         </div>
 
                         <div class="am-section">
@@ -332,19 +340,15 @@
                 dragHandle.style.cursor = 'grabbing';
                 e.preventDefault();
             });
-
             function onDragMove(e) {
                 if (!isDragging) return;
-                const x = Math.max(0, Math.min(e.clientX - dragOffX, window.innerWidth - toolBox.offsetWidth));
+                const x = Math.max(0, Math.min(e.clientX - dragOffX, window.innerWidth  - toolBox.offsetWidth));
                 const y = Math.max(0, Math.min(e.clientY - dragOffY, window.innerHeight - 40));
                 toolBox.style.left = x + 'px';
                 toolBox.style.top  = y + 'px';
                 toolBox.style.right = 'auto';
             }
-            function onDragUp() {
-                isDragging = false;
-                dragHandle.style.cursor = 'grab';
-            }
+            function onDragUp() { isDragging = false; dragHandle.style.cursor = 'grab'; }
             document.addEventListener('mousemove', onDragMove);
             document.addEventListener('mouseup',   onDragUp);
 
@@ -416,7 +420,6 @@
                     drawnPolygonGraphic = null;
                     $('#deselectBtn').style.display = 'none';
                     $('#clearPolygonBtn').style.display = 'none';
-
                     if (e.target.value === 'manual') {
                         enableBatchManualSelection();
                     } else if (e.target.value === 'polygon') {
@@ -568,8 +571,6 @@
                 $('#polygonInstructions').style.display = 'none';
             }
 
-            // "↺ Redraw Polygon" button: clear current polygon + immediately start a new draw
-            // so the user never has to toggle the radio off and back on.
             function clearPolygonSelection() {
                 stopPolygonDraw();
                 mapView.graphics.removeAll();
@@ -699,7 +700,10 @@
             }
             window.__amRemoveFile = i => { filesToUpload.splice(i, 1); renderFileList(); };
 
-            // ── Geocoding ─────────────────────────────────────────────
+            // ══════════════════════════════════════════════════════════
+            // GEOCODING & FILE NAMING
+            // ══════════════════════════════════════════════════════════
+
             async function reverseGeocode(lat, lon, includeStreet = true) {
                 try {
                     const r = await fetch(`https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/reverseGeocode?f=json&location=${lon},${lat}&langCode=EN`);
@@ -712,6 +716,73 @@
                     if (csz.length) parts.push(csz.join(', '));
                     return { fullAddress: parts.join('\n'), streetAddress: a.Address||null, city: a.City||null, state: a.Region||null, zip: a.Postal||null };
                 } catch { return null; }
+            }
+
+            // Strip characters that are illegal or ugly in filenames, collapse whitespace.
+            function sanitizeForFilename(str) {
+                return String(str)
+                    .replace(/[<>:"/\\|?*\n\r]/g, '')   // illegal filename chars
+                    .replace(/[,#@!]/g, '')              // punctuation that looks odd
+                    .replace(/\s+/g, '_')                // spaces → underscores
+                    .replace(/_+/g, '_')                 // collapse runs
+                    .replace(/^_|_$/g, '')               // trim edges
+                    .substring(0, 60);                   // reasonable cap
+            }
+
+            // Returns a filename-safe address string for a feature.
+            //   1. Checks the feature's own attribute fields first (no API call).
+            //   2. Falls back to reverse geocoding the feature's geometry location.
+            //   3. Returns null if neither source yields an address.
+            async function getFeatureAddressLabel(feature) {
+                // -- Attribute fields first (instant) --
+                const a = feature.attributes || {};
+                const attrAddr = a.address || a.Address || a.full_address || a.FULL_ADDRESS ||
+                                 a.site_address || a.SITE_ADDRESS || a.street_address || a.STREET_ADDRESS ||
+                                 a.street || a.Street || a.location || a.Location;
+                if (attrAddr && String(attrAddr).trim()) return sanitizeForFilename(String(attrAddr).trim());
+
+                // -- Reverse geocode from geometry --
+                const g = feature.geometry;
+                if (!g) return null;
+                let lat = null, lon = null;
+                const R = 20037508.3427892; // WebMercator half-circumference
+
+                if (g.type === 'point') {
+                    // .latitude/.longitude auto-convert for WGS84 and WebMercator
+                    lat = g.latitude; lon = g.longitude;
+                    // Manual WebMercator fallback (wkid 3857 / 102100)
+                    if ((lat == null || !isFinite(lat)) &&
+                        (g.spatialReference?.wkid === 3857 || g.spatialReference?.wkid === 102100)) {
+                        lon = (g.x / R) * 180;
+                        lat = (Math.atan(Math.exp(g.y / R * Math.PI)) * 360 / Math.PI) - 90;
+                    }
+                } else if (g.extent) {
+                    // Polygons / polylines: use the bounding-box center
+                    const cx = (g.extent.xmin + g.extent.xmax) / 2;
+                    const cy = (g.extent.ymin + g.extent.ymax) / 2;
+                    const wkid = g.spatialReference?.wkid;
+                    if (wkid === 4326 || wkid === 4269) { lat = cy; lon = cx; }
+                    else if (wkid === 3857 || wkid === 102100) {
+                        lon = (cx / R) * 180;
+                        lat = (Math.atan(Math.exp(cy / R * Math.PI)) * 360 / Math.PI) - 90;
+                    }
+                }
+
+                if (lat == null || !isFinite(lat) || !isFinite(lon)) return null;
+
+                const geo = await reverseGeocode(lat, lon, true);
+                if (!geo) return null;
+
+                const parts = [geo.streetAddress, geo.city, geo.state].filter(Boolean);
+                return sanitizeForFilename(parts.join(' ')) || null;
+            }
+
+            // Build the final filename for a downloaded attachment.
+            // When an address label is available: "{address}_GIS_{gisId}_{originalName}"
+            // Fallback: "{layerName}_GIS_{gisId}_{originalName}"
+            function buildFilename(addrLabel, gisId, attName) {
+                const prefix = addrLabel || getCurrentLayerInfo().name.replace(/\s+/g, '');
+                return `${prefix}_GIS_${gisId}_${attName}`;
             }
 
             // ── EXIF / watermark libs ─────────────────────────────────
@@ -966,30 +1037,44 @@
 
                     if (!features.length) { alert('No features selected. Please select features first.'); return; }
 
-                    const fmt = toolBox.querySelector('input[name="downloadFormat"]:checked').value;
-                    const doWatermark = $('#watermarkImages')?.checked;
+                    const fmt           = toolBox.querySelector('input[name="downloadFormat"]:checked').value;
+                    const doWatermark   = $('#watermarkImages')?.checked;
                     const includeStreet = $('#includeStreetAddress')?.checked;
+                    const useAddrNames  = $('#useAddressNames')?.checked;
+
                     setStatus(`${features.length} feature(s). Fetching attachments…`);
 
-                    let totalAtts=0, downloaded=0;
-                    const results=[], zipFiles=[];
+                    let totalAtts = 0, downloaded = 0;
+                    const results = [], zipFiles = [];
 
-                    for (let i=0; i<features.length; i++) {
+                    for (let i = 0; i < features.length; i++) {
                         const feat = features[i];
-                        const oid = feat.attributes[layer.objectIdField];
-                        setStatus(`Checking feature ${i+1}/${features.length}…`);
+                        const oid  = feat.attributes[layer.objectIdField];
+                        const gisId = feat.attributes.gis_id || feat.attributes.GIS_ID || oid;
+
+                        // Resolve the address label once per feature — attribute lookup
+                        // is instant; reverse geocoding only fires when no attribute address
+                        // is found, and the result is reused for all attachments on this feature.
+                        let addrLabel = null;
+                        if (useAddrNames) {
+                            setStatus(`Resolving address for feature ${i + 1}/${features.length}…`);
+                            addrLabel = await getFeatureAddressLabel(feat);
+                        }
+
+                        setStatus(`Checking feature ${i + 1}/${features.length}…`);
                         try {
-                            const q = await layer.queryAttachments({ objectIds:[oid], returnMetadata:true });
+                            const q    = await layer.queryAttachments({ objectIds:[oid], returnMetadata:true });
                             const atts = q[oid] || [];
                             totalAtts += atts.length;
                             results.push({ oid, atts, ok:true });
+
                             for (const att of atts) {
-                                setStatus(`Downloading ${att.name} (${downloaded+1}/${totalAtts})…`);
+                                setStatus(`Downloading ${att.name} (${downloaded + 1}/${totalAtts})…`);
                                 const resp = await fetch(att.url);
                                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                                let blob = await resp.blob();
-                                const gisId = feat.attributes.gis_id || feat.attributes.GIS_ID || oid;
-                                const fname = `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_GIS_${gisId}_${att.name}`;
+                                let blob  = await resp.blob();
+                                const fname = buildFilename(addrLabel, gisId, att.name);
+
                                 if (doWatermark && att.contentType?.startsWith('image/')) {
                                     if (await hasExistingWatermark(blob)) {
                                         setStatus(`Skipping ${att.name} – already watermarked`);
@@ -999,14 +1084,15 @@
                                         blob = await watermarkImage(blob, { timestamp:formatTimestamp(att), location:extractLocation(feat), gisId, layerName:getCurrentLayerInfo().name }, exif);
                                     }
                                 }
-                                if (fmt==='zip') { zipFiles.push({name:fname, data:await blob.arrayBuffer()}); }
+
+                                if (fmt === 'zip') { zipFiles.push({ name:fname, data:await blob.arrayBuffer() }); }
                                 else { triggerDownload(blob, fname); await new Promise(r=>setTimeout(r,100)); }
                                 downloaded++;
                             }
-                        } catch(e) { results.push({oid, atts:[], ok:false, error:e.message}); }
+                        } catch(e) { results.push({ oid, atts:[], ok:false, error:e.message }); }
                     }
 
-                    if (fmt==='zip' && zipFiles.length) {
+                    if (fmt === 'zip' && zipFiles.length) {
                         setStatus('Building ZIP…');
                         const today = new Date().toISOString().split('T')[0];
                         triggerDownload(createZip(zipFiles), `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_Attachments_${today}.zip`);
@@ -1023,8 +1109,8 @@
                     });
                     html += '</div></div>';
                     $('#resultsDiv').innerHTML = html;
-                    setStatus(fmt==='zip' ? `✅ ZIP ready — ${downloaded} file(s).` : `✅ Done — ${downloaded} file(s) downloaded.`);
-                } catch(e) { console.error(e); setStatus('Error: '+e.message); }
+                    setStatus(fmt === 'zip' ? `✅ ZIP ready — ${downloaded} file(s).` : `✅ Done — ${downloaded} file(s) downloaded.`);
+                } catch(e) { console.error(e); setStatus('Error: ' + e.message); }
             }
 
             // ── Single download ───────────────────────────────────────
@@ -1033,34 +1119,48 @@
                 try {
                     setStatus('Downloading…');
                     const layer = await getTargetLayer();
-                    const oid = selectedSingleFeature.attributes[layer.objectIdField];
-                    const q = await layer.queryAttachments({ objectIds:[oid], returnMetadata:true });
-                    const atts = q[oid];
+                    const oid   = selectedSingleFeature.attributes[layer.objectIdField];
+                    const gisId = selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || oid;
+                    const q     = await layer.queryAttachments({ objectIds:[oid], returnMetadata:true });
+                    const atts  = q[oid];
                     if (!atts?.length) { setStatus('No attachments found.'); $('#resultsDiv').innerHTML='<div style="color:#52527a;padding:8px;">No attachments found.</div>'; return; }
-                    const doWatermark = $('#watermarkImagesSingle')?.checked;
+
+                    const doWatermark   = $('#watermarkImagesSingle')?.checked;
                     const includeStreet = $('#includeStreetAddressSingle')?.checked;
-                    let done=0;
+                    const useAddrNames  = $('#useAddressNamesSingle')?.checked;
+
+                    // Resolve address once for the feature before iterating attachments
+                    let addrLabel = null;
+                    if (useAddrNames) {
+                        setStatus('Resolving address…');
+                        addrLabel = await getFeatureAddressLabel(selectedSingleFeature);
+                    }
+
+                    let done = 0;
                     for (const att of atts) {
-                        setStatus(`Downloading ${att.name} (${done+1}/${atts.length})…`);
-                        const resp = await fetch(att.url); if (!resp.ok) continue;
-                        let blob = await resp.blob();
-                        const gisId = selectedSingleFeature.attributes.gis_id || selectedSingleFeature.attributes.GIS_ID || oid;
+                        setStatus(`Downloading ${att.name} (${done + 1}/${atts.length})…`);
+                        const resp = await fetch(att.url);
+                        if (!resp.ok) continue;
+                        let blob  = await resp.blob();
+                        const fname = buildFilename(addrLabel, gisId, att.name);
+
                         if (doWatermark && att.contentType?.startsWith('image/')) {
                             if (!await hasExistingWatermark(blob)) {
                                 const exif = await extractExifData(blob, includeStreet);
                                 blob = await watermarkImage(blob, { timestamp:formatTimestamp(att), location:extractLocation(selectedSingleFeature), gisId, layerName:getCurrentLayerInfo().name }, exif);
                             }
                         }
-                        triggerDownload(blob, `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_GIS_${gisId}_${att.name}`);
+                        triggerDownload(blob, fname);
                         done++; await new Promise(r=>setTimeout(r,100));
                     }
+
                     $('#resultsDiv').innerHTML = `<div style="background:#13132a;border:1px solid #2a2050;border-radius:8px;padding:10px;">
                         <div style="font-weight:700;color:#9c6fef;margin-bottom:6px;font-size:11px;text-transform:uppercase;">Results</div>
                         <div style="color:#86efac;margin-bottom:4px;">✓ ${done}/${atts.length} downloaded</div>
                         ${atts.map(a=>`<div style="font-size:11px;color:#52527a;">• ${a.name}</div>`).join('')}
                     </div>`;
                     setStatus(`✅ Done — ${done} file(s).`);
-                } catch(e) { console.error(e); setStatus('Error: '+e.message); }
+                } catch(e) { console.error(e); setStatus('Error: ' + e.message); }
             }
 
             // ── Upload ────────────────────────────────────────────────
@@ -1097,7 +1197,6 @@
                 selectedFeatures=[]; mapView.graphics.removeAll(); drawnPolygonGraphic = null;
                 $('#deselectBtn').style.display='none'; $('#clearPolygonBtn').style.display='none';
                 $('#resultsDiv').innerHTML=''; setStatus('');
-                // If polygon mode is still active, restart drawing immediately
                 const method = toolBox.querySelector('input[name="selectionMethod"]:checked')?.value;
                 if (method === 'polygon') startPolygonDraw();
             };
