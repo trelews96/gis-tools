@@ -7,6 +7,7 @@
         // ── Duplicate guard ───────────────────────────────────────────
         if (window.__attachmentManagerActive) {
             document.getElementById('attachmentManagerToolbox')?.remove();
+            document.getElementById('amStyleEl')?.remove();
         }
         window.__attachmentManagerActive = true;
 
@@ -16,7 +17,6 @@
         // ── Map view acquisition ──────────────────────────────────────
         function getMapViewAGOL() {
             return new Promise((resolve, reject) => {
-                // Fast path: scan known globals including window.esriMapView (confirmed on dycom AGOL)
                 const known = ['esriMapView', 'calciteMapView', 'mapView', '__mapView', 'view'];
                 for (const k of known) {
                     const v = window[k];
@@ -25,7 +25,6 @@
                         return resolve(v);
                     }
                 }
-                // Full window scan
                 for (const k of Object.keys(window)) {
                     try {
                         const v = window[k];
@@ -35,7 +34,6 @@
                         }
                     } catch (_) {}
                 }
-                // Poll fallback (map still loading)
                 let attempts = 0;
                 const poll = setInterval(() => {
                     attempts++;
@@ -78,13 +76,12 @@
         function buildTool(mapView) {
 
             // ── Layer detection ───────────────────────────────────────
-            // Key by layer.id (unique string) NOT layerId (integer, duplicated across services)
             const TARGET_LAYERS = [];
             mapView.map.allLayers.forEach(layer => {
                 if (layer.type === 'feature') {
                     TARGET_LAYERS.push({
-                        uid: layer.id,                          // unique across all layers
-                        layerId: layer.layerId,                 // integer, may be duplicated
+                        uid: layer.id,
+                        layerId: layer.layerId,
                         name: layer.title || `Layer ${layer.id}`,
                         layer
                     });
@@ -97,7 +94,67 @@
                 window.__attachmentManagerActive = false;
                 return;
             }
-            console.log('Detected layers:', TARGET_LAYERS.map(l => `${l.name} (uid:${l.uid} layerId:${l.layerId})`));
+
+            // ── Inject styles ─────────────────────────────────────────
+            const styleEl = document.createElement('style');
+            styleEl.id = 'amStyleEl';
+            styleEl.textContent = `
+                #attachmentManagerToolbox * { box-sizing: border-box; }
+                #attachmentManagerToolbox a, #attachmentManagerToolbox label { color: #c4b5fd; cursor: pointer; }
+                #attachmentManagerToolbox select {
+                    width: 100%; padding: 6px 10px;
+                    background: #0f0f1a; color: #e2e8f0;
+                    border: 1px solid #4a3570; border-radius: 7px;
+                    font-size: 12px; outline: none; cursor: pointer;
+                }
+                #attachmentManagerToolbox select:focus { border-color: #7c3aed; }
+                #attachmentManagerToolbox input[type="radio"],
+                #attachmentManagerToolbox input[type="checkbox"] { accent-color: #9c6fef; cursor: pointer; }
+                .am-section {
+                    background: #13132a; border: 1px solid #2a2050;
+                    border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+                }
+                .am-label {
+                    display: block; font-weight: 700; color: #7c3aed;
+                    font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
+                    margin-bottom: 8px;
+                }
+                .am-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: #d4d4e8; font-size: 12px; }
+                .am-hint { font-size: 10px; color: #52527a; margin-left: 22px; margin-top: 2px; }
+                .am-btn {
+                    padding: 7px 14px; border: none; border-radius: 7px; cursor: pointer;
+                    font-size: 12px; font-weight: 600; transition: all 0.15s; outline: none;
+                    display: inline-flex; align-items: center; gap: 5px; line-height: 1;
+                }
+                .am-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+                .am-btn:active { transform: translateY(0); box-shadow: none; }
+                .am-btn-primary { background: linear-gradient(135deg,#4c1d95,#6d28d9); color: #f0e6ff; }
+                .am-btn-primary:hover { background: linear-gradient(135deg,#5b21b6,#7c3aed); }
+                .am-btn-secondary { background: #1e1040; color: #c4b5fd; border: 1px solid #4a3570; }
+                .am-btn-secondary:hover { background: #2d1b4e; border-color: #7c3aed; }
+                .am-btn-ghost { background: transparent; color: #6b6b9a; border: 1px solid #2a2050; }
+                .am-btn-ghost:hover { color: #c4b5fd; border-color: #4a3570; background: #13132a; }
+                #polygonInstructions {
+                    background: #1a0f35; border: 1px solid #5b21b6;
+                    color: #c4b5fd; border-radius: 7px; padding: 8px 10px;
+                    font-size: 11px; margin-top: 8px;
+                }
+                #attachmentManagerToolbox #dropZone {
+                    border: 2px dashed #2a2050; border-radius: 8px; padding: 20px;
+                    text-align: center; background: #0a0a18; cursor: pointer;
+                    color: #52527a; transition: all 0.15s;
+                }
+                #attachmentManagerToolbox #dropZone:hover,
+                #attachmentManagerToolbox #dropZone.drag-over {
+                    border-color: #7c3aed; color: #c4b5fd; background: #13132a;
+                }
+                #attachmentManagerToolbox #selectedFeatureInfo .am-section { margin-bottom: 0; }
+                #attachmentManagerToolbox ::-webkit-scrollbar { width: 5px; }
+                #attachmentManagerToolbox ::-webkit-scrollbar-track { background: #0a0a18; }
+                #attachmentManagerToolbox ::-webkit-scrollbar-thumb { background: #3b2061; border-radius: 3px; }
+                #attachmentManagerToolbox ::-webkit-scrollbar-thumb:hover { background: #6d28d9; }
+            `;
+            document.head.appendChild(styleEl);
 
             // ── State ─────────────────────────────────────────────────
             let currentUid = TARGET_LAYERS[0].uid;
@@ -110,121 +167,151 @@
             // Polygon draw state
             let drawnPolygonGraphic = null;
             let isDrawingPolygon = false;
+            let polygonPoints     = [];
+            let committedGraphics = [];
+            let rubberGraphic     = null;
+            let rafPending        = false;
+            let lastCursor        = null;
+            let prevPopupEnabled  = null;
+            let polyClickHandler  = null;
+            let polyMoveHandler   = null;
+            let polyDblHandler    = null;
+            let polyKeyHandler    = null;
 
-            // ── UI ────────────────────────────────────────────────────
-            const z = 99999;
+            // ── Build UI ──────────────────────────────────────────────
             const toolBox = document.createElement('div');
             toolBox.id = 'attachmentManagerToolbox';
             toolBox.style.cssText = `
-                position:fixed;top:80px;right:40px;z-index:${z};
-                background:#fff;border:1px solid #333;padding:12px;
-                max-width:450px;max-height:85vh;overflow:auto;
-                font:12px/1.3 Arial,sans-serif;
-                box-shadow:0 4px 16px rgba(0,0,0,.2);resize:both;
+                position:fixed; top:80px; right:40px; z-index:99999;
+                background:#0d0d1e; border:1px solid #3b2061;
+                width:460px; max-width:90vw; max-height:85vh;
+                font:12px/1.4 Arial,sans-serif;
+                box-shadow:0 8px 40px rgba(0,0,0,.7); border-radius:10px;
+                resize:both; overflow:hidden;
+                display:flex; flex-direction:column;
             `;
 
             toolBox.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:12px;">📎 Feature Attachment Manager</div>
-
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;margin-bottom:4px;font-weight:bold;">Target Layer:</label>
-                    <select id="layerSelect" style="width:100%;padding:4px;border:1px solid #ccc;">
-                        ${TARGET_LAYERS.map(l => `<option value="${l.uid}">${l.name} (ID: ${l.layerId})</option>`).join('')}
-                    </select>
+                <!-- DRAG HANDLE -->
+                <div id="amDragHandle" style="
+                    cursor:grab; flex-shrink:0; user-select:none;
+                    background:linear-gradient(135deg,#1e0a40,#120830);
+                    border-bottom:1px solid #3b2061; border-radius:10px 10px 0 0;
+                    padding:10px 14px; display:flex; align-items:center; justify-content:space-between;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="color:#6d28d9;font-size:16px;line-height:1;">⠿</span>
+                        <span style="font-weight:700;color:#e2e8f0;font-size:13px;letter-spacing:0.02em;">📎 Feature Attachment Manager</span>
+                    </div>
+                    <button id="closeTool" title="Close" style="
+                        background:transparent;border:none;color:#52527a;cursor:pointer;
+                        font-size:18px;line-height:1;padding:2px 4px;transition:color 0.15s;
+                    " onmouseover="this.style.color='#c4b5fd'" onmouseout="this.style.color='#52527a'">✕</button>
                 </div>
 
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;margin-bottom:4px;">Mode:</label>
-                    <div><input type="radio" id="batchMode" name="mode" value="batch" checked>
-                        <label for="batchMode" style="margin-left:4px;">Batch Download (Multiple Features)</label></div>
-                    <div><input type="radio" id="singleMode" name="mode" value="single">
-                        <label for="singleMode" style="margin-left:4px;">Single Feature (Download / Upload)</label></div>
-                </div>
+                <!-- SCROLLABLE CONTENT -->
+                <div style="overflow-y:auto; flex:1; padding:12px;">
 
-                <div id="batchControls">
-                    <div style="margin-bottom:12px;">
-                        <label style="display:block;margin-bottom:4px;">Selection Method:</label>
-                        <div><input type="radio" id="currentSelection" name="selectionMethod" value="current" checked>
-                            <label for="currentSelection" style="margin-left:4px;">Use Current Selection</label></div>
-                        <div><input type="radio" id="manualSelection" name="selectionMethod" value="manual">
-                            <label for="manualSelection" style="margin-left:4px;">Click to Select Features</label></div>
-                        <div><input type="radio" id="polygonSelection" name="selectionMethod" value="polygon">
-                            <label for="polygonSelection" style="margin-left:4px;">Draw Polygon to Select</label></div>
+                    <div class="am-section">
+                        <label class="am-label">Target Layer</label>
+                        <select id="layerSelect">
+                            ${TARGET_LAYERS.map(l => `<option value="${l.uid}">${l.name} (ID: ${l.layerId})</option>`).join('')}
+                        </select>
                     </div>
 
-                    <div id="polygonInstructions" style="display:none;margin-bottom:10px;padding:8px;background:#fffbe6;border:1px solid #f0c040;font-size:11px;">
-                        🖊️ <strong>Click</strong> to add points &nbsp;|&nbsp; <strong>Double-click</strong> to finish &nbsp;|&nbsp; <strong>ESC</strong> to cancel
+                    <div class="am-section">
+                        <label class="am-label">Mode</label>
+                        <div class="am-row"><input type="radio" id="batchMode" name="mode" value="batch" checked>
+                            <label for="batchMode">Batch Download (Multiple Features)</label></div>
+                        <div class="am-row"><input type="radio" id="singleMode" name="mode" value="single">
+                            <label for="singleMode">Single Feature (Download / Upload)</label></div>
                     </div>
 
-                    <div style="margin-bottom:12px;">
-                        <label style="display:block;margin-bottom:4px;">Download Format:</label>
-                        <div><input type="radio" id="individualFiles" name="downloadFormat" value="individual" checked>
-                            <label for="individualFiles" style="margin-left:4px;">Individual Files</label></div>
-                        <div><input type="radio" id="zipFile" name="downloadFormat" value="zip">
-                            <label for="zipFile" style="margin-left:4px;">Single ZIP File</label></div>
-                    </div>
+                    <!-- ── Batch controls ── -->
+                    <div id="batchControls">
+                        <div class="am-section">
+                            <label class="am-label">Selection Method</label>
+                            <div class="am-row"><input type="radio" id="currentSelection" name="selectionMethod" value="current" checked>
+                                <label for="currentSelection">Use Current Selection</label></div>
+                            <div class="am-row"><input type="radio" id="manualSelection" name="selectionMethod" value="manual">
+                                <label for="manualSelection">Click to Select Features</label></div>
+                            <div class="am-row"><input type="radio" id="polygonSelection" name="selectionMethod" value="polygon">
+                                <label for="polygonSelection">Draw Polygon to Select</label></div>
+                            <div id="polygonInstructions" style="display:none;">
+                                🖊️ <strong>Click</strong> to add points &nbsp;|&nbsp; <strong>Double-click</strong> to finish &nbsp;|&nbsp; <strong>ESC</strong> to cancel
+                            </div>
+                        </div>
 
-                    <div style="margin-bottom:12px;">
-                        <label style="display:flex;align-items:center;cursor:pointer;">
-                            <input type="checkbox" id="watermarkImages" style="margin-right:8px;">
-                            <span>Add Metadata Watermark to Images</span>
-                        </label>
-                        <div style="font-size:10px;color:#666;margin-left:24px;margin-top:4px;">Adds timestamp, address, and GIS ID to image corner</div>
-                        <div style="font-size:10px;color:#999;margin-left:24px;margin-top:2px;">⚠️ Skips images that already have watermarks</div>
-                        <div style="margin-left:24px;margin-top:4px;">
-                            <label style="display:flex;align-items:center;cursor:pointer;">
-                                <input type="checkbox" id="includeStreetAddress" style="margin-right:8px;" checked>
-                                <span style="font-size:11px;">Include street address</span>
-                            </label>
+                        <div class="am-section">
+                            <label class="am-label">Download Format</label>
+                            <div class="am-row"><input type="radio" id="individualFiles" name="downloadFormat" value="individual" checked>
+                                <label for="individualFiles">Individual Files</label></div>
+                            <div class="am-row"><input type="radio" id="zipFile" name="downloadFormat" value="zip">
+                                <label for="zipFile">Single ZIP File</label></div>
+                        </div>
+
+                        <div class="am-section">
+                            <label class="am-label">Image Options</label>
+                            <div class="am-row"><input type="checkbox" id="watermarkImages">
+                                <label for="watermarkImages">Add Metadata Watermark to Images</label></div>
+                            <div class="am-hint">Adds timestamp, address, and GIS ID to image corner</div>
+                            <div class="am-hint">⚠️ Skips images that already have watermarks</div>
+                            <div style="margin-left:22px;margin-top:6px;">
+                                <div class="am-row"><input type="checkbox" id="includeStreetAddress" checked>
+                                    <label for="includeStreetAddress" style="font-size:11px;">Include street address</label></div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+                            <button id="downloadBtn" class="am-btn am-btn-primary">⬇ Download All Attachments</button>
+                            <button id="deselectBtn" class="am-btn am-btn-ghost" style="display:none;">✕ Deselect All</button>
+                            <button id="clearPolygonBtn" class="am-btn am-btn-secondary" style="display:none;">↺ Redraw Polygon</button>
                         </div>
                     </div>
 
-                    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                        <button id="downloadBtn">Download All Attachments</button>
-                        <button id="deselectBtn" style="display:none;">Deselect All</button>
-                        <button id="clearPolygonBtn" style="display:none;">Clear Polygon</button>
-                    </div>
-                </div>
+                    <!-- ── Single controls ── -->
+                    <div id="singleControls" style="display:none;">
+                        <div class="am-section" style="color:#6b6b9a;font-style:italic;font-size:12px;">
+                            Click a <span id="layerHint">feature</span> to select it
+                            <div style="margin-top:4px;font-size:11px;color:#3d3d5c;">💡 Use the map popup to pick a specific feature when multiple overlap</div>
+                        </div>
 
-                <div id="singleControls" style="display:none;">
-                    <div style="margin-bottom:12px;color:#666;font-style:italic;">
-                        Click a <span id="layerHint">feature</span> to select it
-                        <div style="margin-top:4px;font-size:11px;color:#999;">💡 Use the map popup to pick a specific feature when multiple overlap</div>
-                    </div>
-                    <div style="margin-bottom:12px;">
-                        <label style="display:flex;align-items:center;cursor:pointer;">
-                            <input type="checkbox" id="watermarkImagesSingle" style="margin-right:8px;">
-                            <span>Add Metadata Watermark to Images</span>
-                        </label>
-                        <div style="margin-left:24px;margin-top:4px;">
-                            <label style="display:flex;align-items:center;cursor:pointer;">
-                                <input type="checkbox" id="includeStreetAddressSingle" style="margin-right:8px;" checked>
-                                <span style="font-size:11px;">Include street address</span>
-                            </label>
+                        <div class="am-section">
+                            <label class="am-label">Image Options</label>
+                            <div class="am-row"><input type="checkbox" id="watermarkImagesSingle">
+                                <label for="watermarkImagesSingle">Add Metadata Watermark to Images</label></div>
+                            <div style="margin-left:22px;margin-top:6px;">
+                                <div class="am-row"><input type="checkbox" id="includeStreetAddressSingle" checked>
+                                    <label for="includeStreetAddressSingle" style="font-size:11px;">Include street address</label></div>
+                            </div>
+                        </div>
+
+                        <div id="selectedFeatureInfo" style="display:none;margin-bottom:10px;">
+                            <div class="am-section">
+                                <div style="font-weight:700;color:#7c3aed;margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:0.09em;">Selected Feature</div>
+                                <div id="featureDetails" style="color:#e2e8f0;font-size:12px;line-height:1.6;"></div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                            <button id="downloadSingleBtn" class="am-btn am-btn-primary" style="display:none;">⬇ Download Attachments</button>
+                            <button id="clearSingleBtn" class="am-btn am-btn-ghost" style="display:none;">✕ Clear Selection</button>
+                        </div>
+
+                        <div id="uploadArea" style="display:none;margin-bottom:10px;">
+                            <div id="dropZone">
+                                <div style="font-size:24px;margin-bottom:6px;">📁</div>
+                                <div style="font-weight:600;margin-bottom:4px;">Drag &amp; Drop Files Here</div>
+                                <div style="font-size:11px;">or click to browse</div>
+                                <input type="file" id="fileInput" multiple style="display:none;">
+                            </div>
+                            <div id="fileList" style="margin-top:8px;"></div>
+                            <button id="uploadBtn" class="am-btn am-btn-primary" style="display:none;margin-top:8px;">⬆ Upload Files</button>
                         </div>
                     </div>
-                    <div id="selectedFeatureInfo" style="margin-bottom:12px;padding:8px;background:#f5f5f5;border:1px solid #ddd;display:none;">
-                        <div style="font-weight:bold;">Selected Feature:</div>
-                        <div id="featureDetails"></div>
-                    </div>
-                    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                        <button id="downloadSingleBtn" style="display:none;">Download Attachments</button>
-                        <button id="clearSingleBtn" style="display:none;">Clear Selection</button>
-                    </div>
-                    <div id="uploadArea" style="display:none;margin-bottom:12px;">
-                        <div id="dropZone" style="border:2px dashed #ccc;padding:20px;text-align:center;background:#f9f9f9;cursor:pointer;">
-                            <div style="margin-bottom:8px;">📁 Drag &amp; Drop Files Here</div>
-                            <div style="font-size:11px;color:#666;">or click to browse</div>
-                            <input type="file" id="fileInput" multiple style="display:none;">
-                        </div>
-                        <div id="fileList" style="margin-top:8px;"></div>
-                        <button id="uploadBtn" style="display:none;margin-top:8px;">Upload Selected Files</button>
-                    </div>
-                </div>
 
-                <button id="closeTool" style="margin-top:8px;">Close</button>
-                <div id="toolStatus" style="margin-top:8px;color:#3367d6;min-height:16px;"></div>
-                <div id="resultsDiv" style="margin-top:12px;"></div>
+                    <div id="toolStatus" style="margin-top:6px;color:#9c6fef;min-height:16px;font-size:11px;"></div>
+                    <div id="resultsDiv" style="margin-top:10px;"></div>
+                </div>
             `;
 
             document.body.appendChild(toolBox);
@@ -232,9 +319,37 @@
             const $  = id => toolBox.querySelector(id);
             const setStatus = msg => { $('#toolStatus').textContent = msg; };
 
+            // ── Drag ──────────────────────────────────────────────────
+            const dragHandle = $('#amDragHandle');
+            let isDragging = false, dragOffX = 0, dragOffY = 0;
+
+            dragHandle.addEventListener('mousedown', e => {
+                if (e.target.closest('#closeTool')) return;
+                isDragging = true;
+                const rect = toolBox.getBoundingClientRect();
+                dragOffX = e.clientX - rect.left;
+                dragOffY = e.clientY - rect.top;
+                dragHandle.style.cursor = 'grabbing';
+                e.preventDefault();
+            });
+
+            function onDragMove(e) {
+                if (!isDragging) return;
+                const x = Math.max(0, Math.min(e.clientX - dragOffX, window.innerWidth - toolBox.offsetWidth));
+                const y = Math.max(0, Math.min(e.clientY - dragOffY, window.innerHeight - 40));
+                toolBox.style.left = x + 'px';
+                toolBox.style.top  = y + 'px';
+                toolBox.style.right = 'auto';
+            }
+            function onDragUp() {
+                isDragging = false;
+                dragHandle.style.cursor = 'grab';
+            }
+            document.addEventListener('mousemove', onDragMove);
+            document.addEventListener('mouseup',   onDragUp);
+
             // ── Layer helpers ─────────────────────────────────────────
             function getCurrentLayerInfo() { return TARGET_LAYERS.find(l => l.uid === currentUid); }
-
             async function getTargetLayer() {
                 const info = getCurrentLayerInfo();
                 if (!info) throw new Error('No layer selected.');
@@ -313,55 +428,27 @@
             });
 
             // ══════════════════════════════════════════════════════════
-            // POLYGON DRAW (manual)
+            // POLYGON DRAW (manual — no module imports needed)
             // ══════════════════════════════════════════════════════════
-            // We draw the polygon ourselves using the host view's own pointer events
-            // and paint the live preview straight into mapView.graphics — the host's
-            // own graphics collection. This deliberately avoids SketchViewModel /
-            // GraphicsLayer: in the AGOL Map Viewer those have to be imported, and a
-            // fresh CDN import is a SECOND copy of the SDK whose graphics never render
-            // on the host view (that was why the live preview was invisible). Because
-            // mapView.graphics belongs to the host copy, everything we add to it draws
-            // reliably, on both AGOL and Enterprise, with no module loading at all.
-
-            const polyVertexSymbol = { type:'simple-marker', style:'circle', color:[255,255,0,1], size:9, outline:{ color:[255,0,0,1], width:1.5 } };
-            const polyLineSymbol   = { type:'simple-line', color:[255,0,0,0.9], width:2, style:'dash' };
-            const polyFillSymbol   = { type:'simple-fill', color:[255,255,0,0.15], outline:{ color:[255,0,0,1], width:2 } };
-
-            let polygonPoints     = [];   // placed vertices as [x, y] in map coords
-            let committedGraphics = [];   // vertices + connecting line + fill (rebuilt on click)
-            let rubberGraphic     = null; // single live segment from last vertex to cursor (move)
-            let rafPending        = false;
-            let lastCursor        = null;
-            let prevPopupEnabled  = null; // saved view.popupEnabled, restored when drawing ends
-            let polyClickHandler = null;
-            let polyMoveHandler  = null;
-            let polyDblHandler   = null;
-            let polyKeyHandler   = null;
+            const polyVertexSymbol = { type:'simple-marker', style:'circle', color:[255,255,0,1],   size:9,  outline:{ color:[255,0,0,1], width:1.5 } };
+            const polyLineSymbol   = { type:'simple-line',   color:[255,0,0,0.9], width:2, style:'dash' };
+            const polyFillSymbol   = { type:'simple-fill',   color:[255,255,0,0.15], outline:{ color:[255,0,0,1], width:2 } };
 
             function sr() { return mapView.spatialReference; }
 
             function addGraphic(geometry, symbol) {
-                // view.graphics autocasts plain objects into new Graphic instances and stores
-                // THOSE, so we read the stored instance back to be able to remove it later.
                 mapView.graphics.add({ geometry, symbol });
                 return mapView.graphics.getItemAt(mapView.graphics.length - 1);
             }
-
             function clearCommitted() {
                 committedGraphics.forEach(g => { try { mapView.graphics.remove(g); } catch (_) {} });
                 committedGraphics = [];
             }
-
             function clearRubber() {
                 if (rubberGraphic) { try { mapView.graphics.remove(rubberGraphic); } catch (_) {} rubberGraphic = null; }
             }
-
             function clearPreview() { clearCommitted(); clearRubber(); }
 
-            // The committed preview (vertices + line through placed points + faint fill) only
-            // changes when a vertex is added, so we rebuild it on click — NOT on every
-            // pointer-move. That keeps placing points cheap and responsive.
             function rebuildCommitted() {
                 clearCommitted();
                 polygonPoints.forEach(p =>
@@ -372,8 +459,6 @@
                     committedGraphics.push(addGraphic({ type:'polygon', rings:[[...polygonPoints, polygonPoints[0]]], spatialReference: sr() }, polyFillSymbol));
             }
 
-            // The rubber-band is just ONE segment from the last vertex to the cursor. Updating
-            // only this on pointer-move (instead of rebuilding everything) avoids the lag.
             function updateRubber(cursor) {
                 clearRubber();
                 if (!polygonPoints.length || !cursor) return;
@@ -388,18 +473,14 @@
                 selectedFeatures = [];
                 polygonPoints = [];
                 isDrawingPolygon = true;
-                // Suppress feature popups while drawing WITHOUT stopPropagation (which would
-                // block the view's double-click detection). Restored in stopPolygonDraw.
                 prevPopupEnabled = mapView.popupEnabled;
                 mapView.popupEnabled = false;
                 $('#polygonInstructions').style.display = 'block';
+                $('#clearPolygonBtn').style.display = 'none';
+                $('#deselectBtn').style.display = 'none';
+                $('#resultsDiv').innerHTML = '';
                 setStatus('Click to add points. Double-click to finish. Esc to cancel.');
 
-                // 'immediate-click' fires right away (the plain 'click' event is delayed while
-                // the view waits to see if a double-click follows — that was the click lag).
-                // NOTE: we deliberately do NOT call stopPropagation here. Stopping propagation
-                // prevents the view from recognizing the double-click gesture, which is what
-                // broke "double-click to finish".
                 polyClickHandler = mapView.on('immediate-click', event => {
                     if (!isDrawingPolygon) return;
                     const mp = event.mapPoint || mapView.toMap({ x: event.x, y: event.y });
@@ -410,8 +491,6 @@
                     setStatus(`${polygonPoints.length} point(s). Double-click to finish.`);
                 });
 
-                // pointer-move fires very rapidly; throttle to one repaint per animation frame
-                // and only move the lightweight rubber-band segment.
                 polyMoveHandler = mapView.on('pointer-move', event => {
                     if (!isDrawingPolygon || !polygonPoints.length) return;
                     lastCursor = { x: event.x, y: event.y };
@@ -427,7 +506,7 @@
 
                 polyDblHandler = mapView.on('double-click', event => {
                     if (!isDrawingPolygon) return;
-                    event.stopPropagation();                 // prevent the default zoom-in
+                    event.stopPropagation();
                     finishPolygon();
                 });
 
@@ -438,42 +517,34 @@
             }
 
             function finishPolygon() {
-                // A double-click fires two click events first, so drop consecutive duplicates.
                 const cleaned = [];
                 polygonPoints.forEach(p => {
                     const last = cleaned[cleaned.length - 1];
                     if (!last || last[0] !== p[0] || last[1] !== p[1]) cleaned.push(p);
                 });
-
                 if (cleaned.length < 3) {
                     setStatus('Need at least 3 points — keep clicking, then double-click to finish.');
                     return;
                 }
-
                 isDrawingPolygon = false;
                 removeDrawHandlers();
                 clearPreview();
                 $('#polygonInstructions').style.display = 'none';
 
                 const ring = ensureClockwise(cleaned);
-                ring.push([ring[0][0], ring[0][1]]);         // close the ring
+                ring.push([ring[0][0], ring[0][1]]);
                 const geom = { type:'polygon', rings:[ring], spatialReference: sr() };
 
-                // Persistent polygon so the user keeps seeing what they selected.
                 drawnPolygonGraphic = { geometry: geom, symbol: polyFillSymbol };
                 mapView.graphics.add(drawnPolygonGraphic);
-
-                $('#clearPolygonBtn').style.display = 'inline-block';
+                $('#clearPolygonBtn').style.display = 'inline-flex';
                 selectFeaturesInPolygon(geom);
             }
 
-            // ArcGIS outer rings should wind clockwise. In map (y-up) coordinates a
-            // positive signed area means counter-clockwise, so reverse it in that case.
             function ensureClockwise(pts) {
                 let area = 0;
                 for (let i = 0; i < pts.length; i++) {
-                    const [x1, y1] = pts[i];
-                    const [x2, y2] = pts[(i + 1) % pts.length];
+                    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
                     area += (x1 * y2 - x2 * y1);
                 }
                 return area > 0 ? pts.slice().reverse() : pts.slice();
@@ -497,14 +568,17 @@
                 $('#polygonInstructions').style.display = 'none';
             }
 
+            // "↺ Redraw Polygon" button: clear current polygon + immediately start a new draw
+            // so the user never has to toggle the radio off and back on.
             function clearPolygonSelection() {
                 stopPolygonDraw();
-                mapView.graphics.removeAll();      // removes the polygon and the selection markers
+                mapView.graphics.removeAll();
                 drawnPolygonGraphic = null;
                 selectedFeatures = [];
                 $('#clearPolygonBtn').style.display = 'none';
                 $('#deselectBtn').style.display = 'none';
-                setStatus('Polygon cleared.');
+                $('#resultsDiv').innerHTML = '';
+                startPolygonDraw();
             }
 
             async function selectFeaturesInPolygon(polygon) {
@@ -512,23 +586,18 @@
                     setStatus('Selecting features within polygon…');
                     const layer = await getTargetLayer();
                     const result = await layer.queryFeatures({
-                        geometry: polygon,
-                        spatialRelationship: 'intersects',
-                        returnGeometry: true,
-                        outFields: ['*']
+                        geometry: polygon, spatialRelationship: 'intersects',
+                        returnGeometry: true, outFields: ['*']
                     });
-
                     selectedFeatures = result.features.map(f => ({ attributes: f.attributes, layer, geometry: f.geometry }));
-
                     result.features.forEach(f => {
                         mapView.graphics.add({
                             geometry: f.geometry,
-                            symbol: { type: 'simple-marker', color: [255, 255, 0, 0.9], size: 12, outline: { color: [255, 0, 0, 1], width: 2 } }
+                            symbol: { type:'simple-marker', color:[255,255,0,0.9], size:12, outline:{ color:[255,0,0,1], width:2 } }
                         });
                     });
-
-                    $('#deselectBtn').style.display = 'inline-block';
-                    setStatus(`✅ ${selectedFeatures.length} feature(s) selected. Click "Download All Attachments".`);
+                    $('#deselectBtn').style.display = 'inline-flex';
+                    setStatus(`✅ ${selectedFeatures.length} feature(s) selected.`);
                 } catch (err) {
                     console.error('Polygon query error:', err);
                     setStatus('Error selecting features: ' + err.message);
@@ -543,15 +612,12 @@
                         const response = await mapView.hitTest(event);
                         const hits = response.results.filter(r => r.graphic?.layer?.id === currentUid);
                         if (!hits.length) { setStatus(`No "${getCurrentLayerInfo().name}" features found here.`); return; }
-
                         const g = hits[0].graphic;
                         const oid = g.attributes[g.layer.objectIdField];
-                        if (selectedFeatures.some(f => f.attributes[f.layer.objectIdField] === oid)) {
-                            setStatus('Feature already selected.'); return;
-                        }
+                        if (selectedFeatures.some(f => f.attributes[f.layer.objectIdField] === oid)) { setStatus('Feature already selected.'); return; }
                         selectedFeatures.push({ attributes: g.attributes, layer: g.layer, geometry: g.geometry });
-                        mapView.graphics.add({ geometry: g.geometry, symbol: { type: 'simple-marker', color: [255, 255, 0, 0.9], size: 12, outline: { color: [255, 0, 0, 1], width: 2 } } });
-                        $('#deselectBtn').style.display = 'inline-block';
+                        mapView.graphics.add({ geometry: g.geometry, symbol: { type:'simple-marker', color:[255,255,0,0.9], size:12, outline:{ color:[255,0,0,1], width:2 } } });
+                        $('#deselectBtn').style.display = 'inline-flex';
                         setStatus(`${selectedFeatures.length} feature(s) selected.`);
                     } catch (err) { setStatus('Error: ' + err.message); }
                 });
@@ -564,7 +630,6 @@
                 popupWatcher = mapView.popup.watch('selectedFeature', f => {
                     if (f?.layer?.id === currentUid) selectSingleFromFeature(f);
                 });
-
                 clickHandler?.remove();
                 clickHandler = mapView.on('click', async event => {
                     try {
@@ -581,20 +646,17 @@
                 try {
                     const layer = await getTargetLayer();
                     const oid = featureOrGraphic.attributes[layer.objectIdField];
-                    const qr = await layer.queryFeatures({ objectIds: [oid], outFields: ['*'], returnGeometry: true });
+                    const qr = await layer.queryFeatures({ objectIds:[oid], outFields:['*'], returnGeometry:true });
                     if (!qr.features.length) { setStatus('Could not load feature.'); return; }
-
                     clearSingleSelection();
                     const f = qr.features[0];
                     selectedSingleFeature = { attributes: f.attributes, layer, geometry: f.geometry };
-
-                    mapView.graphics.add({ geometry: f.geometry, symbol: { type: 'simple-marker', color: [0, 255, 0, 0.8], size: 14, outline: { color: [0, 150, 0, 1], width: 3 } } });
-
+                    mapView.graphics.add({ geometry: f.geometry, symbol: { type:'simple-marker', color:[0,255,0,0.8], size:14, outline:{ color:[0,150,0,1], width:3 } } });
                     const gisId = f.attributes.gis_id || f.attributes.GIS_ID || oid;
-                    $('#featureDetails').innerHTML = `<strong>Layer:</strong> ${getCurrentLayerInfo().name}<br><strong>GIS ID:</strong> ${gisId}<br><strong>Object ID:</strong> ${oid}`;
+                    $('#featureDetails').innerHTML = `<span style="color:#7c3aed;font-size:10px;font-weight:700;">LAYER</span><br>${getCurrentLayerInfo().name}<br><span style="color:#7c3aed;font-size:10px;font-weight:700;">GIS ID</span><br>${gisId}<br><span style="color:#7c3aed;font-size:10px;font-weight:700;">OBJECT ID</span><br>${oid}`;
                     $('#selectedFeatureInfo').style.display = 'block';
-                    $('#downloadSingleBtn').style.display = 'inline-block';
-                    $('#clearSingleBtn').style.display = 'inline-block';
+                    $('#downloadSingleBtn').style.display = 'inline-flex';
+                    $('#clearSingleBtn').style.display = 'inline-flex';
                     $('#uploadArea').style.display = 'block';
                     setStatus('Feature selected. Download or upload attachments.');
                 } catch (err) { setStatus('Error: ' + err.message); }
@@ -616,9 +678,9 @@
             // ── File upload ───────────────────────────────────────────
             const dropZone = $('#dropZone'), fileInput = $('#fileInput');
             dropZone.addEventListener('click', () => fileInput.click());
-            dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#007acc'; });
-            dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = '#ccc'; });
-            dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.style.borderColor = '#ccc'; addFiles(Array.from(e.dataTransfer.files)); });
+            dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+            dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+            dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles(Array.from(e.dataTransfer.files)); });
             fileInput.addEventListener('change', e => addFiles(Array.from(e.target.files)));
 
             function addFiles(files) {
@@ -627,12 +689,13 @@
             }
             function renderFileList() {
                 if (!filesToUpload.length) { $('#fileList').innerHTML = ''; $('#uploadBtn').style.display = 'none'; return; }
-                $('#fileList').innerHTML = '<div style="font-weight:bold;margin-bottom:4px;">Files to upload:</div>' +
-                    filesToUpload.map((f, i) => `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px;border:1px solid #ddd;margin:2px 0;">
-                        <span style="font-size:11px;">${f.name} (${(f.size/1024).toFixed(1)}KB)</span>
-                        <button onclick="window.__amRemoveFile(${i})" style="background:#ff4444;color:white;border:none;padding:2px 6px;cursor:pointer;">×</button>
-                    </div>`).join('');
-                $('#uploadBtn').style.display = 'inline-block';
+                $('#fileList').innerHTML = `<div style="font-weight:700;color:#7c3aed;font-size:10px;text-transform:uppercase;letter-spacing:0.09em;margin-bottom:6px;">Files to Upload</div>` +
+                    filesToUpload.map((f, i) => `
+                        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:#0a0a18;border:1px solid #2a2050;border-radius:6px;margin:3px 0;">
+                            <span style="font-size:11px;color:#e2e8f0;">${f.name} <span style="color:#52527a;">(${(f.size/1024).toFixed(1)} KB)</span></span>
+                            <button onclick="window.__amRemoveFile(${i})" style="background:#3b0a0a;color:#f87171;border:1px solid #7f1d1d;padding:2px 8px;cursor:pointer;border-radius:5px;font-size:11px;font-weight:600;">✕</button>
+                        </div>`).join('');
+                $('#uploadBtn').style.display = 'inline-flex';
             }
             window.__amRemoveFile = i => { filesToUpload.splice(i, 1); renderFileList(); };
 
@@ -920,7 +983,6 @@
                             const atts = q[oid] || [];
                             totalAtts += atts.length;
                             results.push({ oid, atts, ok:true });
-
                             for (const att of atts) {
                                 setStatus(`Downloading ${att.name} (${downloaded+1}/${totalAtts})…`);
                                 const resp = await fetch(att.url);
@@ -928,7 +990,6 @@
                                 let blob = await resp.blob();
                                 const gisId = feat.attributes.gis_id || feat.attributes.GIS_ID || oid;
                                 const fname = `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_GIS_${gisId}_${att.name}`;
-
                                 if (doWatermark && att.contentType?.startsWith('image/')) {
                                     if (await hasExistingWatermark(blob)) {
                                         setStatus(`Skipping ${att.name} – already watermarked`);
@@ -938,7 +999,6 @@
                                         blob = await watermarkImage(blob, { timestamp:formatTimestamp(att), location:extractLocation(feat), gisId, layerName:getCurrentLayerInfo().name }, exif);
                                     }
                                 }
-
                                 if (fmt==='zip') { zipFiles.push({name:fname, data:await blob.arrayBuffer()}); }
                                 else { triggerDownload(blob, fname); await new Promise(r=>setTimeout(r,100)); }
                                 downloaded++;
@@ -952,15 +1012,16 @@
                         triggerDownload(createZip(zipFiles), `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_Attachments_${today}.zip`);
                     }
 
-                    let html = `<div><strong>Results – ${getCurrentLayerInfo().name}:</strong></div>
-                        <div>Features: ${features.length} | Attachments: ${totalAtts} | Downloaded: ${downloaded}</div>
-                        <div style="max-height:200px;overflow-y:auto;margin-top:6px;">`;
+                    let html = `<div style="background:#13132a;border:1px solid #2a2050;border-radius:8px;padding:10px;">
+                        <div style="font-weight:700;color:#9c6fef;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Results — ${getCurrentLayerInfo().name}</div>
+                        <div style="color:#d4d4e8;margin-bottom:6px;">Features: ${features.length} &nbsp;|&nbsp; Attachments: ${totalAtts} &nbsp;|&nbsp; Downloaded: ${downloaded}</div>
+                        <div style="max-height:160px;overflow-y:auto;">`;
                     results.forEach(r => {
                         html += r.ok
-                            ? `<div>OID ${r.oid}: ${r.atts.length} file(s)</div>${r.atts.map(a=>`<div style="margin-left:16px;font-size:11px;color:#666;">• ${a.name}</div>`).join('')}`
-                            : `<div style="color:#d32f2f;">OID ${r.oid}: Error – ${r.error}</div>`;
+                            ? `<div style="color:#86efac;">✓ OID ${r.oid}: ${r.atts.length} file(s)</div>${r.atts.map(a=>`<div style="margin-left:14px;font-size:11px;color:#52527a;">• ${a.name}</div>`).join('')}`
+                            : `<div style="color:#f87171;">✗ OID ${r.oid}: ${r.error}</div>`;
                     });
-                    html += '</div>';
+                    html += '</div></div>';
                     $('#resultsDiv').innerHTML = html;
                     setStatus(fmt==='zip' ? `✅ ZIP ready — ${downloaded} file(s).` : `✅ Done — ${downloaded} file(s) downloaded.`);
                 } catch(e) { console.error(e); setStatus('Error: '+e.message); }
@@ -975,12 +1036,10 @@
                     const oid = selectedSingleFeature.attributes[layer.objectIdField];
                     const q = await layer.queryAttachments({ objectIds:[oid], returnMetadata:true });
                     const atts = q[oid];
-                    if (!atts?.length) { setStatus('No attachments found.'); $('#resultsDiv').innerHTML='<div>No attachments found.</div>'; return; }
-
+                    if (!atts?.length) { setStatus('No attachments found.'); $('#resultsDiv').innerHTML='<div style="color:#52527a;padding:8px;">No attachments found.</div>'; return; }
                     const doWatermark = $('#watermarkImagesSingle')?.checked;
                     const includeStreet = $('#includeStreetAddressSingle')?.checked;
                     let done=0;
-
                     for (const att of atts) {
                         setStatus(`Downloading ${att.name} (${done+1}/${atts.length})…`);
                         const resp = await fetch(att.url); if (!resp.ok) continue;
@@ -995,7 +1054,11 @@
                         triggerDownload(blob, `${getCurrentLayerInfo().name.replace(/\s+/g,'')}_GIS_${gisId}_${att.name}`);
                         done++; await new Promise(r=>setTimeout(r,100));
                     }
-                    $('#resultsDiv').innerHTML = `<div><strong>Results:</strong> ${done}/${atts.length} downloaded</div>${atts.map(a=>`<div style="font-size:11px;color:#666;">• ${a.name}</div>`).join('')}`;
+                    $('#resultsDiv').innerHTML = `<div style="background:#13132a;border:1px solid #2a2050;border-radius:8px;padding:10px;">
+                        <div style="font-weight:700;color:#9c6fef;margin-bottom:6px;font-size:11px;text-transform:uppercase;">Results</div>
+                        <div style="color:#86efac;margin-bottom:4px;">✓ ${done}/${atts.length} downloaded</div>
+                        ${atts.map(a=>`<div style="font-size:11px;color:#52527a;">• ${a.name}</div>`).join('')}
+                    </div>`;
                     setStatus(`✅ Done — ${done} file(s).`);
                 } catch(e) { console.error(e); setStatus('Error: '+e.message); }
             }
@@ -1017,31 +1080,41 @@
                     } catch(e) { results.push({name:file.name,ok:false,error:e.message}); fail++; }
                     await new Promise(r=>setTimeout(r,200));
                 }
-                $('#resultsDiv').innerHTML = `<div><strong>Upload Results:</strong> ${ok} succeeded${fail?`, ${fail} failed`:''}</div>${results.map(r=>`<div style="color:${r.ok?'#2e7d32':'#d32f2f'};">${r.ok?'✓':'✗'} ${r.name}${r.ok?'':' – '+r.error}</div>`).join('')}`;
+                $('#resultsDiv').innerHTML = `<div style="background:#13132a;border:1px solid #2a2050;border-radius:8px;padding:10px;">
+                    <div style="font-weight:700;color:#9c6fef;margin-bottom:6px;font-size:11px;text-transform:uppercase;">Upload Results</div>
+                    <div style="color:#d4d4e8;margin-bottom:4px;">${ok} succeeded${fail?`, ${fail} failed`:''}</div>
+                    ${results.map(r=>`<div style="font-size:11px;color:${r.ok?'#86efac':'#f87171'};">${r.ok?'✓':'✗'} ${r.name}${r.ok?'':' — '+r.error}</div>`).join('')}
+                </div>`;
                 setStatus(`✅ Upload complete — ${ok}/${filesToUpload.length}.`);
                 filesToUpload=[]; $('#fileList').innerHTML=''; $('#uploadBtn').style.display='none';
             }
 
             // ── Button wiring ─────────────────────────────────────────
-            $('#downloadBtn').onclick = downloadBatchAttachments;
+            $('#downloadBtn').onclick    = downloadBatchAttachments;
             $('#downloadSingleBtn').onclick = downloadSingleAttachments;
-            $('#uploadBtn').onclick = uploadAttachments;
-            $('#deselectBtn').onclick = () => {
+            $('#uploadBtn').onclick      = uploadAttachments;
+            $('#deselectBtn').onclick    = () => {
                 selectedFeatures=[]; mapView.graphics.removeAll(); drawnPolygonGraphic = null;
                 $('#deselectBtn').style.display='none'; $('#clearPolygonBtn').style.display='none';
-                $('#resultsDiv').innerHTML=''; setStatus('Deselected all.');
+                $('#resultsDiv').innerHTML=''; setStatus('');
+                // If polygon mode is still active, restart drawing immediately
+                const method = toolBox.querySelector('input[name="selectionMethod"]:checked')?.value;
+                if (method === 'polygon') startPolygonDraw();
             };
-            $('#clearSingleBtn').onclick = clearSingleSelection;
+            $('#clearSingleBtn').onclick  = clearSingleSelection;
             $('#clearPolygonBtn').onclick = clearPolygonSelection;
-            $('#closeTool').onclick = cleanup;
+            $('#closeTool').onclick       = cleanup;
 
             // ── Cleanup ───────────────────────────────────────────────
             function cleanup() {
                 stopPolygonDraw();
                 clickHandler?.remove();
                 popupWatcher?.remove();
+                document.removeEventListener('mousemove', onDragMove);
+                document.removeEventListener('mouseup',   onDragUp);
                 mapView.graphics.removeAll();
                 if (window.__amRemoveFile) delete window.__amRemoveFile;
+                document.getElementById('amStyleEl')?.remove();
                 toolBox.remove();
                 if (IS_ENTERPRISE && window.gisToolHost) window.gisToolHost.activeTools?.delete('attachment-manager');
                 window.__attachmentManagerActive = false;
@@ -1052,7 +1125,7 @@
                 window.gisToolHost.activeTools?.set('attachment-manager', { cleanup, toolBox });
             }
 
-            setStatus(`Ready — ${TARGET_LAYERS.length} layer(s) detected. Select a layer and draw a polygon.`);
+            setStatus(`Ready — ${TARGET_LAYERS.length} layer(s) detected.`);
             console.log('Attachment Manager loaded successfully.');
         }
 
