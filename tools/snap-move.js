@@ -168,6 +168,7 @@
         let boreSplitWorkingGeom=null,boreSplitVtx1=null,boreSplitVtx2=null;
         let boreSplitPreviewGraphics=[],boreSplitLabelGraphic=null;
         let boreSplitMoveHandler=null,boreSplitGen=0;
+        let boreSplitVtx1IsVault=false,boreSplitVtx2IsVault=false; // true when a cut endpoint snapped to a point feature (vault)
 
         const $=id=>toolBox.querySelector(id);
         const toggleToolBtn=$('#toggleTool'),pointModeBtn=$('#pointMode'),lineModeBtn=$('#lineMode');
@@ -208,7 +209,21 @@
         // Bore split geometry helpers
         function findNearestPointOnLineGeom(geom,mp){if(!geom?.paths)return null;let best=null,minD=Infinity;for(let pi=0;pi<geom.paths.length;pi++){const path=geom.paths[pi];for(let si=0;si<path.length-1;si++){const a={x:path[si][0],y:path[si][1]},b={x:path[si+1][0],y:path[si+1][1]};const res=closestPtOnSeg(mp,a,b);if(res.distance<minD){minD=res.distance;best={pathIdx:pi,segIdx:si,point:res.point,distance:res.distance};}}}return best;}
         function insertVertexAtSegment(geom,pathIdx,segIdx,pt){const newPaths=clonePaths(geom);newPaths[pathIdx].splice(segIdx+1,0,[pt.x,pt.y]);return{newGeom:buildPolyline(geom,newPaths),vtxIdx:segIdx+1};}
-        function splitGeomAtTwoVertices(geom,pathIdx,vtxIdx1,vtxIdx2){const path=geom.paths[pathIdx];const i1=Math.min(vtxIdx1,vtxIdx2),i2=Math.max(vtxIdx1,vtxIdx2);if(i2<=i1)return null;const s1=path.slice(0,i1+1).map(c=>c.slice()),bore=path.slice(i1,i2+1).map(c=>c.slice()),s2=path.slice(i2).map(c=>c.slice());if(s1.length<2||bore.length<2||s2.length<2)return null;const sr=geom.spatialReference;return[{type:'polyline',paths:[s1],spatialReference:sr},{type:'polyline',paths:[bore],spatialReference:sr},{type:'polyline',paths:[s2],spatialReference:sr}];}
+        // Returns {plow1, bore, plow2} — either plow may be null when that cut point
+        // is at a line endpoint (vault connection), meaning no plow segment exists there.
+        function splitGeomAtTwoVertices(geom,pathIdx,vtxIdx1,vtxIdx2){
+            const path=geom.paths[pathIdx];
+            const i1=Math.min(vtxIdx1,vtxIdx2),i2=Math.max(vtxIdx1,vtxIdx2);
+            if(i2<=i1)return null;
+            const bore=path.slice(i1,i2+1).map(c=>c.slice());
+            if(bore.length<2)return null;
+            const sr=geom.spatialReference;
+            // plow1 only exists when the bore doesn't start at the very first vertex
+            const plow1=i1>0?{type:'polyline',paths:[path.slice(0,i1+1).map(c=>c.slice())],spatialReference:sr}:null;
+            // plow2 only exists when the bore doesn't end at the very last vertex
+            const plow2=i2<path.length-1?{type:'polyline',paths:[path.slice(i2).map(c=>c.slice())],spatialReference:sr}:null;
+            return{plow1,bore:{type:'polyline',paths:[bore],spatialReference:sr},plow2};
+        }
 
         // Arc helpers
         function findClosestPointOnPath(geom,mp){let minD=Infinity,result={pathIdx:0,segIdx:0,t:0,point:{x:mp.x,y:mp.y}};for(let pi=0;pi<geom.paths.length;pi++){const path=geom.paths[pi];for(let si=0;si<path.length-1;si++){const ax=path[si][0],ay=path[si][1],bx=path[si+1][0],by=path[si+1][1],C=bx-ax,D=by-ay,A=mp.x-ax,B=mp.y-ay,lenSq=C*C+D*D,t=lenSq?Math.max(0,Math.min(1,(A*C+B*D)/lenSq)):0,px=ax+t*C,py=ay+t*D,d=Math.sqrt((mp.x-px)**2+(mp.y-py)**2);if(d<minD){minD=d;result={pathIdx:pi,segIdx:si,t,point:{x:px,y:py}};}}}return result;}
@@ -415,30 +430,87 @@
             if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=true;boreSplitConfirmBtn.textContent='Applying...';}
             const splits=splitGeomAtTwoVertices(boreSplitWorkingGeom,boreSplitVtx1.pathIdx,boreSplitVtx1.vtxIdx,boreSplitVtx2.vtxIdx);
             if(!splits){updateStatus('Split failed -- geometry error.');if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=false;boreSplitConfirmBtn.textContent='Confirm Bore Split';}return;}
-            const[seg1Geom,boreGeom,seg2Geom]=splits;
+            const{plow1:seg1Geom,bore:boreGeom,plow2:seg2Geom}=splits;
             let fullFeature=boreSplitFeature;
             try{const oid=getOid(boreSplitFeature);if(oid!=null){const qr=await boreSplitLayer.queryFeatures({where:boreSplitLayer.objectIdField+'='+oid,outFields:['*'],returnGeometry:false});if(qr.features.length>0)fullFeature=qr.features[0];}}catch(e){console.warn('executeBoreSplit: using hit-result attributes:',e);}
-            const baseAttrs=copyAttributesForNewFeature(fullFeature,boreSplitLayer);
-            const seg1Attrs=Object.assign({},baseAttrs);if('calculated_length'in seg1Attrs)seg1Attrs.calculated_length=geodeticLength(seg1Geom);
+            // Workflow check — must run before flagging the original as deleted
+            const wfBore=checkWorkflowForNewFeature(fullFeature,boreSplitLayer);
+            if(!wfBore.allowed){
+                updateStatus('Bore split blocked: '+wfBore.message);
+                if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=false;boreSplitConfirmBtn.textContent='Confirm Bore Split';}
+                return;
+            }
+            // Merge workflow overrides into baseAttrs so every new segment (plow + bore)
+            // gets OSP_CONST/QCCMPLT when needed, triggering the DB daily-record creation.
+            const baseAttrs=Object.assign(copyAttributesForNewFeature(fullFeature,boreSplitLayer),wfBore.overrides);
             const boreAttrs=Object.assign({},baseAttrs);boreAttrs[BORE_INSTALL_FIELD]=BORE_INSTALL_VALUE;if('calculated_length'in boreAttrs)boreAttrs.calculated_length=geodeticLength(boreGeom);
-            const seg2Attrs=Object.assign({},baseAttrs);if('calculated_length'in seg2Attrs)seg2Attrs.calculated_length=geodeticLength(seg2Geom);
+            // Build the add-features list — only include plow segments that actually exist
+            const addFeaturesList=[];
+            if(seg1Geom){const a=Object.assign({},baseAttrs);if('calculated_length'in a)a.calculated_length=geodeticLength(seg1Geom);addFeaturesList.push({geometry:seg1Geom,attributes:a});}
+            addFeaturesList.push({geometry:boreGeom,attributes:boreAttrs});
+            if(seg2Geom){const a=Object.assign({},baseAttrs);if('calculated_length'in a)a.calculated_length=geodeticLength(seg2Geom);addFeaturesList.push({geometry:seg2Geom,attributes:a});}
             const origOid=getOid(boreSplitFeature),fieldName=getDeleteFieldName(boreSplitLayer),origDeleteVal=fullFeature.attributes?.[fieldName]??null;
             updateStatus('Applying bore split...');
             try{
                 if(fieldName&&origOid!=null){const oidField=boreSplitLayer.objectIdField||'OBJECTID';const delRes=await boreSplitLayer.applyEdits({updateFeatures:[{attributes:{[oidField]:origOid,[fieldName]:'YES'}}]});if(delRes.updateFeatureResults?.[0]?.error){updateStatus('Could not flag original as deleted: '+delRes.updateFeatureResults[0].error.message);if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=false;boreSplitConfirmBtn.textContent='Confirm Bore Split';}return;}}
-                const addRes=await boreSplitLayer.applyEdits({addFeatures:[{geometry:seg1Geom,attributes:seg1Attrs},{geometry:boreGeom,attributes:boreAttrs},{geometry:seg2Geom,attributes:seg2Attrs}]});
+                const addRes=await boreSplitLayer.applyEdits({addFeatures:addFeaturesList});
                 const addErrs=(addRes.addFeatureResults??[]).filter(r=>r.error);
                 if(addErrs.length){updateStatus('Failed to add '+(addErrs.length)+' segment(s).');if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=false;boreSplitConfirmBtn.textContent='Confirm Bore Split';}return;}
                 const undoRestores=[];
                 if(fieldName&&origOid!=null)undoRestores.push({layer:boreSplitLayer,layerConfig:boreSplitLayerConfig,oid:origOid,geometry:null,attributes:{[fieldName]:origDeleteVal}});
                 for(const r of(addRes.addFeatureResults??[]))if(r.objectId!=null&&fieldName)undoRestores.push({layer:boreSplitLayer,layerConfig:boreSplitLayerConfig,oid:r.objectId,geometry:null,attributes:{[fieldName]:'YES'}});
                 recordUndo('Bore split -- '+boreSplitLayerConfig.name,undoRestores,[]);
-                const len1=geodeticLength(seg1Geom),lenBore=geodeticLength(boreGeom),len2=geodeticLength(seg2Geom);
-                updateStatus('Bore split complete: '+len1+'ft plow / '+lenBore+'ft bore / '+len2+'ft plow');
+                const lenBore=geodeticLength(boreGeom);
+                const parts=[];
+                if(seg1Geom)parts.push(geodeticLength(seg1Geom)+'ft plow');else parts.push('vault');
+                parts.push(lenBore+'ft bore');
+                if(seg2Geom)parts.push(geodeticLength(seg2Geom)+'ft plow');else parts.push('vault');
+                updateStatus('Bore split complete: '+parts.join(' / '));
                 if(vertexHighlightActive)scheduleHighlightRefresh();
             }catch(e){console.error('executeBoreSplit error:',e);updateStatus('Error applying bore split.');if(boreSplitConfirmBtn){boreSplitConfirmBtn.disabled=false;boreSplitConfirmBtn.textContent='Confirm Bore Split';}return;}
             resetBoreSplitState();
             setTimeout(function(){if(boreSplitMode)updateStatus('Bore Split -- click an underground span to select it.');},3000);
+        }
+
+        // ─── Workflow protection ─────────────────────────────────────────────────────
+        // Field names are looked up case-insensitively so they work regardless of
+        // whether the service returns them as 'workflow_stage' or 'WORKFLOW_STAGE'.
+        const WORKFLOW_STAGE_FIELD='workflow_stage', WORKFLOW_STATUS_FIELD='workflow_status';
+        const WF_STAGE_RDYFDLY='RDYFDLY', WF_STAGE_ASBUILT='ASBUILT', WF_STAGE_OSP_CONST='OSP_CONST';
+        const WF_STATUS_RDYFDLY='RDYFDLY', WF_STATUS_QCCMPLT='QCCMPLT';
+
+        function getWorkflowFieldName(layer,key){
+            if(!layer?.fields)return null;
+            const lo=key.toLowerCase();
+            const f=layer.fields.find(f=>f.name.toLowerCase()===lo);
+            return f?f.name:null;
+        }
+
+        // Returns {allowed:true, overrides:{}} or {allowed:false, message}.
+        // When overrides are non-empty, apply them to every new feature's attributes
+        // BEFORE saving — this causes the DB trigger to fire and create the daily record.
+        function checkWorkflowForNewFeature(feature,layer){
+            const sfn=getWorkflowFieldName(layer,WORKFLOW_STAGE_FIELD);
+            const sfv=getWorkflowFieldName(layer,WORKFLOW_STATUS_FIELD);
+            if(!sfn||!sfv)return{allowed:true,overrides:{}}; // layer has no workflow fields
+            const stage=feature?.attributes?.[sfn]??null;
+            const status=feature?.attributes?.[sfv]??null;
+            // ASBUILT + non-RDYFDLY: a daily record exists and has been worked on —
+            // creating new geometry would orphan or duplicate that record.
+            if(stage===WF_STAGE_ASBUILT&&status!==WF_STATUS_RDYFDLY){
+                return{
+                    allowed:false,
+                    message:'Cannot create new features from "'+(layer.title||'this feature')+'" ('+stage+' / '+status+
+                            '): it already has an active daily record. Edit the existing feature geometry directly.'
+                };
+            }
+            // RDYFDLY stage, or ASBUILT/RDYFDLY (record exists but untouched):
+            // set new features to OSP_CONST/QCCMPLT so the DB trigger fires and
+            // creates a daily record for each new segment.
+            if(stage===WF_STAGE_RDYFDLY||(stage===WF_STAGE_ASBUILT&&status===WF_STATUS_RDYFDLY)){
+                return{allowed:true,overrides:{[sfn]:WF_STAGE_OSP_CONST,[sfv]:WF_STATUS_QCCMPLT}};
+            }
+            return{allowed:true,overrides:{}};
         }
 
         // Copy helpers
@@ -451,7 +523,12 @@
         let copyPickerPopup=null;
         function dismissCopyPickerPopup(){if(copyPickerPopup){copyPickerPopup.remove();copyPickerPopup=null;}}
         function showCopyPickerPopup(candidates,pageX,pageY){dismissCopyPickerPopup();const popup=document.createElement('div');copyPickerPopup=popup;popup.style.cssText='position:fixed;z-index:'+(z+1)+';background:#0f0d1a;border:1px solid #3a3060;border-radius:4px;box-shadow:0 4px 18px rgba(0,0,0,0.5);font:12px/1.4 Arial,sans-serif;min-width:220px;max-width:300px;max-height:320px;overflow-y:auto;color:#e2d9f3;';let left=pageX+12,top=pageY-10;if(left+310>window.innerWidth)left=pageX-310;if(top+340>window.innerHeight)top=window.innerHeight-340-12;if(top<12)top=12;popup.style.left=left+'px';popup.style.top=top+'px';const header=document.createElement('div');header.style.cssText='padding:7px 10px 5px;font-weight:bold;font-size:11px;color:#d4bbff;border-bottom:1px solid #2d2550;display:flex;justify-content:space-between;align-items:center;background:#2d1b69;';header.innerHTML=candidates.length+' features -- pick template';const closeX=document.createElement('span');closeX.textContent='X';closeX.style.cssText='cursor:pointer;color:#9b8ec4;font-size:13px;padding:0 2px;';closeX.onclick=()=>{dismissCopyPickerPopup();};header.appendChild(closeX);popup.appendChild(header);const typeIcon=t=>t==='point'?'(pt)':t==='polyline'?'(ln)':'(poly)';candidates.forEach(c=>{const row=document.createElement('div');row.style.cssText='padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;display:flex;flex-direction:column;gap:2px;';row.onmouseenter=()=>row.style.background='#2d1b69';row.onmouseleave=()=>row.style.background='';const oid=getOid(c.feature)??'?',gtype=c.feature.geometry?.type??'unknown',title=document.createElement('div'),meta=document.createElement('div');title.style.cssText='font-weight:bold;color:#e2d9f3;font-size:11px;';title.textContent=typeIcon(gtype)+' '+c.layerConfig.name;meta.style.cssText='color:#7a6d96;font-size:10px;';meta.textContent='OID: '+oid+' / '+gtype;row.appendChild(title);row.appendChild(meta);row.onclick=async()=>{dismissCopyPickerPopup();await applyCopyTemplate(c.feature,c.layer,c.layerConfig);};popup.appendChild(row);});document.body.appendChild(popup);setTimeout(()=>{document.addEventListener('click',function outsideClick(e){if(!popup.contains(e.target)){dismissCopyPickerPopup();document.removeEventListener('click',outsideClick);}});},0);}
-        async function placeCopyFeature(event){if(!copyTemplateFeature||!copyPlacementMode||!copyTemplateLayer)return;const snapPt=await findCopySnapPoint({x:event.x,y:event.y}),dst=snapPt||mapView.toMap({x:event.x,y:event.y}),tmpl=copyTemplateFeature.geometry;let newGeom;if(tmpl.type==='point')newGeom={type:'point',x:dst.x,y:dst.y,spatialReference:tmpl.spatialReference||mapView.spatialReference};else if(tmpl.type==='polyline'){const first=tmpl.paths[0][0],dx=dst.x-first[0],dy=dst.y-first[1];newGeom={type:'polyline',paths:tmpl.paths.map(p=>p.map(v=>[v[0]+dx,v[1]+dy])),spatialReference:tmpl.spatialReference};}else if(tmpl.type==='polygon'){const centroid=calcPolygonCentroid(tmpl.rings[0]),dx=dst.x-centroid.x,dy=dst.y-centroid.y;newGeom={type:'polygon',rings:tmpl.rings.map(r=>r.map(v=>[v[0]+dx,v[1]+dy])),spatialReference:tmpl.spatialReference};}else{updateStatus('Unsupported geometry type: '+tmpl.type);return;}const attrs=copyAttributesForNewFeature(copyTemplateFeature,copyTemplateLayer);try{const tpl=copyTemplateLayer.templates?.[0];if(tpl?.prototype?.attributes)for(const[k,v]of Object.entries(tpl.prototype.attributes))if(!(k in attrs)&&v!=null)attrs[k]=v;}catch{}updateStatus('Creating copy...');try{const res=await copyTemplateLayer.applyEdits({addFeatures:[{geometry:newGeom,attributes:attrs}]}),r=res.addFeatureResults?.[0];if(r?.objectId||r?.success){copiedCount++;if(copyCountInfo)copyCountInfo.textContent=copiedCount+' cop'+(copiedCount===1?'y':'ies')+' created';updateStatus('Copy '+copiedCount+' placed'+(snapPt?' (snapped)':'')+'. Click for more or ESC to clear.');if(r.objectId!=null){const fn=getDeleteFieldName(copyTemplateLayer);if(fn)recordUndo('Copy -- '+(copyTemplateLayer.title||'feature'),[{layer:copyTemplateLayer,layerConfig:null,oid:r.objectId,geometry:null,attributes:{[fn]:'YES'}}],[]);}}else{updateStatus('Copy failed: '+(r?.error?.message||'Unknown error'));}}catch(e){console.error('placeCopyFeature error:',e);updateStatus('Error placing copy.');}}
+        async function placeCopyFeature(event){if(!copyTemplateFeature||!copyPlacementMode||!copyTemplateLayer)return;const snapPt=await findCopySnapPoint({x:event.x,y:event.y}),dst=snapPt||mapView.toMap({x:event.x,y:event.y}),tmpl=copyTemplateFeature.geometry;let newGeom;if(tmpl.type==='point')newGeom={type:'point',x:dst.x,y:dst.y,spatialReference:tmpl.spatialReference||mapView.spatialReference};else if(tmpl.type==='polyline'){const first=tmpl.paths[0][0],dx=dst.x-first[0],dy=dst.y-first[1];newGeom={type:'polyline',paths:tmpl.paths.map(p=>p.map(v=>[v[0]+dx,v[1]+dy])),spatialReference:tmpl.spatialReference};}else if(tmpl.type==='polygon'){const centroid=calcPolygonCentroid(tmpl.rings[0]),dx=dst.x-centroid.x,dy=dst.y-centroid.y;newGeom={type:'polygon',rings:tmpl.rings.map(r=>r.map(v=>[v[0]+dx,v[1]+dy])),spatialReference:tmpl.spatialReference};}else{updateStatus('Unsupported geometry type: '+tmpl.type);return;}const attrs=copyAttributesForNewFeature(copyTemplateFeature,copyTemplateLayer);try{const tpl=copyTemplateLayer.templates?.[0];if(tpl?.prototype?.attributes)for(const[k,v]of Object.entries(tpl.prototype.attributes))if(!(k in attrs)&&v!=null)attrs[k]=v;}catch{}
+        // Workflow check before creating the copy
+        const wfCopy=checkWorkflowForNewFeature(copyTemplateFeature,copyTemplateLayer);
+        if(!wfCopy.allowed){updateStatus('Copy blocked: '+wfCopy.message);return;}
+        Object.assign(attrs,wfCopy.overrides);
+        updateStatus('Creating copy...');try{const res=await copyTemplateLayer.applyEdits({addFeatures:[{geometry:newGeom,attributes:attrs}]}),r=res.addFeatureResults?.[0];if(r?.objectId||r?.success){copiedCount++;if(copyCountInfo)copyCountInfo.textContent=copiedCount+' cop'+(copiedCount===1?'y':'ies')+' created';updateStatus('Copy '+copiedCount+' placed'+(snapPt?' (snapped)':'')+'. Click for more or ESC to clear.');if(r.objectId!=null){const fn=getDeleteFieldName(copyTemplateLayer);if(fn)recordUndo('Copy -- '+(copyTemplateLayer.title||'feature'),[{layer:copyTemplateLayer,layerConfig:null,oid:r.objectId,geometry:null,attributes:{[fn]:'YES'}}],[]);}}else{updateStatus('Copy failed: '+(r?.error?.message||'Unknown error'));}}catch(e){console.error('placeCopyFeature error:',e);updateStatus('Error placing copy.');}}
         function clearCopyTemplate(){copyTemplateFeature=null;copyTemplateLayer=null;copyPlacementMode=false;copiedCount=0;if(copyMouseMoveHandler){copyMouseMoveHandler.remove();copyMouseMoveHandler=null;}hideCopySnapIndicator();if(copyTemplateInfo)copyTemplateInfo.style.display='none';if(copyCountInfo)copyCountInfo.textContent='';if(clearCopyTemplateBtn)clearCopyTemplateBtn.disabled=true;mapView.container.style.cursor='crosshair';}
         function enableCopyMode(){if(cutMode)disableCutMode();if(flipMode)disableFlipMode();if(deleteMode)disableDeleteMode();if(boreSplitMode)disableBoreSplitMode();copyMode=true;setActiveModeBtn('copyModeBtn');showCtxPanel('copy');copyKeyHandler=e=>{if(e.key==='Escape'&&copyPlacementMode)clearCopyTemplate();};document.addEventListener('keydown',copyKeyHandler);updateStatus('Copy mode -- click a feature as template.');}
         function disableCopyMode(){copyMode=false;clearCopyTemplate();dismissCopyPickerPopup();if(copyKeyHandler){document.removeEventListener('keydown',copyKeyHandler);copyKeyHandler=null;}setActiveModeBtn(currentMode==='point'?'pointMode':'lineMode');showCtxPanel('default');}
@@ -531,9 +608,134 @@
         function showCutContextMenu(mapPoint){const screen=mapView.toScreen(mapPoint),rect=mapView.container.getBoundingClientRect();let left=rect.left+screen.x+14,top=rect.top+screen.y-10;if(left+220>window.innerWidth)left=rect.left+screen.x-220;if(top+280>window.innerHeight)top=window.innerHeight-280;cutCtxMenu.style.left=left+'px';cutCtxMenu.style.top=top+'px';cutCtxMenu.style.display='block';}
         function hideCutContextMenu(){cutCtxMenu.style.display='none';}
         async function findNearbyLinesForCut(pointGeom){const buf=CUT_TOLERANCE_M,{x,y}=pointGeom,bufGeom={type:'polygon',spatialReference:pointGeom.spatialReference,rings:[[[x-buf,y-buf],[x+buf,y-buf],[x+buf,y+buf],[x-buf,y+buf],[x-buf,y-buf]]]},found=[];await Promise.all(lineLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:bufGeom,spatialRelationship:'intersects',returnGeometry:true,outFields:['*'],maxRecordCount:100});for(const f of res.features){const cutInfos=findAllCutInfos(f.geometry,{x,y},buf);if(cutInfos.length>0)found.push({feature:f,layer:cfg.layer,layerConfig:cfg,cutInfos});}}catch(e){}}));return found;}
-        async function showCutPreview(){if(!cutLinesToCut.length){updateStatus('No lines found within range of the point.');resetCutSelection();return;}cutPreviewMode=true;cutSelectedIndices=new Set(cutLinesToCut.map((_,i)=>i));await ensureGraphicClasses();await ensureCutGraphicsLayer();cutGraphicMap.clear();if(cutGraphicsLayer)cutGraphicsLayer.removeAll();const selSym={type:'simple-line',color:[220,53,69,0.95],width:3,style:'dash'},hovSym={type:'simple-line',color:[255,140,0,1],width:4,style:'solid'};for(let i=0;i<cutLinesToCut.length;i++){if(_Graphic&&cutGraphicsLayer){const g=new _Graphic({geometry:cutLinesToCut[i].feature.geometry,symbol:selSym});cutGraphicsLayer.add(g);cutGraphicMap.set(i,g);}else await highlightCutGeometry(cutLinesToCut[i].feature.geometry,false);}const listEl=cutCtxMenu.querySelector('#cutCtxList');listEl.innerHTML='';for(let i=0;i<cutLinesToCut.length;i++){const li=cutLinesToCut[i],oid=getOid(li.feature)??'?',vtx=(li.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),crossings=li.cutInfos.length,row=document.createElement('label');row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;cursor:pointer;border-bottom:1px solid #1e1935;user-select:none;';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.idx=String(i);cb.style.cssText='margin-top:2px;cursor:pointer;flex-shrink:0;';const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.4;';info.innerHTML='<strong style="color:#e2d9f3;">'+li.layerConfig.name+'</strong><div style="color:#7a6d96;font-size:10px;">OID: '+oid+' / '+vtx+' vertices'+(crossings>1?' / '+crossings+' crossings':'')+' </div>';const dot=document.createElement('span');dot.textContent='*';dot.style.cssText='color:#ef4444;font-size:14px;flex-shrink:0;margin-top:1px;';cb.addEventListener('change',()=>{const idx=parseInt(cb.dataset.idx),g=cutGraphicMap.get(idx);if(cb.checked){cutSelectedIndices.add(idx);dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else{cutSelectedIndices.delete(idx);dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}updateCutExecuteBtn();});row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=hovSym;row.style.background='#2d1b69';});row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=selSym;row.style.background='';});row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);}const selectAllBtn=cutCtxMenu.querySelector('#cutCtxSelectAll');if(selectAllBtn){selectAllBtn.onclick=()=>{const allOn=cutSelectedIndices.size===cutLinesToCut.length;[...listEl.querySelectorAll('label')].forEach((row,i)=>{const cb=row.querySelector('input'),dot=row.querySelector('span'),g=cutGraphicMap.get(i),was=cutSelectedIndices.has(i);cb.checked=!allOn;if(!allOn&&!was){cutSelectedIndices.add(i);if(dot)dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}else if(allOn&&was){cutSelectedIndices.delete(i);if(dot)dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}});selectAllBtn.textContent=allOn?'All':'None';updateCutExecuteBtn();};}cutCtxMenu.querySelector('#cutCtxCount').textContent=cutLinesToCut.length;updateCutExecuteBtn();showCutContextMenu(cutSelectedPoint.geometry);updateStatus(cutLinesToCut.length+' line(s) found. Check/uncheck lines to cut, then confirm.');}
+        async function showCutPreview(){
+            if(!cutLinesToCut.length){updateStatus('No lines found within range of the point.');resetCutSelection();return;}
+            cutPreviewMode=true;
+
+            // Pre-compute workflow state for every candidate line
+            const wfResults=cutLinesToCut.map(li=>checkWorkflowForNewFeature(li.feature,li.layer));
+            // Only pre-select non-blocked lines
+            cutSelectedIndices=new Set(cutLinesToCut.map((_,i)=>wfResults[i].allowed?i:null).filter(i=>i!==null));
+
+            await ensureGraphicClasses();await ensureCutGraphicsLayer();
+            cutGraphicMap.clear();if(cutGraphicsLayer)cutGraphicsLayer.removeAll();
+            const selSym={type:'simple-line',color:[220,53,69,0.95],width:3,style:'dash'};
+            const hovSym={type:'simple-line',color:[255,140,0,1],width:4,style:'solid'};
+            const blkSym={type:'simple-line',color:[120,110,150,0.35],width:2,style:'dot'};
+            for(let i=0;i<cutLinesToCut.length;i++){
+                if(_Graphic&&cutGraphicsLayer){
+                    const g=new _Graphic({geometry:cutLinesToCut[i].feature.geometry,symbol:wfResults[i].allowed?selSym:blkSym});
+                    if(wfResults[i].allowed)cutGraphicsLayer.add(g); // blocked items start hidden
+                    cutGraphicMap.set(i,g);
+                }else if(wfResults[i].allowed)await highlightCutGeometry(cutLinesToCut[i].feature.geometry,false);
+            }
+
+            const listEl=cutCtxMenu.querySelector('#cutCtxList');listEl.innerHTML='';
+            for(let i=0;i<cutLinesToCut.length;i++){
+                const li=cutLinesToCut[i],wf=wfResults[i];
+                const isBlocked=!wf.allowed;
+                const isTriggered=wf.allowed&&Object.keys(wf.overrides).length>0;
+                const oid=getOid(li.feature)??'?',vtx=(li.feature.geometry?.paths??[]).reduce((s,p)=>s+p.length,0),crossings=li.cutInfos.length;
+
+                const row=document.createElement('label');
+                row.style.cssText='display:flex;align-items:flex-start;gap:6px;padding:6px 10px;border-bottom:1px solid #1e1935;user-select:none;'+(isBlocked?'opacity:0.65;cursor:default;':'cursor:pointer;');
+
+                const cb=document.createElement('input');
+                cb.type='checkbox';cb.checked=!isBlocked;cb.disabled=isBlocked;
+                cb.dataset.idx=String(i);
+                cb.style.cssText='margin-top:2px;flex-shrink:0;'+(isBlocked?'cursor:not-allowed;':'cursor:pointer;');
+
+                const info=document.createElement('div');info.style.cssText='flex:1;font-size:11px;line-height:1.4;';
+                let badge='';
+                if(isBlocked){
+                    badge='<div style="margin-top:3px;display:inline-flex;align-items:center;gap:3px;padding:2px 7px;background:#4a0a0a;border:1px solid #7f1d1d;border-radius:3px;font-size:9px;color:#fca5a5;font-weight:bold;">&#9888; Active daily record — edit geometry directly</div>';
+                }else if(isTriggered){
+                    badge='<div style="margin-top:3px;display:inline-flex;align-items:center;gap:3px;padding:2px 7px;background:#0f2a1e;border:1px solid #14532d;border-radius:3px;font-size:9px;color:#86efac;font-weight:bold;">&#10003; Will trigger daily record creation</div>';
+                }
+                info.innerHTML='<strong style="color:'+(isBlocked?'#5c5070':'#e2d9f3')+';">'+li.layerConfig.name+'</strong><div style="color:#7a6d96;font-size:10px;">OID: '+oid+' / '+vtx+' vertices'+(crossings>1?' / '+crossings+' crossings':'')+' </div>'+badge;
+
+                const dot=document.createElement('span');dot.textContent='*';
+                dot.style.cssText='color:'+(isBlocked?'transparent':'#ef4444')+';font-size:14px;flex-shrink:0;margin-top:1px;';
+
+                if(!isBlocked){
+                    cb.addEventListener('change',()=>{
+                        const idx=parseInt(cb.dataset.idx),g=cutGraphicMap.get(idx);
+                        if(cb.checked){cutSelectedIndices.add(idx);dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}
+                        else{cutSelectedIndices.delete(idx);dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}
+                        updateCutExecuteBtn();
+                    });
+                    row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=hovSym;row.style.background='#2d1b69';});
+                    row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutSelectedIndices.has(i))g.symbol=selSym;row.style.background='';});
+                }else{
+                    // Blocked row: reveal the line on hover so the user can identify it
+                    const hoverSym={type:'simple-line',color:[150,120,200,0.55],width:2,style:'dot'};
+                    row.addEventListener('mouseenter',()=>{const g=cutGraphicMap.get(i);if(g&&cutGraphicsLayer){g.symbol=hoverSym;cutGraphicsLayer.add(g);}row.style.background='#1a1535';});
+                    row.addEventListener('mouseleave',()=>{const g=cutGraphicMap.get(i);if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);row.style.background='';});
+                }
+
+                row.appendChild(cb);row.appendChild(info);row.appendChild(dot);listEl.appendChild(row);
+            }
+
+            // Select All — only toggles non-blocked lines
+            const selectAllBtn=cutCtxMenu.querySelector('#cutCtxSelectAll');
+            if(selectAllBtn){
+                const selectableCount=wfResults.filter(w=>w.allowed).length;
+                selectAllBtn.onclick=()=>{
+                    const allOn=cutSelectedIndices.size===selectableCount;
+                    [...listEl.querySelectorAll('label')].forEach((row,i)=>{
+                        if(!wfResults[i].allowed)return;
+                        const cb=row.querySelector('input'),dot=row.querySelector('span'),g=cutGraphicMap.get(i),was=cutSelectedIndices.has(i);
+                        cb.checked=!allOn;
+                        if(!allOn&&!was){cutSelectedIndices.add(i);if(dot)dot.style.color='#ef4444';if(g&&cutGraphicsLayer)cutGraphicsLayer.add(g);}
+                        else if(allOn&&was){cutSelectedIndices.delete(i);if(dot)dot.style.color='#3d3268';if(g&&cutGraphicsLayer)cutGraphicsLayer.remove(g);}
+                    });
+                    selectAllBtn.textContent=allOn?'All':'None';updateCutExecuteBtn();
+                };
+            }
+
+            cutCtxMenu.querySelector('#cutCtxCount').textContent=cutLinesToCut.length;
+            updateCutExecuteBtn();showCutContextMenu(cutSelectedPoint.geometry);
+            const blockedCount=wfResults.filter(w=>!w.allowed).length;
+            const triggeredCount=wfResults.filter(w=>w.allowed&&Object.keys(w.overrides).length>0).length;
+            let stMsg=cutLinesToCut.length+' line(s) found.';
+            if(blockedCount)stMsg+=' '+blockedCount+' blocked (active daily record).';
+            if(triggeredCount)stMsg+=' '+triggeredCount+' will trigger daily record creation.';
+            updateStatus(stMsg+' Check/uncheck lines to cut, then confirm.');
+        }
         function updateCutExecuteBtn(){const btn=cutCtxMenu.querySelector('#cutCtxExecute');if(!btn||cutProcessing)return;const n=cutSelectedIndices.size;btn.textContent='Execute Cut ('+n+')';btn.disabled=n===0;}
-        async function executeCut(){const linesToProcess=cutLinesToCut.filter((_,i)=>cutSelectedIndices.has(i));if(!linesToProcess.length||cutProcessing)return;cutProcessing=true;const snapPt={x:cutSelectedPoint.geometry.x,y:cutSelectedPoint.geometry.y},lineCount=linesToProcess.length;hideCutContextMenu();clearCutHighlights();cutLinesToCut=[];cutSelectedPoint=null;cutSelectedPointLayer=null;cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();updateStatus('Cutting '+lineCount+' line(s) in background...');(async()=>{let ok=0,fail=0,totalCreated=0;for(const li of linesToProcess){try{const snapPtGeom={x:snapPt.x,y:snapPt.y},segments=splitLineMulti(li.feature.geometry,li.cutInfos,snapPtGeom);if(segments.length<2){fail++;continue;}const updFeature=li.feature.clone();updFeature.geometry=segments[0];updFeature.attributes.calculated_length=geodeticLength(segments[0]);const newFeatures=segments.slice(1).map(seg=>{const attrs={...li.feature.attributes};['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete attrs[f]);attrs.calculated_length=geodeticLength(seg);return{geometry:seg,attributes:attrs};});const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:newFeatures}),updErr=res.updateFeatureResults?.[0]?.error,addErrs=res.addFeatureResults?.filter(r=>r.error)??[];if(!updErr&&addErrs.length===0){updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),getOid(li.feature),segments[0]);ok++;totalCreated+=newFeatures.length;}else{fail++;}}catch(e){fail++;}}cutProcessing=false;updateStatus(ok?ok+' line(s) cut into '+(ok+totalCreated)+' segments'+(fail?' / '+fail+' failed':'')+'.':'All '+fail+' cut(s) failed.');})();}
+        async function executeCut(){const linesToProcess=cutLinesToCut.filter((_,i)=>cutSelectedIndices.has(i));if(!linesToProcess.length||cutProcessing)return;cutProcessing=true;const snapPt={x:cutSelectedPoint.geometry.x,y:cutSelectedPoint.geometry.y},lineCount=linesToProcess.length;hideCutContextMenu();clearCutHighlights();cutLinesToCut=[];cutSelectedPoint=null;cutSelectedPointLayer=null;cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();updateStatus('Cutting '+lineCount+' line(s) in background...');(async()=>{
+            let ok=0,fail=0,blocked=0,totalCreated=0;
+            for(const li of linesToProcess){
+                try{
+                    // Workflow check — skip lines whose daily record is already active
+                    const wf=checkWorkflowForNewFeature(li.feature,li.layer);
+                    if(!wf.allowed){blocked++;console.warn('Cut blocked (workflow):',wf.message);continue;}
+                    const snapPtGeom={x:snapPt.x,y:snapPt.y},segments=splitLineMulti(li.feature.geometry,li.cutInfos,snapPtGeom);
+                    if(segments.length<2){fail++;continue;}
+                    const updFeature=li.feature.clone();
+                    updFeature.geometry=segments[0];
+                    updFeature.attributes.calculated_length=geodeticLength(segments[0]);
+                    Object.assign(updFeature.attributes,wf.overrides); // trigger DB workflow on first segment
+                    const newFeatures=segments.slice(1).map(seg=>{
+                        const attrs={...li.feature.attributes};
+                        ['objectid','OBJECTID','gis_id','GIS_ID','globalid','GLOBALID','created_date','last_edited_date'].forEach(f=>delete attrs[f]);
+                        attrs.calculated_length=geodeticLength(seg);
+                        Object.assign(attrs,wf.overrides); // trigger DB workflow on each new segment
+                        return{geometry:seg,attributes:attrs};
+                    });
+                    const res=await li.layer.applyEdits({updateFeatures:[updFeature],addFeatures:newFeatures}),
+                          updErr=res.updateFeatureResults?.[0]?.error,
+                          addErrs=res.addFeatureResults?.filter(r=>r.error)??[];
+                    if(!updErr&&addErrs.length===0){updateVertexCacheGeom(layerKey(li.layer,li.layerConfig),getOid(li.feature),segments[0]);ok++;totalCreated+=newFeatures.length;}
+                    else{fail++;}
+                }catch(e){fail++;}
+            }
+            cutProcessing=false;
+            let msg=ok?ok+' line(s) cut into '+(ok+totalCreated)+' segments':'';
+            if(fail)msg+=(msg?' / ':'')+fail+' failed';
+            if(blocked)msg+=(msg?' / ':'')+blocked+' blocked (active daily record — edit geometry directly)';
+            updateStatus((msg||'No lines cut')+'.');
+        })();}
         async function handleCutClick(event){if(cutPreviewMode||cutProcessing)return;clearCutHighlights();hideCutContextMenu();updateStatus('Searching for cut location...');const sp={x:event.x,y:event.y},mp=mapView.toMap(sp),ext=makeExt(mp.x,mp.y,POINT_SNAP_TOLERANCE*(mapView.resolution||1),mapView.spatialReference);let ptResult=null;if(mapView.hitTest){const hit=await mapView.hitTest(sp,{include:mapView.map.allLayers.filter(l=>l.type==='feature')});for(const r of hit.results){if(r.graphic?.geometry?.type==='point'){const cfg=pointLayers.find(p=>p.id===r.layer.layerId);if(cfg){ptResult={feature:r.graphic,layer:r.layer,layerConfig:cfg};break;}}}}if(!ptResult){const results=await Promise.all(pointLayers.filter(cfg=>cfg.layer.visible).map(async cfg=>{try{const res=await cfg.layer.queryFeatures({geometry:ext,spatialRelationship:'intersects',returnGeometry:true,outFields:['*']});return{cfg,features:res.features};}catch(e){return{cfg,features:[]};}}));let best=null,bestD=Infinity;for(const{cfg,features}of results)for(const f of features){if(!f.geometry)continue;const d=calcDist(mp,f.geometry);if(d<bestD){bestD=d;best={feature:f,layer:cfg.layer,layerConfig:cfg};}}if(best)ptResult=best;}if(ptResult){cutSelectedPoint=ptResult.feature;cutSelectedPointLayer=ptResult.layer;await highlightCutGeometry(cutSelectedPoint.geometry,true);updateStatus(ptResult.layerConfig.name+' selected. Searching for nearby lines...');cutLinesToCut=await findNearbyLinesForCut(cutSelectedPoint.geometry);showCutPreview();return;}const vtxResults=await findCoincidentLineVertices(sp);if(vtxResults.length>0){const vtx=vtxResults[0].vertex,vtxGeom={type:'point',x:vtx.coordinates.x,y:vtx.coordinates.y,spatialReference:vtxResults[0].feature.geometry.spatialReference||mapView.spatialReference};cutSelectedPoint={geometry:vtxGeom,attributes:{}};cutSelectedPointLayer=null;await highlightCutGeometry(vtxGeom,true);updateStatus('Vertex selected. Searching for nearby lines...');cutLinesToCut=await findNearbyLinesForCut(vtxGeom);showCutPreview();return;}updateStatus('No point feature or line vertex found. Click closer.');}
         function resetCutSelection(){cutSelectedPoint=null;cutSelectedPointLayer=null;cutLinesToCut=[];cutPreviewMode=false;cutSelectedIndices.clear();cutGraphicMap.clear();clearCutHighlights();hideCutContextMenu();}
         function enableCutMode(){if(flipMode)disableFlipMode();if(copyMode)disableCopyMode();if(deleteMode)disableDeleteMode();if(boreSplitMode)disableBoreSplitMode();cutMode=true;setActiveModeBtn('cutModeBtn');showCtxPanel('cut');if(cutModeInfo)cutModeInfo.textContent='';updateStatus('Cut mode -- click a point feature or line vertex to cut nearby lines.');}
