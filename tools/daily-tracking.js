@@ -48,9 +48,11 @@
         // Capture original layer filters and label settings
         function captureOriginalStates() {
             mapView.map.allLayers.filter(l => l.type === 'feature').forEach(layer => {
+                // Store a reference to the original labelingInfo objects directly rather than
+                // deep-cloning via JSON, which can mangle ArcGIS Color objects and drop color data
                 originalLayerStates.set(layer.id, {
                     definitionExpression: layer.definitionExpression,
-                    labelingInfo: layer.labelingInfo ? JSON.parse(JSON.stringify(layer.labelingInfo)) : null,
+                    labelingInfo: layer.labelingInfo ? [...layer.labelingInfo] : null,
                     labelsVisible: layer.labelsVisible
                 });
             });
