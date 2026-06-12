@@ -3,6 +3,12 @@
 
 (function() {
     try {
+        // Ensure activeTools is a proper Map before doing anything
+        if (!window.gisToolHost.activeTools || !(window.gisToolHost.activeTools instanceof Map)) {
+            console.warn('activeTools was missing or corrupted, restoring Map...');
+            window.gisToolHost.activeTools = new Map();
+        }
+
         // Check if tool is already active
         if (window.gisToolHost.activeTools.has('daily-tracking')) {
             console.log('Daily Tracking Tool already active');
@@ -35,6 +41,9 @@
         
         // Store original layer states
         const originalLayerStates = new Map();
+
+        // Store pending filter data between query and apply steps
+        let pendingFilterData = null;
         
         // Capture original layer filters and label settings
         function captureOriginalStates() {
@@ -63,6 +72,9 @@
             border: 1px solid #333;
             padding: 12px;
             max-width: 350px;
+            max-height: calc(100vh - 80px);
+            display: flex;
+            flex-direction: column;
             font: 12px/1.3 Arial, sans-serif;
             box-shadow: 0 4px 16px rgba(0,0,0,.2);
             border-radius: 4px;
@@ -78,12 +90,13 @@
             
             <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
                 <button id="runQueryBtn" style="flex:1;padding:6px 12px;background:#28a745;color:white;border:none;border-radius:3px;cursor:pointer;">Run Query</button>
+                <button id="applyFiltersBtn" style="flex:1;padding:6px 12px;background:#007bff;color:white;border:none;border-radius:3px;cursor:pointer;display:none;">Apply Filters</button>
                 <button id="resetFiltersBtn" style="flex:1;padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:3px;cursor:pointer;">Reset Filters</button>
             </div>
             
             <div id="toolStatus" style="margin-bottom:8px;color:#3367d6;font-size:11px;min-height:16px;"></div>
             
-            <div id="laborSummary" style="max-height:200px;overflow-y:auto;"></div>
+            <div id="laborSummary" style="flex:1;overflow-y:auto;min-height:0;"></div>
             
             <button id="closeTool" style="width:100%;padding:6px;background:#d32f2f;color:white;border:none;border-radius:3px;cursor:pointer;margin-top:8px;">Close</button>
         `;
@@ -94,9 +107,14 @@
         // Get UI elements
         const $ = (id) => toolBox.querySelector(id);
         const status = $("#toolStatus");
+        const applyFiltersBtn = $("#applyFiltersBtn");
         
         function updateStatus(message) {
             status.textContent = message;
+        }
+
+        function showApplyButton(show) {
+            applyFiltersBtn.style.display = show ? 'block' : 'none';
         }
         
         // Utility functions
@@ -131,6 +149,8 @@
                     }
                 });
                 
+                pendingFilterData = null;
+                showApplyButton(false);
                 $("#laborSummary").innerHTML = "";
                 updateStatus("Original filters restored successfully.");
                 
@@ -164,6 +184,135 @@
                 updateStatus("Error zooming to results.");
             });
         }
+
+        // Build label classes for a layer given the gidToQty mapping
+        function buildLabelClasses(layer, gidToQty) {
+            const args = [];
+            for (const gid in gidToQty) {
+                args.push(`"${gid}"`);
+                args.push(`"${gidToQty[gid]}"`);
+            }
+
+            const hasLength = layer.fields.some(f => f.name.toLowerCase() === 'calculated_length');
+            const labelClasses = [];
+
+            if (hasLength) {
+                const qtyLabelExpression = `"Qty: " + Decode($feature.globalid, ${args.join(',')}, "N/A")`;
+
+                labelClasses.push({
+                    labelExpressionInfo: { expression: qtyLabelExpression },
+                    symbol: {
+                        type: 'text', color: 'red', haloSize: 2, haloColor: 'white',
+                        font: { size: 12, family: 'Arial', weight: 'bold' },
+                        xoffset: -30
+                    },
+                    deconflictionStrategy: 'none',
+                    labelPlacement: 'center-center',
+                    repeatLabel: false
+                });
+
+                labelClasses.push({
+                    labelExpressionInfo: { expression: '"Len: " + $feature.calculated_length' },
+                    symbol: {
+                        type: 'text', color: 'blue', haloSize: 2, haloColor: 'white',
+                        font: { size: 12, family: 'Arial', weight: 'bold' },
+                        xoffset: 30
+                    },
+                    deconflictionStrategy: 'none',
+                    labelPlacement: 'center-center',
+                    repeatLabel: false
+                });
+            } else {
+                const qtyExpression = `var id = $feature.globalid; Decode(id, ${args.join(',')}, "N/A")`;
+
+                labelClasses.push({
+                    labelExpressionInfo: { expression: qtyExpression },
+                    symbol: {
+                        type: 'text', color: 'red', haloSize: 1, haloColor: 'white',
+                        font: { size: 12, family: 'Arial', weight: 'bold' }
+                    },
+                    deconflictionStrategy: 'none',
+                    labelPlacement: 'center-center',
+                    repeatLabel: false
+                });
+            }
+
+            return labelClasses;
+        }
+
+        // Apply the pending filters and labels to the map
+        async function applyFilters() {
+            if (!pendingFilterData) {
+                updateStatus("No query results to apply. Run a query first.");
+                return;
+            }
+
+            try {
+                applyFiltersBtn.disabled = true;
+                updateStatus("Applying filters to map layers...");
+
+                const { gidToQty, trackingCount } = pendingFilterData;
+                const globalIds = Object.keys(gidToQty);
+
+                const featureLayers = mapView.map.allLayers.filter(layer =>
+                    layer.type === 'feature' &&
+                    layer.fields.some(field => field.name.toLowerCase() === 'globalid')
+                );
+
+                const layerPromises = featureLayers.map(async layer => {
+                    try {
+                        const baseFields = ['objectid', 'globalid'];
+                        if (layer.fields.some(f => f.name.toLowerCase() === 'calculated_length')) {
+                            baseFields.push('calculated_length');
+                        }
+
+                        const layerResult = await layer.queryFeatures({
+                            where: `globalid IN ('${globalIds.join("','")}')`,
+                            outFields: baseFields
+                        });
+
+                        const originalState = originalLayerStates.get(layer.id);
+                        const originalDef = originalState?.definitionExpression;
+
+                        if (layerResult.features.length) {
+                            const objectIds = layerResult.features.map(f => f.attributes.objectid);
+                            const newDef = `objectid IN (${objectIds.join(',')})`;
+                            layer.definitionExpression = originalDef ?
+                                `(${originalDef}) AND (${newDef})` : newDef;
+
+                            layer.labelingInfo = buildLabelClasses(layer, gidToQty);
+                            layer.labelsVisible = true;
+
+                            return layer;
+                        } else {
+                            layer.definitionExpression = originalDef ?
+                                `(${originalDef}) AND (1=0)` : '1=0';
+                            return null;
+                        }
+                    } catch (error) {
+                        console.error(`Error filtering layer ${layer.title}:`, error);
+                        return null;
+                    }
+                });
+
+                const processedLayers = await Promise.all(layerPromises);
+                const validLayers = processedLayers.filter(Boolean);
+
+                if (validLayers.length > 0) {
+                    updateStatus("Zooming to results...");
+                    await zoomToLayers(validLayers);
+                    updateStatus(`Filters applied! ${trackingCount} tracking records across ${validLayers.length} layers.`);
+                } else {
+                    updateStatus("No matching features found on map layers.");
+                }
+
+            } catch (error) {
+                console.error("Error applying filters:", error);
+                updateStatus(`Error: ${error.message}`);
+            } finally {
+                applyFiltersBtn.disabled = false;
+            }
+        }
         
         async function runDailyNumberQuery() {
             try {
@@ -175,10 +324,9 @@
                 }
                 
                 $("#runQueryBtn").disabled = true;
+                pendingFilterData = null;
+                showApplyButton(false);
                 updateStatus("Loading...");
-                
-                // Reset to original filters first
-                resetFilters();
                 
                 // Find Daily Tracking table
                 const trackingTable = mapView.map.allTables && 
@@ -227,147 +375,15 @@
                 if (!globalIds.length) {
                     throw new Error('No related globalIds found');
                 }
-                
-                updateStatus("Filtering and labeling map layers...");
-                
-                // Find feature layers with globalId fields
-                const featureLayers = mapView.map.allLayers.filter(layer => 
-                    layer.type === 'feature' && 
-                    layer.fields.some(field => field.name.toLowerCase() === 'globalid')
-                );
-                
-                // Query each layer for matching globalIds
-                const layerPromises = featureLayers.map(async layer => {
-                    try {
-                        const baseFields = ['objectid', 'globalid'];
-                        
-                        // Check if layer has calculated_length field
-                        if (layer.fields.some(field => field.name.toLowerCase() === 'calculated_length')) {
-                            baseFields.push('calculated_length');
-                        }
-                        
-                        const layerResult = await layer.queryFeatures({
-                            where: `globalid IN ('${globalIds.join("','")}')`,
-                            outFields: baseFields
-                        });
-                        
-                        if (layerResult.features.length) {
-                            const objectIds = layerResult.features.map(f => f.attributes.objectid);
-                            
-                            // Get original definition expression
-                            const originalState = originalLayerStates.get(layer.id);
-                            const originalDef = originalState?.definitionExpression;
-                            
-                            // Combine with original filter if it exists
-                            const newDef = `objectid IN (${objectIds.join(',')})`;
-                            layer.definitionExpression = originalDef ? 
-                                `(${originalDef}) AND (${newDef})` : newDef;
-                            
-                            // Create quantity label expression
-                            const args = [];
-                            for (const gid in gidToQty) {
-                                args.push(`"${gid}"`);
-                                args.push(`"${gidToQty[gid]}"`);
-                            }
-                            
-                            const qtyExpression = `var id = $feature.globalid; Decode(id, ${args.join(',')}, "N/A")`;
-                            
-                            const labelClasses = [];
-                            
-                            // Check if layer has calculated_length field for combined label
-                            const hasLength = layer.fields.some(field => field.name.toLowerCase() === 'calculated_length');
-                            
-                            if (hasLength) {
-                                // Quantity label (red) - positioned to the left
-                                const qtyLabelExpression = `"Qty: " + Decode($feature.globalid, ${args.join(',')}, "N/A")`;
-                                
-                                labelClasses.push({
-                                    labelExpressionInfo: { expression: qtyLabelExpression },
-                                    symbol: {
-                                        type: 'text',
-                                        color: 'red',
-                                        haloSize: 2,
-                                        haloColor: 'white',
-                                        font: {
-                                            size: 12,
-                                            family: 'Arial',
-                                            weight: 'bold'
-                                        },
-                                        xoffset: -30
-                                    },
-                                    deconflictionStrategy: 'none',
-                                    labelPlacement: 'center-center',
-                                    repeatLabel: false
-                                });
-                                
-                                // Length label (blue) - positioned to the right
-                                labelClasses.push({
-                                    labelExpressionInfo: { expression: '"Len: " + $feature.calculated_length' },
-                                    symbol: {
-                                        type: 'text',
-                                        color: 'blue',
-                                        haloSize: 2,
-                                        haloColor: 'white',
-                                        font: {
-                                            size: 12,
-                                            family: 'Arial',
-                                            weight: 'bold'
-                                        },
-                                        xoffset: 30
-                                    },
-                                    deconflictionStrategy: 'none',
-                                    labelPlacement: 'center-center',
-                                    repeatLabel: false
-                                });
-                            } else {
-                                // Quantity only label
-                                labelClasses.push({
-                                    labelExpressionInfo: { expression: qtyExpression },
-                                    symbol: {
-                                        type: 'text',
-                                        color: 'red',
-                                        haloSize: 1,
-                                        haloColor: 'white',
-                                        font: {
-                                            size: 12,
-                                            family: 'Arial',
-                                            weight: 'bold'
-                                        }
-                                    },
-                                    deconflictionStrategy: 'none',
-                                    labelPlacement: 'center-center',
-                                    repeatLabel: false
-                                });
-                            }
-                            
-                            layer.labelingInfo = labelClasses;
-                            layer.labelsVisible = true;
-                            
-                            return layer;
-                        } else {
-                            // No features found, apply restrictive filter
-                            const originalState = originalLayerStates.get(layer.id);
-                            const originalDef = originalState?.definitionExpression;
-                            layer.definitionExpression = originalDef ? 
-                                `(${originalDef}) AND (1=0)` : '1=0';
-                            return null;
-                        }
-                    } catch (error) {
-                        console.error(`Error querying layer ${layer.title}:`, error);
-                        return null;
-                    }
-                });
-                
-                const processedLayers = await Promise.all(layerPromises);
-                const validLayers = processedLayers.filter(Boolean);
-                
-                if (validLayers.length > 0) {
-                    updateStatus("Zooming to results...");
-                    await zoomToLayers(validLayers);
-                    updateStatus(`Query completed! Found ${trackingResult.features.length} tracking records across ${validLayers.length} layers.`);
-                } else {
-                    updateStatus("No matching features found on map layers.");
-                }
+
+                // Store results for the apply step
+                pendingFilterData = {
+                    gidToQty,
+                    trackingCount: trackingResult.features.length
+                };
+
+                showApplyButton(true);
+                updateStatus(`Query complete — ${trackingResult.features.length} records found. Click "Apply Filters" to update the map.`);
                 
             } catch (error) {
                 console.error("Error running daily number query:", error);
@@ -380,6 +396,7 @@
         
         // Event listeners
         $("#runQueryBtn").onclick = runDailyNumberQuery;
+        $("#applyFiltersBtn").onclick = applyFilters;
         $("#resetFiltersBtn").onclick = resetFilters;
         
         // Allow Enter key to run query
